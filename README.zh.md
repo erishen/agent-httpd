@@ -1,0 +1,684 @@
+# AgentHTTPD
+
+[English](README.md) | [简体中文](README.zh.md)
+
+一个用 Linux C 实现的轻量级 HTTP 服务器。项目最初受 ACME Labs `mini_httpd`
+的启发，如今已成长为完全独立的实现：事件循环 + worker 池、CGI 动物园、
+FastCGI 双向、React SSR 编排，以及**原生 C 的 LLM Agent 栈**（工具调用 /
+MCP / 技能 / 记忆 / ReAct / PSE）。
+想深入源码设计（进程模型 / 快慢路径 / Agent 栈 / 安全纵深），请读
+[架构文档](docs/ARCHITECTURE.md)。
+
+## 特性
+
+- **HTTP 方法**: GET / HEAD / POST / PUT / PATCH / DELETE / OPTIONS —— 读方法走静态链, 写方法 (POST/PUT/PATCH/DELETE) 仅在 CGI 路径放行并经 `REQUEST_METHOD` 透传给脚本 (静态 URL 一律 405 + `Allow`, 服务器不写盘); OPTIONS 由服务器直答 `Allow` 能力菜单 (静态列只读方法, CGI 列全方法), 无 body 的 OPTIONS 进快路径; 其余方法 501
+- **静态文件服务**: 支持 HTML, CSS, JS, 图片等常见文件类型
+- **CGI 支持**: `fork + pipe + execl`，转发 GET query 和 POST body，传递标准 CGI 环境变量
+- **目录穿越防护**: `realpath()` 校验，阻止 `..` 逃逸 Web 根目录
+- **目录列表**: 访问目录时生成 HTML 文件列表，目录无尾斜杠自动 `301` 重定向
+- **自定义错误页**: `www/error/NNN.html` 覆盖，缺失时用内置默认页
+- **访问日志**: Combined Log Format，`SIGHUP` 重开日志文件（支持 logrotate）
+- **多进程模型 (默认: master 事件循环 + 慢路径 worker 池)**: 快路径 (静态/health/304/301/404, keep-alive 多路复用) 由单进程事件循环直服 (kqueue/epoll, `recv(MSG_PEEK)` 预览请求头零拷贝分流); CGI / chat SSE / 上游代理等阻塞请求经 SCM_RIGHTS 交给 8 个 prefork worker (`-w <n>` 调大小, `0` = 每连接 fork 旧模型)。实测 per-conn 吞吐约 6 倍 (见"性能设计")
+- **MIME 类型检测**: 按扩展名识别内容类型
+- **大文件流式下发**: 超过 64KB 的静态文件不再整体缓冲, 直接流式发送 (HTTP 与 FastCGI 均支持)
+- **CGI 大响应流式**: CGI 输出缓冲按需增长, 超过阈值 (默认 512KB) 落盘临时文件流式发送, 不再有 64KB 截断
+- **Expect: 100-continue (RFC 9110 10.1.1)**: 大体积 POST (curl 超 1KB 自动携带) 不再卡 1 秒 —— 服务器在读 body 前即时下发 `100 Continue` (实测 1.06s → 0.04s); 413 拒绝路径不受影响, 客户端直接收到最终状态
+- **Date 响应头**: 每个响应携带 RFC 9110 要求的 IMF-fixdate `Date:` 头
+- **CGI 变量补齐 (RFC 3875)**: 脚本可依赖 `GATEWAY_INTERFACE` / `SERVER_SOFTWARE` / `REMOTE_ADDR` (FCGI 后端路径取 nginx 透传的 `REMOTE_ADDR`)
+- **超时防护栏**: 请求头/POST 体读取有总超时 (半开请求直接断开, 防 Slowloris); CGI 子进程静默超时被 kill 并回 504, 客户端提前断开也会及时终止 CGI, 不再泄漏进程
+- **chunked 请求体 (RFC 9110 8.7)**: `Transfer-Encoding: chunked` 的 POST/PUT/PATCH 就地解码为普通 body (含 trailer 段处理与 `Expect: 100-continue` 握手), 解码后 CGI stdin / chat / FCGI 中继零改动; 与 `Content-Length` 并存的走私形请求按 RFC 6.1 直接 400 断连, 不可解码的传输编码 (如 TE: gzip) 回 501
+- **URL query string 兼容**: 静态文件与目录 URL 带 `?query` 正常服务 (此前会 404), `/cgi-bin` 重定向与目录列表同样兼容
+- **ETag/304 条件请求 (RFC 7232)**: 静态资源 (含预压缩 `.gz` 表亲) 返回强校验 `ETag: W/"size-mtime"`, 带 `If-None-Match` 再验证未变时回 `304` (实测重复访问传输量 -94%); 304 按 RFC 9110 15.4.5 省略实体头 (Content-Type/Content-Length/Accept-Ranges 不随 304 下发, 避免代理歧义); `If-None-Match` 列表/`*` 通配、跨表示不误命中 (gzip 与明文 ETag 不同, 修改后自动失效)
+- **Last-Modified / If-Modified-Since (RFC 9110 13.2.2)**: 所有静态 200 响应携带 `Last-Modified` (IMF-fixdate); 只认日期的客户端 (部分 CDN/老代理) 用 `If-Modified-Since` 再验证同样能拿到 304 —— 客户端带 `If-None-Match` 时它让位 (规范优先级)
+- **TCP_NODELAY + listen backlog 128**: 每个已接受连接显式关 Nagle (避免头/体两次 send 与延迟 ACK 相互作用引入的数十毫秒首字节停顿), 监听队列从 10 提到 128 承受突发连接
+- **sendfile(2) 零拷贝 + Range/206 (RFC 9110 14)**: 大静态文件与 206 字节区间响应走内核零拷贝 (macOS/Linux, 其他平台 fread 回退); 支持单区间 `bytes=N-M`/`N-`/`-N` (多区间回退 200 全量, gzip 协商忽略 Range), 越界回 `416` + `Content-Range: bytes */TOTAL`, 响应携带 `Accept-Ranges: bytes`
+- **优雅停机 (排水)**: SIGTERM 后 worker 先完成手头连接再退出 (keep-alive 循环见停机标志即关连接), 父进程排水最多 5 秒后强杀兼底 —— 重启不再把进行中的请求拦腰砍断
+- **/health 探活端点**: 固定返回 `ok` (位于限流/认证门禁之内), 负载均衡和监控不用再猜 `GET /`
+- **/metrics 可观测端点**: Prometheus 文本格式快照——快/慢路径分流计数、状态码分类、worker 池水位、agent 并发槽占用与上限、上游重试次数、CGI 超时/断开、运行时长; 计数表在 `MAP_SHARED` 共享内存 (master 与 worker 同表, 与限流表同模式), 增量走 `__atomic_fetch_add` 快路径零锁; 端点由快路径直答, chat 挂起时抓取不阻塞
+- **431 Request Header Fields Too Large**: 请求头超出 64KB 缓冲时回 431 并断连 (此前落到笼统的 400)
+- **gzip 预压缩协商**: 静态文件旁存在 `.gz` 时, 客户端带 `Accept-Encoding: gzip` 自动下发压缩版 (`Content-Encoding: gzip`, MIME 保持原扩展名); 按 RFC 7231 解析 q 值 (`gzip;q=0` 拒绝, 显式 `*` 通配接受, deflate-only 不误发); 构建时用 `gzip -9` 预压缩 client bundle
+- **CGI 响应头 (RFC 3875)**: 脚本输出的 `Location:` 转为 302 重定向 (本地/绝对 URL 均可, 响应头透传), `Status:` 覆盖响应状态行 (如 `Status: 418 I am a teapot`), `Content-Type` 照旧透传
+- **FastCGI 后端**: 可选 `-F <unix-socket>`，充当 FCGI 服务端（类似 PHP-FPM），复用同一套 CGI/静态分发链
+- **FastCGI 客户端转发**: 可选 `-R <unix-socket>`，把 `/react/*` 转发给常驻 React FastCGI 后端; 新的统一接线推荐 `-v <port>` (见下条), FastCGI 保留供 nginx `fastcgi_pass` 场景
+- **统一 `-v` 渲染接线 (dev/prod 同构)**: agent-httpd 是唯一公网入口, `/@*`、`/src/*`、`/react/*`(除 chat) 经 C 反向代理转发给内部上游——dev 是 Vite (脚本 `dev-server.js`), 生产是 `bin/react-ssr-server` 的 HTTP 端口 (`REACT_HTTP_PORT`, 带 ISR 缓存); HMR WebSocket 升级由 C 做 TCP 隧道透传; 代理按 RFC 9110 7.6.1 剥离 hop-by-hop 头 (Connection/TE/Keep-Alive/Proxy-*/Upgrade/Trailer), 同时防请求走私 (客户端注入的 `Transfer-Encoding` 不透传, 帧化权威始终在 C 侧); `/react/api/chat` 始终由 C 直服
+- **安全头与指纹统一 (直服/代理同构)**: C 直服响应带 `X-Content-Type-Options: nosniff` / `X-Frame-Options: DENY` / `Referrer-Policy: no-referrer`; `-v` 代理路径的上游 (dev Vite 中间件与 react-ssr-server HTTP 模式) 输出同套安全头, `Server` 指纹统一为 `AgentHTTPD` 且关闭 `X-Powered-By`; 对外错误文案脱敏 (curl 退出码 / `LLM_API_URL` 排查提示等基础设施细节只写服务器日志)
+- **React SSR 全 TS + Tailwind + React Router + SSR/CSR 可切换**: React SSR 源码为 TypeScript (tsc 门禁), 样式用 Tailwind CSS v4 并按需内联进 SSR `<head>`; 客户端路由用 react-router v8 (SSR 深链 + 浏览器无刷新切换); 每个请求可用 `?mode=csr|ssr` 双模式渲染, 产物全部 esbuild `--minify`
+- **HMR 开发模式 (`make dev`)**: C 是唯一公网服务器, Vite 退化为内部服务 (`127.0.0.1:PORT+2`) —— 客户端组件 react-refresh 热替换, 服务端代码改动免重启, Tailwind 类名实时重编译; `/@*`、`/src/*`、`/react/*` 经 C `-v` 反向代理 + WebSocket 隧道接到 Vite, 静态/CGI/chat 由 C 直服 (与生产同一条代码路径)
+- **LLM 流式聊天 (`/react/chat`)**: SSE 流式对话页 + `/react/api/chat` 数据端点; **数据端点已由 C 进程原生处理 (`src/llm.c`)**: 有 `LLM_API_KEY` 时 fork `curl -N` 调 OpenAI 兼容上游 (TLS 交给 curl, 服务器本体仍只链 libc), 逐 delta 重发 SSE; 上游瞬时故障 (连接拒绝/重置、5xx、429) 自动重试——共 3 次尝试, 间隔 1s/2.5s 退避, 期间 SSE 下发 `upstream hiccup, retrying` note, 退避按 100ms 小步检查客户端断开即中止; 重试判定见 `agent_retryable()` (curl exit 7/18/35/52/55/56、HTTP 429/5xx 视为瞬时, 4xx 拒绝与 127 不重试)。无密钥回落内置 C 演示引擎 (逐词节流的罐头回复)。SSE 信封 (note/delta/error/done) 与 node 后端 `chat.ts` 完全一致, 页面零改动; 配置写在项目根 `.env` (模板见 `.env.example`); nginx 侧 `location = /react/api/chat` 反代回 httpd 并 `proxy_buffering off` 直通
+- **Basic Auth 认证 (-a/-r)**: RFC 7617, htpasswd 文件驱动, secret 支持明文或 crypt(3) 哈希 (Linux 现代 SHA 格式 / macOS DES), fail-closed (非法行跳过、全无效拒绝启动), 401 响应带 WWW-Authenticate 质询, CGI 经 REMOTE_USER 获取认证用户, 全站门禁含 `/react/` 转发
+- **每 IP 限流 (-l)**: 固定窗口计数 + 共享内存计数表, fork/worker 池模式共用同一配额; 检查先于认证 (洪水烧不到 crypt CPU), 超限回 429 + Retry-After 并断连
+
+## 目录结构
+
+```
+agent-httpd/
+├── src/
+│   ├── main.c           # 入口: 参数解析 + 初始化 + accept 主循环 (连接分发给 worker 池或 fork)
+│   ├── http.c           # HTTP 核心: 解析/序列化/错误页/日志 + keep-alive 循环 + -R 转发 + TCP 监听
+│   ├── static.c         # 静态文件: 穿越防护 + 目录列表 + gzip 协商 + ETag/304
+│   ├── cgi.c            # CGI/1.1: fork+exec、头解析 (Location/Status)、超时、大响应落盘
+│   ├── auth.c           # Basic Auth: htpasswd 加载 (明文/crypt) + BASE64
+│   ├── ratelimit.c      # 每 IP 限流: 共享内存固定窗口计数表
+│   ├── metrics.c        # /metrics 可观测: 共享内存计数表 + Prometheus 文本渲染
+│   ├── metrics.h        # METRICS_INC 家族宏 / metrics_init / metrics_render
+│   ├── worker.c         # prefork worker 池: pipe-token 信号量 + SCM_RIGHTS fd 传递
+│   ├── util.c           # 共享工具: 环境变量防护栏、字符串/URL/HTML、MIME
+│   ├── fastcgi.c        # FCGI 服务端(被 nginx fastcgi_pass 当后端) + 客户端(forward_to_fcgi 转发给常驻后端)
+│   ├── llm.c            # C 原生 Agent 聊天端点: /react/api/chat SSE (路由: PSE / ReAct / 演示引擎)
+│   ├── llm.h            # llm.c 的接口声明
+│   ├── agent.c          # ReAct 主循环: fork curl 上游 + tool_calls 工具调度 + 并发槽
+│   ├── agent.h          # agent_round / agent_run(_ex) / RoundState / 并发槽 API
+│   ├── tools.c          # 工具注册表: 内置 get_time/calc/read_file/fetch_url/skill-run/remember/recall
+│   ├── tools.h          # ToolDef / tools_register / tools_schema_json / tools_dispatch
+│   ├── skills.c         # Skills 索引: SKILL.md 扫描 + frontmatter + 系统提示注入
+│   ├── skills.h         # skills_init / skills_index_text / skills_read
+│   ├── session.c        # Memory: 会话/事实库持久化 (.data/sessions/*.json, 原子写)
+│   ├── session.h        # session_load / session_append / session_fact_* / session_render_extra
+│   ├── mcp.c            # MCP stdio 客户端: 启动时 tools/list, 调用时起一次性子进程, jq 美化
+│   ├── mcp.h            # McpServerCfg / McpToolInfo / mcp_init / mcp_call
+│   ├── pse.c            # PSE 三角色编排器 (Planner→Specialist→Evaluator, ≤3 轮重试)
+│   ├── pse.h            # pse_run / pse_enabled
+│   ├── chatio.c         # SSE 信封 (note/delta/error/done) + 捕获缓冲 (cap_on)
+│   ├── chatio.h         # ChatOut / sse_event
+│   ├── internal.h       # 服务器内部跨模块声明 (fastcgi.c 之外私有)
+│   └── httpd.h          # 共享结构体/函数申明 (HTTP、服务端/客户端 FCGI 复用)
+├── build/               # 编译中间产物 (.o/.d, make clean 清除) —— src/ 只放源码
+├── cgi-bin/             # 部署产物: 服务器直接 execl 的可执行文件
+│   ├── hello.cgi        # bash: 环境变量和时间
+│   ├── form.cgi         # bash: GET query / POST body 表单
+│   ├── python.cgi       # Python 3: 标准库解析 GET/POST
+│   ├── react-ssr.cgi    # React SSR: 服务端渲染 CGI 单文件 (esbuild+tailwindcss 打包)
+│   ├── react-ssr/       # React SSR 源码 (App.tsx / client.tsx + server/ 目录: render.tsx / cgi.tsx / main.tsx / chat.ts + styles/main.css + tsconfig.json)
+│   ├── go.cgi           # Go 原生二进制 (go build)
+│   ├── rust.cgi         # Rust 原生二进制 (rustc -O)
+│   ├── java.cgi         # sh 包装器 → java -cp Main.class
+│   ├── php.cgi          # sh 包装器 → php-cgi (设 REDIRECT_STATUS)
+│   └── ruby.cgi         # Ruby 脚本 (ruby cgi stdlib)
+├── cgi-langs/           # 各语言源码 (仅构建时需要)
+│   ├── go/ rust/ java/ php/ ruby/
+├── scripts/
+│   ├── smoke-test.sh    # 冒烟测试脚本 (make test 调用)
+│   ├── fcgi-test.py     # FastCGI 客户端测试 (裸协议, 模拟 nginx)
+│   ├── build-cgis.sh    # 编译/生成全部语言 CGI (make build-cgis)
+│   └── build-ssr.sh     # 构建 SSR 三产物: CGI 入口 + 常驻后端 + 客户端 (make build-ssr)
+├── www/
+│   ├── index.html       # 网站的根页面
+│   ├── js/react-ssr.js  # React SSR client bundle (浏览器 hydration)
+│   ├── error/           # 自定义错误页 (404.html / 403.html / 500.html)
+│   └── test/            # 目录列表测试目录
+├── logs/                # 访问日志目录
+├── deploy/
+│   ├── nginx.conf           # nginx 站点配置 (反代 agent-httpd + fastcgi_pass 直连 React 后端)
+│   └── docker-entrypoint.sh # 容器入口 (httpd / react-backend 两种角色)
+├── Dockerfile           # 三阶段构建: C 编译 → SSR 打包 → node:20-slim 运行时
+├── docker-compose.yml   # 三服务编排: httpd / react / nginx
+├── .dockerignore
+├── bin/                 # 编译输出目录
+└── Makefile
+```
+
+## 构建与运行
+
+```bash
+# 构建
+make
+
+# 启动服务器 (默认端口 18080)
+./bin/agent-httpd -p 18080
+
+# 或使用 make 目标（端口可用 PORT=xxx 覆盖）
+make start      # 生产模式: 前台启动 C 服务器 (默认 8 worker 池, WORKERS= 置空改为每连接 fork)
+make run        # make start 的兼容别名
+make dev        # 开发模式: React HMR 开发服务器 (Vite 中间件模式, 端口 DEV_PORT=3000)
+make restart    # 先 stop 再启动
+make stop       # 优雅停止 (SIGTERM)
+make test       # 冒烟测试 (静态/CGI/404)
+make install    # 安装到 /usr/local (可用 DESTDIR 覆盖)
+make uninstall  # 卸载
+```
+
+## Docker 部署
+
+```bash
+docker compose up --build -d
+#   http://localhost:18080  -> agent-httpd 直连 (静态/CGI/健康检查)
+#   http://localhost:18081  -> nginx 入口 (静态/CGI 反代 + React FastCGI 直连)
+docker compose down          # 停止并移除容器
+docker compose logs -f httpd # 跟看日志
+# 运维指标: curl http://localhost:18080/metrics (Prometheus 文本格式,
+#   快/慢分流、状态码分类、worker 水位、agent 槽、上游重试; 位于
+#   限流/认证门禁之内, 若开了 -a 需带凭据抓取)
+```
+
+架构（三服务）:
+
+| 服务 | 镜像 | 角色 |
+|---|---|---|
+| `httpd` | agent-httpd | agent-httpd 本体: worker 池 + `-F` FastCGI 监听 + `-R` React 中继 |
+| `react` | agent-httpd | 驻留 React SSR FastCGI 后端 (UNIX socket, 不暴露端口) |
+| `nginx` | nginx:1.27-alpine | 前置反代: `/` proxy_pass 到 httpd; `/react/` fastcgi_pass 直连 react |
+
+> 提示: 重建 httpd 容器后 nginx 可能仍缓存旧的 upstream IP (502), `docker compose restart nginx` 即可; 也可以先 `docker compose down` 再 `up`。
+
+同一个 SSR 页面有两条链路可对比:
+
+- `:18080/react/*` — agent-httpd 作 FCGI **客户端** (`-R` 中继到常驻后端)
+- `:18081/react/*` — nginx 作 FCGI **客户端** (`fastcgi_pass` 直连; socket 需 `REACT_FCGI_SOCK_MODE=0777` 放宽权限, 见下)
+
+说明:
+
+- 镜像四阶段构建 (C 编译 → 原生 CGI 编译 → SSR 打包 → node:20-slim 运行时, 约 620MB); 构建参数与本地 `make` 完全一致 (`-Wall -Wextra -Werror -O2`)
+- 容器内 CGI 动物园完整可用: bash/python/ruby/php 解释器内置; go/rust/java 由 `cgi-build` 阶段用 Linux 工具链**在容器内重新编译** (宿主机的 Mach-O 产物被 `.dockerignore` 排除, 不进镜像)
+- 环境变量: `WORKERS` (worker 数, 0 = 每连接 fork)、`RATE_LIMIT` (每 IP 限流 req/s)、`LOG_FILE` (默认 `/var/log/agent-httpd/access.log`); C 聊天端点另认 `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` (不设则用内置演示引擎, 无需密钥)。Agent 能力另有 `AGENT_MAX_ROUNDS` / `AGENT_MAX_CONCURRENT` (ReAct 轮数/并发槽)、`AGENT_UPSTREAM_ATTEMPTS` / `AGENT_BACKOFF_MS_1` / `AGENT_BACKOFF_MS_2` (上游重试次数与退避间隔, 编译期常量见 `src/agent.h`)、`PSE_ENABLED` / `PSE_SOULS_DIR` (PSE 编排器/角色灵魂目录)、`MCP_SERVERS` (MCP stdio 服务器配置)、`HARNESS_SKILLS_DIR` / `SKILLS_EXTRA_DIRS` (技能目录); llm-router 目录同步认 `ROUTER_API_URL` (缺省复用 `LLM_API_URL`) / `ROUTER_SYNC_BUDGET_SECONDS` (整轮同步的墙钟预算, 默认 10s, 0 = 不限; 上游半死时按剩余预算动态收紧每个 curl 的 `--max-time`, 超墙即跳过剩余拉取——同步陈旧可接受, 启动卡死不可接受); react 后端认 `REACT_HTTP_PORT` / `REACT_RENDER_TTL_MS` / `REACT_FCGI_SOCK_MODE` (socket 权限, 默认 0700); 容器日志自轮转认 `LOG_ROTATE_SECONDS` (默认 86400, 0 = 关闭) / `LOG_ROTATE_KEEP` (默认 7 份)
+- **LLM 配置走项目根 `.env`**: `cp .env.example .env` 后填 `LLM_API_KEY` 即接真实模型 (OpenAI 兼容端点均可: OpenAI / DeepSeek / 本地 Ollama); compose 的 httpd 与 react 服务都经 `env_file` 注入 (文件缺失也能启动), `make dev` 用 `--env-file-if-exists=.env` 自动加载; C 服务器在首个聊天请求时也从工作目录读 `.env` 的 `LLM_*` (环境变量已存在的优先 —— 可用空 `LLM_API_KEY` 强制回落演示引擎)。改完 `docker compose up -d` 重建容器生效。`.env` 已被 `.gitignore`/`.dockerignore` 排除, 密钥不进仓库不进镜像
+- `docker stop` 的 SIGTERM 直达 agent-httpd 的优雅排水逻辑 (停 accept → worker 排水最多 5 秒 → SIGKILL 兜底), 重启不丢在途请求
+- **FCGI socket 权限默认收紧**: react 后端的 UNIX socket 默认 `0700` (owner-only)——socket 直连可绕过 httpd 的认证/限流, 不能让同机任意进程可连; nginx `fastcgi_pass` 场景下 worker 用户不同时, 给 react 服务设 `REACT_FCGI_SOCK_MODE=0777` 放宽
+
+## 测试
+
+```bash
+make test   # 冒烟测试: 静态/HEAD/POST/穿越防护/重定向/目录列表/错误页/query string
+            #   + 大响应流式/CGI 超时 504/半开请求断开/XSS 转义
+            #   + CGI Location/Status 头/Accept-Encoding q 值/Keep-Alive 连接复用
+            #   + 全部语言 CGI + FastCGI + HMR 开发服务器
+            #   + C 聊天端点 SSE (演示引擎/错误路径/-R 中继旁路)
+            #   (HMR 用例在 vite 未安装时自动 SKIP; 聊天用例以空 LLM_API_KEY
+            #    压住项目根 .env, 确定性离线运行)
+make bench  # 吞吐对比: keep-alive vs 每请求一连接 (默认 5000 请求/16 并发,
+            #   可用 BENCH_REQ/BENCH_CONC/PORT 覆盖; 服务器开了 -l 时
+            #   429 会计入 429s 列而不是报错, 延迟分位数只统计 200)
+```
+
+也可打开浏览器访问:
+
+- `http://localhost:18080/`                    - 首页
+- `http://localhost:18080/cgi-bin/hello.cgi`   - bash 简单 CGI
+- `http://localhost:18080/cgi-bin/form.cgi`    - POST 表单 (或 `?name=test` GET)
+- `http://localhost:18080/cgi-bin/python.cgi?name=Alice&message=Hi` - Python 示例
+- `http://localhost:18080/cgi-bin/react-ssr.cgi?name=Alice&message=Hi` - React SSR 示例
+- `http://localhost:18080/cgi-bin/go.cgi?name=Alice&message=Hi` - Go 原生二进制
+- `http://localhost:18080/cgi-bin/rust.cgi?name=Alice&message=Hi` - Rust 原生二进制
+- `http://localhost:18080/cgi-bin/java.cgi?name=Alice&message=Hi` - Java (JVM 包装器)
+- `http://localhost:18080/cgi-bin/php.cgi?name=Alice&message=Hi` - PHP (php-cgi)
+- `http://localhost:18080/cgi-bin/ruby.cgi?name=Alice&message=Hi` - Ruby (cgi stdlib)
+- `http://localhost:18080/test/`               - 目录列表
+- `http://localhost:18080/test`                - 301 → `/test/`
+- `http://localhost:18080/nothing`             - 自定义 404 错误页
+
+### 多语言 CGI
+
+所有语言示例都走同一条 CGI 链路: 服务器 `fork()` 设置环境变量 + 管道连通
+stdin/stdout 后 `execl()` 目标文件。各语言差别只在"如何被 exec":
+
+| 语言 | cgi-bin 产物 | 运行方式 | 备注 |
+|------|-------------|---------|------|
+| Go | `go.cgi` | 原生二进制 | `go build` 编译, 冷启动微秒级 |
+| Rust | `rust.cgi` | 原生二进制 | `rustc -O` 编译 |
+| Java | `java.cgi` (sh) | `java -cp ... Main.class` | 每请求启用新 JVM(慢); 生产建议 GraalVM 原生镜像 |
+| PHP | `php.cgi` (sh) | `php-cgi` | homebrew php-cgi 需 `REDIRECT_STATUS=200` |
+| Ruby | `ruby.cgi` | 脚本 | stdlib `cgi` 自动解析 GET/POST |
+| Python | `python.cgi` | 脚本 | 手写解析(3.13+ 移除 `cgi` 模块) |
+| React SSR | `react-ssr.cgi` + `www/js/react-ssr.js` | node 服务端渲染 + 浏览器 hydration | server/client 双 bundle, esbuild 打包 |
+
+编译/重新生成所有语言 CGI(缺工具自动跳过):
+
+```bash
+make build-cgis
+```
+
+### Python CGI
+
+`cgi-bin/python.cgi` 是 Python 标准库实现的 CGI 示例, 无第三方依赖, 运行时只需
+`python3` 在 PATH。由于 Python 3.13+ 已移除 `cgi` 模块, 脚本手写解析:
+`urllib.parse` 处理 GET query 与 urlencoded body; `email.parser` 处理 multipart
+表单。支持 GET (query string) / POST (urlencoded 与 multipart), HTML 输出经
+`html.escape` 防 XSS。
+
+### React SSR (SSR + hydration)
+
+现代 React 的**服务端渲染 + 浏览器注水 (hydration)** 结构:
+
+- **SSR 入口** `cgi-bin/react-ssr/server/cgi.tsx` → 打包成 `react-ssr.cgi`, 由 C 服务器
+  通过 CGI 执行: 用 `react-dom/server` 的 `renderToString` 渲染共享组件 `App.tsx`,
+  输出 `<div id="root">` 里的服务端 HTML, 同时内联一份 `window.__SSR_DATA__`
+  (参数 + 服务器时间), 并引入 client bundle。
+- **Client 入口** `cgi-bin/react-ssr/client.tsx` → 打包成 `www/js/react-ssr.js`,
+  由浏览器下载, 用 `react-dom/client` 的 `hydrateRoot` 接管服务端 HTML, 之后组件
+  就是正常交互式 React 应用(`useEffect` 实时时钟、表单输入实时回显等)。
+- **一致性问题**: 客户端首次渲染的数据与 SSR 完全同源(JSON 回放), 所以 `hydrateRoot`
+  不会报 mismatch; 时间等易变值由服务器打包成 `serverTime`, 注水后再在浏览器刷新。
+- 组件用到的 hooks: `useState` / `useMemo` / `useId` / `useEffect`。
+- **React Router v8**: `App.tsx` 是共享的路由树, 只有路由器包裹层不同 ——
+  服务端 `<StaticRouter location={pathname}>`(server/render.tsx 从 `REQUEST_URI` 拆出
+  path, 因此 `/react/about` 深链可直接开箱渲染), 客户端 `<BrowserRouter>` +
+  `hydrateRoot`(`<Link>` 无刷新切换)。路由表:
+  `/react`(Home) / `/react/about` / `/react/counter`(useState 计数器演示) /
+  `/react/*`(NotFound); 其余路径(如 `/cgi-bin/react-ssr.cgi` 直接访问)回落到 Home。
+- **SSR/CSR 双模式**: 请求带 `?mode=csr` 时服务器跳过 `renderToString`, 只回一个
+  空壳 `<div id="root">` + 内联 CSS + `__SSR_DATA__`; 客户端 bundle 读到
+  `data.mode` 后改用 `createRoot` 全新挂载(纯 CSR, 服务器零渲染成本)。
+  默认(或无 `mode`、或非法值)是 SSR。两种 CGI/常驻入口、GET/POST 语义一致,
+  页面 footer 有 "switch to CSR / SSR" 开关(整页 `<a>` 跳转, 让后端重新决策)。
+
+两个 bundle 都是 esbuild 产物, 把 react/react-dom 打进去, 各自自包含
+(node 进程 / 浏览器)。
+
+- 共享渲染核心 `server/render.tsx`(parseQuery / safeJson / renderPage)同时被两个入口引用,
+  保证 CGI 与常驻后端产出的标记字节级一致; `renderPage` 内联 `__SSR_DATA__`
+  并固定引用 `/js/react-ssr.js`。
+- **样式用 Tailwind CSS v4**: 类名写在 `App.tsx` 里, `build-ssr.sh` 先用
+  `@tailwindcss/cli` 把 `styles/main.css`(`@source` 只扫 react-ssr 目录)编译成
+  `tailwind.css`, 再经 esbuild 的 `--loader:.css=text` 内联进 bundle —— SSR 输出
+  的 `<head>` 仍是完整自包含(无需额外的样式表请求)。设计 token(如 `bg-surface`)
+  定义在 `styles/main.css` 的 `@theme` 里。
+
+构建流程(仅改源码后需要):
+
+```bash
+cd cgi-bin/react-ssr && npm install   # 一次性安装构建依赖 (react, esbuild, tailwindcss, typescript, @types/*)
+make build-ssr                        # 先 tsc --noEmit 类型检查, 再 Tailwind 编译, 再产物:
+                                      # server/cgi.tsx  → cgi-bin/react-ssr.cgi
+                                      # server/main.tsx → bin/react-ssr-server (常驻)
+                                      # client.tsx      → www/js/react-ssr.js
+make typecheck                        # 单独跑类型检查 (esbuild 只转译不查类型)
+```
+
+TS 约束与典型坑:
+
+- **esbuild 不查类型**, 所以 `build-ssr.sh` 先跑 `tsc --noEmit`(失败即中止打包)。
+- `parseQuery(query: string)` 这类签名直接拦截类型错误: 此前把 `Buffer`
+  传给 `parseQuery` 导致 POST 500 的 bug, 现在编译期就会报错
+  (常驻后端已改为 `body.toString("utf8")`)。
+- **client bundle 绝不能引用 `process`**: esbuild 只替换 `process.env.NODE_ENV`,
+  其它 `process.*` 会原样留在浏览器 bundle 里, hydration 时抛
+  `ReferenceError`。因此 `nodeVersion` 由服务端算好放进 `__SSR_DATA__`
+  (同 `serverTime` 策略), client 只从 blob 读取, 两端标记始终一致。
+
+源码在 `cgi-bin/react-ssr/`(shared 组件 App.tsx + 客户端入口 client.tsx 放根目录,
+服务端代码集中在新 `server/` 子目录: 渲染核心 render.tsx + 两个服务端入口
+cgi.tsx(CGI) / main.tsx(常驻 FastCGI) + 聊天后端 chat.ts)。支持 GET (query string)
+与 POST (body), 通过标准 CGI 环境变量 `REQUEST_METHOD` / `QUERY_STRING` /
+`CONTENT_LENGTH` 接收参数。完整渲染链路经 `renderToString` 校验, `make test` 覆盖
+GET/POST 与 FastCGI 三个入口。
+
+## 开发模式与 HMR
+
+生产链路每次改源码都要 `make build-ssr`(tsc + tailwind + esbuild 三步)。开发时用
+Vite 按需转换代替——同一个 `render.tsx` 渲染核心, 但改完即生效:
+
+```bash
+cd cgi-bin/react-ssr && npm install   # 一次性 (vite/@vitejs/plugin-react 已在 devDependencies)
+make dev                              # http://localhost:3100/react/?name=Alice
+DEV_PORT=3100 make dev                # 换端口
+```
+
+工作方式 (`scripts/dev-server.js`, 统一 `-v` 接线):
+
+- **唯一公网入口是 C 进程**: dev-server 在 `DEV_PORT` 拉起 `./bin/agent-httpd
+  -v DEV_PORT+2`, 它就是开发服务器的全部 HTTP 面——静态、CGI、`/health`、
+  `/react/api/chat`、错误页全部由 C 直服 (与生产完全同一条代码路径)。
+- **Vite 退化为内部服务**: dev-server 只把 Vite 绑定到 `127.0.0.1:DEV_PORT+2`
+  (不对外), 负责 `transformRequest`、`/react/*` 的 dev SSR、Tailwind 编译与
+  HMR WebSocket。C 把 `/@*`、`/src/*`、`/react/*`(除 chat) 反向代理给它;
+  HMR WebSocket 升级由 C 做 TCP 隧道透传。
+- **客户端热替换**: SSR HTML 里的 `<script src="/js/react-ssr.js">`(esbuild 产物)
+  被改写为 Vite 按需转换的 `/react/react-ssr.tsx`, 并在 `<head>` 注入
+  react-refresh preamble —— 改 `client.tsx`/页面组件时 Fast Refresh 无刷新换组件。
+- **服务端代码免重启**: `render.tsx` / `App.tsx` / `pages/*` 经 `ssrLoadModule`
+  加载, 文件变化后失效模块图并广播 full-reload, 下一个请求即用新代码渲染。
+- **Tailwind 实时编译**: 保存 `styles/main.css` 或改动含类名的 tsx 时自动重新
+  编译 `tailwind.css`(防抖), 再触发整页刷新。
+
+注意: dev 与生产的接线完全一致——浏览器只对 C 说话, C 把渲染交给内部上游
+(dev 是 Vite, 生产是 `react-ssr-server` 的 HTTP 端口), 见"React 渲染接线"。
+HMR 与代理行为均由 `make test` 的守卫用例覆盖 (vite 未安装时自动 SKIP)。
+
+## 命令行参数
+
+| 参数 | 说明 |
+|------|------|
+| `-p <port>` | 指定 HTTP 监听端口 (默认 18080) |
+| `-F <sock>` | 额外以 FastCGI 后端身份监听 UNIX 套接字 (类似 PHP-FPM) |
+| `-R <sock>` | (可选, 旧接线) `/react/*` 请求经 FCGI 转发给常驻 React 后端; 推荐改用 `-v` 统一接线 |
+| `-v <port>` | 统一接线: `/@*`、`/src/*`、`/react/*`(除 chat) 经 HTTP 代理转发到 `127.0.0.1:<port>` 的 Vite / react-ssr-server; HMR WebSocket 升级透明隧道 (见"React 渲染接线") |
+| `-T <seconds>` | 同时设置请求超时与 CGI 超时 (默认 30 秒) |
+| `-a <htpasswd>` | 开启 Basic Auth, 校验指定的 htpasswd 文件 (见下节) |
+| `-r <realm>` | Basic Auth 的 realm (默认 `agent-httpd`, 需配合 `-a`) |
+| `-w <n>` | 慢路径 worker 池大小 (默认 8; `0` = 每连接 fork)。快路径由 master 事件循环直服, 池只承接 CGI / chat / 代理 / body 请求 (见"性能设计") |
+| `-l <rps>` | 每 IP 限流: 每秒最大请求数 (0 = 关闭, 默认; 超限回 429 + Retry-After) |
+| `-L <path>` | 访问日志路径 (默认 `./logs/access.log`; 打不开时告警并继续运行) |
+| `-h` | 显示帮助 |
+
+### 超时与防护栏
+
+所有防护栏都可用环境变量覆盖 (冒烟测试就是这么把超时调快到 3 秒的), `-T` 则一次性设置两个超时:
+
+| 环境变量 | 默认 | 作用 |
+|----------|------|------|
+| `REQUEST_TIMEOUT_SECONDS` | 30 | 请求头 + POST 体读取的总时限, 超时断开连接 (客户端半开请求不再永久占用 fork 出的 handler) |
+| `CGI_TIMEOUT_SECONDS` | 30 | CGI 子进程无输出即 kill (SIGKILL) 并回 `504 Gateway Timeout`; 向 CGI 写 POST 体同样受轮询保护, 脚本不读 stdin 也不会卡死服务器 |
+| `CGI_BODY_TMP_THRESHOLD` | 524288 (512KB) | CGI 响应体超过该值落盘 `/tmp` 临时文件流式发送, 发送完自动删除; 未超过则在内存中按需增长 |
+
+另外, CGI 运行期间会轮询客户端 socket, 客户端提前断开时立即终止 CGI 并放弃发送, "慢 CGI + 提前断开"不再每次泄漏一个进程。
+
+### 每 IP 限流 (-l)
+
+```sh
+./bin/agent-httpd -p 18080 -l 20   # 每个 IP 每秒最多 20 个请求
+```
+
+- **固定窗口计数**: 计数表放在 `MAP_SHARED` 匿名共享内存里 (每 IP 哈希进 1024 个桶, 桶内互斥锁显式 `PTHREAD_PROCESS_SHARED`), 所以**每连接 fork 模式和 worker 池模式强制的是同一个配额**——worker 池下多个进程不会各算各的。
+- **检查顺序在 Basic Auth 之前**: 洪水打不到分发层, 也烧不到 crypt() CPU——用限流挡住 Basic Auth 爆破正合适。
+- **超限响应**: `429 Too Many Requests` + `Retry-After: 1`, 并强制 `Connection: close` (排队中的同源请求无法借道溜过计数器)。
+- **哈希冲突取“抢占桶”策略**: 表保持极小、无链表; 冲突时短暂错记到别的 IP, 对教学服务器可接受。
+- 环境变量 `RATE_LIMIT_RPS` 可覆盖 `-l`。
+
+## Basic Auth 认证
+
+`-a` 开启 HTTP Basic 认证 (RFC 7617), 未带凭据的请求统一回 `401` +
+`WWW-Authenticate: Basic realm="...", charset="UTF-8"` 质询, 全站生效
+(静态、CGI、`/react/` 转发均在门禁之内):
+
+```bash
+# htpasswd 文件: 每行 "user:secret"
+printf 'alice:password123\n' > /tmp/htpasswd
+./bin/agent-httpd -p 18080 -a /tmp/htpasswd -r "Private"
+
+curl -u alice:password123 http://localhost:18080/
+```
+
+- **secret 支持两种形式**: 明文, 或 `crypt(3)` 哈希 (以 `$` 开头的
+  `$id$salt$hash` 系列或 13 字符 DES 格式, 自动识别)。用系统 `htpasswd`/`openssl passwd` 生成的哈希可直接使用。
+- **平台差异**: Linux 链接 `-lcrypt` (glibc, 支持 `$5$`/`$6$` 等现代格式);
+  macOS 的 `crypt(3)` 在 libc 中, 仅支持 DES —— 现代格式哈希会校验失败
+  (fail-closed 拒绝, 不会误放行)。教学/本机场景建议直接用明文或 DES。
+- **fail-closed 设计**: htpasswd 中格式非法的行被跳过并告警, 全部无效则启动
+  失败 —— 配置错误永远倒向"拒绝"而非"放行"; 凭据缺失/格式错/未知用户一律 401。
+- **CGI 集成**: 认证通过后, CGI 程序经标准变量 `REMOTE_USER` 拿到登录用户名。
+- 401 响应强制 `Connection: close`, 避免质询后管道内残留请求的歧义。
+
+## FastCGI 后端模式
+
+除了当普通 HTTP 服务器，agent-httpd 还能作为 **FastCGI 服务端** 运行：监听一个
+UNIX 套接字，接受 nginx 等前端通过 `fastcgi_pass` 转发过来的请求。FCGI 帧
+(`BEGIN_REQUEST` / `PARAMS` / `STDIN`) 会被重建为内部 `HttpRequest`，然后走与
+HTTP 完全相同的分发链（静态文件 / CGI），响应经 `FCGI_STDOUT` 记录 + `FCGI_END_REQUEST`
+返回。
+
+```bash
+# 同时监听 HTTP 18080 与 FCGI unix socket
+./bin/agent-httpd -p 18080 -F /tmp/mini-fcgi.sock
+```
+
+nginx 侧配置示例:
+
+```nginx
+location / {
+    # fastcgi_pass 指向 agent-httpd 的 FCGI socket (CGI 脚本在前端必须先解出)
+    fastcgi_pass unix:/tmp/mini-fcgi.sock;
+    fastcgi_param REQUEST_METHOD  $request_method;
+    fastcgi_param REQUEST_URI     $request_uri;
+    fastcgi_param QUERY_STRING    $query_string;
+    fastcgi_param CONTENT_TYPE    $content_type;
+    fastcgi_param CONTENT_LENGTH  $content_length;
+    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    include fastcgi_params;
+}
+```
+
+`make test` 会用 `scripts/fcgi-test.py` 以裸 FCGI 协议（模拟 nginx）验证：静态页、
+404、GET/POST CGI、React SSR 各场景。
+
+## React 渲染接线 (统一 `-v`)
+
+CGI 每请求 `fork + exec node` 一次，React 冷启动（加载 react、执行打包 JS）约
+几十毫秒且不可复用。本项目用 **常驻渲染进程** 消除冷启动，架构与
+PHP-FPM / puma / unicorn 相同，且 **开发与生产共用同一条 `-v` 接线**：
+
+```
+                 浏览器 (只对 C 说话)
+                  │   GET /react/?name=Alice
+                  ▼
+             agent-httpd :PORT   (唯一公网入口)
+                  │   静态/CGI/health/chat/错误页 = C 直服
+                  │   /@*、/src/*、/react/* = HTTP 反向代理 (-v)
+                  │   HMR WebSocket = TCP 隧道
+                  ▼
+  127.0.0.1:PORT+2 ◄── dev:  Vite (scripts/dev-server.js)
+                  ◄── prod: bin/react-ssr-server (REACT_HTTP_PORT=PORT+2)
+                          渲染 renderStream → HTTP 200, 流式/缓存
+```
+
+- **生产**: `make react-server` 会先起 `bin/react-ssr-server`(把 React 载入内存
+  一次, 并带 ISR 渲染缓存), 再起 `agent-httpd -p PORT -v PORT+2`——C 把
+  `/react/*` 页面代理给它, 与 dev 指向 Vite 的方式完全相同。
+- **FastCGI 是可选旧接线**: `bin/react-ssr-server` 仍支持 `REACT_HTTP_PORT` 未
+  设置时的原生 FCGI 监听 (`-R` 中继), 供 nginx `fastcgi_pass` 或需要 socket
+  直连的场景; 新的统一接线推荐 `-v`。
+- 后端复用 `render.tsx` 共享渲染核心, 因此与 CGI 渲染结果字节级一致(含
+  `window.__SSR_DATA__` 与 `<script src="/js/react-ssr.js">`); 客户端 bundle 与
+  CGI 模式共用同一个 `www/js/react-ssr.js`。
+- `/react/api/chat` 在 C 进程内直接处理(见下节), **不会**被代理给 React 后端。
+
+```bash
+make react-server                      # 一键: react-ssr-server(HTTP) + agent-httpd -v
+# 浏览器访问: http://localhost:18080/react/?name=Alice
+curl 'http://localhost:18080/react/?name=Alice'   # 经 C → -v → react-ssr-server
+# 后端停止时回 502
+pkill -f react-ssr-server && curl -i http://localhost:18080/react/ | head -1
+```
+
+## C 原生 LLM 聊天端点 (`src/llm.c`)
+
+`/react/api/chat` 的数据端点在 C 进程内处理, 不再经过 React FastCGI 后端:
+
+```
+浏览器 POST /react/api/chat {message, history?}
+      │
+      ▼
+handle_client: 限流/认证门禁 → llm_is_chat_route 拦截 (优先于 -R 中继)
+      │
+      ├─ LLM_API_KEY 已配置 ──► fork curl -N --max-time <LLM_TIMEOUT>
+      │        POST <LLM_API_URL>/chat/completions  (stream:true)
+      │        │  上游 SSE 逐行解析 (data: {...} / [DONE] / error 事件)
+      │        ▼
+      │   重发为本项目信封: {"t":"delta"|"note"|"error"|"done", ...}
+      │
+      └─ 无密钥 ──► 内置 C 演示引擎: 罐头回复逐词节流 (28ms/步)
+      │
+      ▼
+SSE 流式写回客户端 (head+body 由 handler 自发, response->handled,
+handle_client 只记日志并断连 —— SSE 以 close 定界, 不进 keep-alive)
+```
+
+要点:
+
+- **零新依赖**: TLS 交给 fork 出的 `curl`(1), 服务器本体仍只链 libc —— 与"不引
+  OpenSSL"的项目约定一致, 模型上也是 CGI fork+pipe 同构 (stdin 传请求体,
+  stdout 读上游流, 轮询总超时, 客户端断开即 kill)
+- **手写容错 JSON**: 请求体 `{message, history?}` 与上游 delta 的解析是
+  ~200 行的容错读取器 (`\uXXXX`/代理对/嵌套跳过), 无库
+- **`.env` 兼容**: 首个聊天请求时从工作目录读 `.env` 的 `LLM_*`
+  (`setenv(..., overwrite=0)`, 环境变量优先), 与 compose `env_file` /
+  `make dev --env-file-if-exists` 三方共用同一份配置
+- **上游 URL 两种写法都收**: 完整端点或 OpenAI-SDK 风格 base URL
+  (`https://host/v1` 自动补 `/chat/completions`)
+- node 侧 `chat.ts` 保留为 HMR 开发模式 (`make dev`) 的实现, 两端 SSE
+  信封字节级同约定, 聊天页面无感知
+- nginx 入口 (:18081) 用 `location = /react/api/chat` 精确反代回 httpd
+  (`proxy_buffering off`), 其余 `/react/*` 仍 fastcgi_pass 到驻留后端
+- 已知边界: HEAD 打到 `/react/api/chat` 不走 C 端点 (落回 `-R` 中继/静态
+  链路, 返回页面); 经 `-F` FCGI 服务端路径 (nginx `fastcgi_pass` 直连
+  agent-httpd) 的 chat 请求同样不经过这里 —— compose 拓扑里 nginx 对该
+  路由是反代回 httpd 的, 两条边界都到不了用户
+
+## C 原生 Agent 栈 (Tool Call / MCP / Skills / Memory / ReAct / PSE)
+
+`src/llm.c` 在 LLM_API_KEY 就绪时把请求交给完整的原生 Agent 栈而不是
+单向中继。请求体从 `{message, history?}` 扩展为
+`{message, history?, sessionId?}`:
+
+```
+浏览器 POST /react/api/chat {message, history?, sessionId?}
+      │
+      ▼ handle_client → llm_handle_chat (llm.c)
+      │
+      ├─ 有 sessionId ──► 载入 .data/sessions/<id>.json
+      │     · 上一轮 user/assistant 转录回放成 history (节点刷新恢复会话)
+      │     · 会话事实 + skills 索引注入 system_extra
+      │     · 本轮 delta 全量捕获 → 转录 + 事实 原子落盘
+      │
+      ├─ PSE_ENABLED=true ──► pse_run (src/pse.c)
+      │     Planner(无工具出计划) → Specialist(ReAct 全工具循环)
+      │     → Evaluator(PASS/PARTIAL/FAIL, 非 PASS 带反馈重试 ≤3 轮)
+      │     · 角色提示词: $PSE_SOULS_DIR/{planner,specialist,evaluator}/SOUL.md
+      │       (缺省 <cwd>/souls, 再回退内置默认)
+      │     · 整场占 1 个并发槽 (agent_slot_take)
+      │
+      └─ 缺省 ──► agent_run → ReAct 主循环 (src/agent.c)
+            循环输出 assistant tool_calls → tools_dispatch → 结果回灌
+            → 直到模型不再要工具 (AGENT_MAX_ROUNDS 上限, 每轮独立
+              fork curl 上游, 并发受 AGENT_MAX_CONCURRENT 管道槽约束)
+            · 工具表 = 内置 7 个 + MCP 工具, 动态合成 OpenAI tools schema
+      │
+      ▼
+SSE 写回 (note/delta/error/done 信封不变)
+```
+
+**内置工具** (`src/tools.c`, `tools_init()` 注册): `get_time` (本地时间),
+`calc` (递归下降算术解析), `read_file` (web 根内解析 + 穿越防护),
+`fetch_url` (http(s) 抓取首 16KB), `skill-run` (读取技能全文),
+`remember` / `recall` (会话记忆事实读写, 无 sessionId 落全局池)。
+
+**Skills** (`src/skills.c`): 按目录扫描 `SKILL.md` (frontmatter `name` /
+`description`), 索引注入每个请求的 system 提示, `skill-run` 按名读全文
+给模型。目录: `HARNESS_SKILLS_DIR` → `./skills` →
+`resolve-skills/skills` → `SKILLS_EXTRA_DIRS` (逗号分隔)。
+
+**Memory** (`src/session.c`): 每会话一个 JSON 文件
+`.data/sessions/<id>.json` (`{messages[], facts{}}`), tmp+rename 原子写;
+转录回放构成上下文, `remember`/`recall` 写/读事实库, 系统提示注入
+"会话记忆" 块, 重启不丢。
+
+**MCP** (`src/mcp.c`, 配置 `MCP_SERVERS` 环境变量或
+`.data/mcp-servers.json`, 数组 `{id, command, args, approval}`): stdio
+新行分隔 JSON-RPC; 启动时父进程 spawn 一次做 `initialize` +
+`tools/list`, 每个工具注册为 `<id>:<toolName>`; 每次 `tools/call` 现拉起
+一次性子进程 (spawn→initialize→initialized→call→SIGKILL), worker 常在
+也不会泄漏 fd/pid; `structuredContent` 借用 `jq(1)` 美化 (二进制仍只链
+libc)。`approval` 目前为审计级 (SSE 路径无交互审批通道, 打 stderr 日志)。
+
+**测试**: smoke-test 内置 fake upstream (`scripts/fake-llm-upstream.py`,
+按消息/system 分支模拟各阶段) + fake stdio MCP 服务器
+(`scripts/fake-mcp-server.py`) 覆盖: 工具调用循环、`skill-run` 全文回传、
+sessionId 事实持久化与 `recall` 回读、`echo:pong` MCP tools/call、
+PSE 单轮 Planner→Specialist→Evaluator(PASS)。
+
+## 隐私与合规加固
+
+安全边界不只在请求处理层, 数据落盘与对外报错同样守:
+
+- **本地文件权限收紧**: `logs/access.log` 与 dev 模式的 `.dev-httpd.log`
+  (含 C stderr: curl 错误、router 同步等调试特征) 均为 `0600`; `.env`
+  (LLM 密钥) 本就 `0600` 且被 `.gitignore`/`.dockerignore` 排除。
+- **FCGI socket 默认 `0700`**: 直连 socket 可绕过 httpd 的认证/限流,
+  不能对同机任意进程开放; 多用户前置代理 (nginx worker 不同账号) 用
+  `REACT_FCGI_SOCK_MODE=0777` 显式放宽。
+- **安全头全覆盖**: C 直服与 `-v` 代理路径 (dev Vite / 生产 react-ssr-server)
+  输出同一套 `X-Content-Type-Options: nosniff` / `X-Frame-Options: DENY` /
+  `Referrer-Policy: no-referrer`, `Server` 指纹统一 `AgentHTTPD`,
+  `X-Powered-By` 关闭。
+- **对外错误脱敏**: chat SSE 的 error 事件只给通用文案
+  (`upstream connection failed; retry in a moment` 等), curl 退出码、
+  `LLM_API_URL`/`LLM_API_KEY` 排查提示等基础设施细节仅写服务器本地日志;
+  dev SSR 500 同样只回 "details in server log"。
+- **会话数据边界**: `.data/sessions/*.json` 记录在服务器本地 (内存/事实库),
+  不随响应外泄; `read_file` 工具限制在 web 根内 + 穿越防护。
+
+## CGI 环境变量
+
+传给 CGI 程序的环境变量包括:
+
+| 变量 | 说明 |
+|------|------|
+| `REQUEST_METHOD` | 请求方法 (GET/POST) |
+| `QUERY_STRING` | URL 查询字符串 |
+| `CONTENT_TYPE` | 请求 Content-Type |
+| `CONTENT_LENGTH` | 请求体长度 |
+| `SERVER_NAME` | 服务器名 |
+| `SERVER_PORT` | 服务器端口 |
+| `SCRIPT_NAME` | 脚本路径 |
+| `HTTP_HOST` | 请求的 Host 头 |
+| `HTTP_USER_AGENT` | 用户代理 |
+
+## 性能设计 (事件循环 + 快/慢路径)
+
+默认运行模式是 **master 事件循环 + 慢路径 worker 池** (`src/event.c`), 替代
+早期的 `fork-per-connection`:
+
+```
+                     agent-httpd master (单进程, 事件循环 kqueue/epoll)
+                          │  accept 所有连接, recv(MSG_PEEK) 预览请求头
+        ┌─────────────────┴──────────────────┐
+   快路径 (不阻塞, 直服)                慢路径 (交 prefork 池)
+   GET/HEAD 静态/health/304/301/404    CGI / chat SSE / 代理 / 带 body
+   keep-alive 就地多路复用              经 SCM_RIGHTS 交给 8 个 worker
+```
+
+- **快路径零 fork、零等待**: 静态文件、健康检查、重定向、错误页全部在 master
+  的事件循环里完成, keep-alive 连接不占任何 worker; 大静态文件在 worker 里
+  `sendfile(2)` 零拷贝。
+- **慢路径隔离**: 需要阻塞的操作 (CGI 子进程、SSE 流、Vite/react 上游代理) 交给
+  prefork 池, 慢请求永远不会卡住快路径。
+- **判定零成本**: 用 `recv(MSG_PEEK)` 只预览不消费——慢请求交给 worker 时,
+  请求头仍在内核缓冲, worker 直接重读, 无需重放字节。
+
+### 基准 (`make bench`, 本机 macOS, 4000 请求 / 16 并发)
+
+| 模式 | keep-alive | per-conn (每连接) |
+|---|---|---|
+| 旧 fork-per-connection (`-w 0`) | 10787 req/s | 846 req/s |
+| **事件循环 (默认)** | **11528 req/s** | **5142 req/s** |
+
+per-conn 场景 **约 6 倍**——每连接 fork 开销消失。keep-alive 场景两者都靠连接
+复用, 事件循环微幅领先且进程数从 "每连接一个" 降到 1 + 8。
+
+### 与 Next.js 应用的定位差异
+
+这套架构和 Next.js 不是同一物种, 取舍如下:
+
+| 维度 | 本项目 | Next.js |
+|---|---|---|
+| 公网 HTTP 层 | C 手写 (事件循环 + sendfile + 快慢分流) | Node 内嵌 (libuv 也是 C, 但过 Node 抽象 + GC) |
+| 每连接开销 | 1 master + 8 worker 复用, 无 GC 停顿 | 单进程事件循环, 靠 keep-alive 复用 |
+| 慢请求隔离 | CGI/SSR/chat 独立 worker, 不卡快路径 | 长 agent 循环会占事件循环 (需 worker/队列) |
+| SSR/ISR | 自建 react-ssr-server (共享 render.tsx + ISR 缓存) | Next 内置 RSC/SSG/ISR/流式 |
+| agent | C 内建 (llm.c + MCP + skills), 改逻辑要重编译 | TS/Node, 热更 + 生态 |
+| 开发体验 | `make dev` 双进程, C 改动要 make+重启 | `next dev` 一体化 |
+| 安全面 | 手写 HTTP, 边界自己守 (已修 SSRF/越界/泄露, 安全头/脱敏/socket 权限加固) | 框架管路由/编码/头部 |
+
+**一句话**: 比"渲染 + 产品迭代速度", Next.js 赢; 比"最少资源扛住最高并发的
+HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷贝、进程隔离。
+
+## 后续扩展方向
+
+- [x] POST 请求体转发到 CGI (stdin pipe + CONTENT_LENGTH)
+- [x] REST 方法: PUT/PATCH/DELETE 透传 CGI (REQUEST_METHOD), OPTIONS 直答 Allow (静态只读 405 防护, 快路径直答 CORS 预检)
+- [x] 目录穿越防护、目录列表、trailing-slash 重定向、自定义错误页
+- [x] Combined 格式访问日志 + SIGHUP 轮换
+- [x] 静态资源 gzip 预压缩协商 (Accept-Encoding + Content-Encoding)
+- [x] ETag/304 条件请求 (If-None-Match, 强校验器 size+mtime, 覆盖 gzip 表亲)
+- [x] Last-Modified + If-Modified-Since 回退验证
+- [x] sendfile(2) 零拷贝 + Range/206 断点续传 (单区间, 416, Accept-Ranges)
+- [x] TCP_NODELAY + listen backlog 128
+- [x] 优雅停机排水 + /health 端点
+- [x] FastCGI 后端 (UNIX socket, 复用 HTTP 分发链)
+- [x] HTTP/1.1 Keep-Alive 连接复用 (RFC 7230: 1.1 默认持久, 1.0 需显式 keep-alive, `Connection: close` 总是生效; 单连接上限 100 请求, 5xx 响应后关闭, 流式转发响应因无 Content-Length 仍按 close 语义)
+- [~] 线程池代替 fork 进程 —— **评估后不做**: 与 prefork worker 池 (`-w N`) 收益重叠 (隔离性反而更差, CGI fork+exec 模型下线程池优势有限); 项目已有两种并发模型可选, 再加第三种只增加教学噪音
+- [x] Basic Auth 认证 (`-a htpasswd` + `-r realm`, 明文/crypt 哈希双模式, fail-closed, CGI 经 `REMOTE_USER` 获取用户)
+- [x] 每 IP 限流 (`-l <rps>`, 固定窗口 + 共享内存计数表, fork/worker 池共用配额, 429 + Retry-After)
+- [x] chat 上游瞬时故障重试 (3 次尝试 + 1s/2.5s 退避, 瞬时/永久错误分类判定, 退避期监听客户端断开)
+- [x] 隐私与合规加固 (安全头代理同构、FCGI socket 默认 0700、日志文件 0600、对外错误脱敏)
+- [~] 多虚拟主机 —— **暂缓**: 教学场景单 docroot 已够; 真需要时前置 nginx 按 Host 分流到多个 agent-httpd 实例即可, 不必在 C 层重新实现
+- [x] URL 路由 (react-router 客户端路由 + SSR 深链; C 层 `/react/` 转发)
+- [~] SSL/HTTPS 支持 —— **评估后不做**: 生产部署惯例是 nginx/负载均衡终结 TLS (本仓库的 docker-compose 就是这个形态); 在教学服务器里集成 OpenSSL 会显著膨胀代码而偏离主线

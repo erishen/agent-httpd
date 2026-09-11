@@ -1,0 +1,43 @@
+/* Tailwind CSS v4 entry. Compiled to tailwind.css by build-ssr.sh, then
+ * inlined into the SSR <style> block via esbuild's css=text loader, so the
+ * rendered HTML stays self-contained (no extra stylesheet request).
+ *
+ * @source scopes class detection to these TSX files; without it the CLI
+ * would scan the whole workspace (node_modules, etc.). */
+@source "./*.tsx";
+@source "./pages/*.tsx";
+@source "../server/**/*.{ts,tsx}";
+@import "tailwindcss";
+
+/* Design tokens: keep the app palette here instead of hardcoding hex values
+ * across JSX. Tailwind v4 turns every token into a real CSS variable, so
+ * className="bg-surface" just works. */
+@theme {
+  --color-ink: #0f1420;
+  --color-surface: #1c2536;
+  --color-edge: #334155;
+  --color-accent: #38bdf8;
+  --color-accent-hi: #7dd3fc;
+  --color-accent-ink: #082f49;
+}
+
+/* Slim, theme-matched scrollbars everywhere (Firefox uses the shorthand,
+ * WebKit/Blink the pseudo-elements below). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-edge) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-edge);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
