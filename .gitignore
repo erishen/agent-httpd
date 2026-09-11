@@ -1,0 +1,21 @@
+# build artifacts
+build/
+bin/
+logs/
+*.o
+*.d
+
+# secrets (template: .env.example)
+.env
+
+# runtime state: sessions / MCP registrations / memory (contains conversation data + absolute paths)
+.data/
+
+# runtime/dev logs
+.dev-httpd.log
+.dev-server.out
+*.log
+
+# macOS noise
+.DS_Store
+._*

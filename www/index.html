@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AgentHTTPD Server</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .links {
+            margin: 20px 0;
+        }
+        a {
+            display: inline-block;
+            margin: 10px 10px 10px 0;
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        a:hover {
+            background-color: #45a049;
+        }
+        .info {
+            background-color: #e8f5e9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #4CAF50;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to AgentHTTPD</h1>
+        <p>This is a simple HTTP server implemented in C. Below are some features:</p>
+        
+        <div class="info">
+            <h3>Features</h3>
+            <ul>
+                <li>Static file serving</li>
+                <li>CGI script execution</li>
+                <li>Multi-process concurrency (fork model)</li>
+                <li>Request logging</li>
+                <li>MIME type detection</li>
+            </ul>
+        </div>
+        
+        <h3>Try these pages:</h3>
+        <div class="links">
+            <a href="/cgi-bin/hello.cgi">Hello CGI</a>
+            <a href="/cgi-bin/form.cgi">Form Handler</a>
+            <a href="/cgi-bin/python.cgi?name=Alice&message=Hi">Python CGI</a>
+            <a href="/cgi-bin/react-ssr.cgi?name=Alice&message=Hi">React SSR</a>
+            <a href="/cgi-bin/go.cgi?name=Alice&message=Hi">Go CGI</a>
+            <a href="/cgi-bin/rust.cgi?name=Alice&message=Hi">Rust CGI</a>
+            <a href="/cgi-bin/java.cgi?name=Alice&message=Hi">Java CGI</a>
+            <a href="/cgi-bin/php.cgi?name=Alice&message=Hi">PHP CGI</a>
+            <a href="/cgi-bin/ruby.cgi?name=Alice&message=Hi">Ruby CGI</a>
+        </div>
+    </div>
+</body>
+</html>
