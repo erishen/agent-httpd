@@ -59,20 +59,25 @@ static pid_t start_server(int port) {
 }
 
 static int connect_server(int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
     addr.sin_port = htons((uint16_t)port);
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
     /* The server spawns resident MCP subprocesses at startup, so binding
-     * can take a couple of seconds; wait up to CONNECT_TIMEOUT. */
+     * can take a couple of seconds; wait up to CONNECT_TIMEOUT.
+     *
+     * A fresh socket per attempt is required: retrying connect() on one
+     * already-failed fd leaves it unusable on macOS, so the loop never
+     * succeeds however long it waits (this made the whole target fail with
+     * "could not connect to server"). */
     for (int i = 0; i < CONNECT_TIMEOUT * 20; i++) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return -1;
         if (connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0) return fd;
+        close(fd);
         usleep(50000);
     }
-    close(fd);
     return -1;
 }
 
