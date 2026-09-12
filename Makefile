@@ -189,6 +189,16 @@ test-upstream:
 	@echo "Checking the upstream-failure path (must surface an error, not a silent empty answer)..."
 	sh scripts/upstream-failure-check.sh
 
+# 大响应必须完整送达 —— 而且要在「直连」下测: 事件循环用 O_NONBLOCK accept
+# 后把同一个 socket 交给 worker 池, worker 里发满发送缓冲区时曾把 EAGAIN 当
+# 致命错误, 于是客户端拿到被截断的响应 (nginx: upstream prematurely closed
+# connection; 浏览器: /js/react-ssr.js 解析失败 -> 页面静默不水合, 两个入口
+# 看起来不一样)。其余探针全部经发布端口 (docker-proxy), 用户态转发会持续
+# 排空缓冲区, 所以永远看不到。本目标用私有网络里的一次性容器做真直连。
+test-stream:
+	@echo "Checking that a large body survives a direct container-to-container connection..."
+	sh scripts/stream-truncation-check.sh
+
 # Probe the running container over the wire: the shipped binary, docroot and
 # CGI zoo, not the repo tree. scripts/smoke-test.sh spawns its own server, so
 # nothing else in the suite reaches the image. Requires `docker compose up -d`
@@ -217,4 +227,4 @@ bench: all
 clean:
 	rm -rf $(BUILD_DIR) bin
 
-.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream
+.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream
