@@ -76,26 +76,40 @@ function classifyNote(note: string): Activity {
 // Example tasks exercising the full agent stack. Each is phrased as a real
 // natural-language request (not a tool-macro) and maps to a built-in tool
 // (calc / get_time / read_file / fetch_url / skill-run / remember / recall),
-// an MCP tool (echo__pong from .data/mcp-servers.json, plus fs__* /
-// memory__* / think__* synced from the llm-router catalog), a skill (local
-// demo-lab, or skills/router/* materialized from the router), or the PSE
-// orchestrator. A real upstream parses the wording and picks the tool; the
-// local demo engine (server/chat.ts) also keys off these phrases to light up
-// the matching activity chip.
+// an MCP tool (echo__pong / fs__* / memory__* / think__* synced from the
+// llm-router catalog), a skill (local demo-lab, router materialized skills,
+// or project skills like code-review / weekly-investment), session memory,
+// or the PSE orchestrator. A real upstream parses the wording and picks the
+// tool; the local demo engine (server/chat.ts) also keys off these phrases
+// to light up the matching activity chip. Keep prompts carrying the keyword
+// their kind's branch in demoActNote recognizes.
 const EXAMPLES: { kind: ActKind; label: string; prompt: string }[] = [
+  // — tool — built-in calculation & IO utilities
   { kind: "tool", label: "算组合数 C(20,8)", prompt: "帮我用计算工具算一下从 20 个人里选 8 个人有多少种组合，也就是 C(20,8) 等于多少？" },
   { kind: "tool", label: "现在几点", prompt: "现在服务器时间是几点？请调用 get_time 工具告诉我当前时间。" },
   { kind: "tool", label: "读首页", prompt: "用 read_file 工具读取网站首页 index.html 的内容，并简单说说它大概由哪些区块组成。" },
   { kind: "tool", label: "抓取并总结网页", prompt: "用 fetch_url 工具抓取 https://example.com 这个页面，然后用一两句话总结它的主要内容。" },
+  { kind: "tool", label: "算房贷月供", prompt: "我打算贷款 200 万、年化利率 4.2%、分 30 年还清，请用 calc 工具帮我算一下每个月大概要还多少。" },
+  { kind: "tool", label: "算抽签概率", prompt: "一年 365 天里随机抽 3 天且彼此都不重复，这个概率是多少？请用计算工具帮我算一下。" },
+  // — mcp — external servers wired through the router catalog
   { kind: "mcp", label: "回声工具", prompt: "调用 echo MCP 服务的 pong 工具，给我回一句 hello。" },
   { kind: "mcp", label: "列项目目录", prompt: "通过 fs MCP 的 list_directory 工具，列出项目根目录 /home/user/projects 下的文件和子目录。" },
   { kind: "mcp", label: "存一条事实", prompt: "用 memory MCP 把『agent-httpd 是一个用 C 写的小型教学用 HTTP 服务器』这条事实写入知识库。" },
   { kind: "mcp", label: "分步推理论证", prompt: "借助 think MCP 的 sequentialthinking 工具，一步步推理一下 llm-router 的 skill 同步设计有什么优点和隐患。" },
+  // — skill — local, router & project skills
   { kind: "skill", label: "跑 demo-lab", prompt: "运行 demo-lab 技能，看看它演示了哪些能力。" },
   { kind: "skill", label: "代码评审", prompt: "用 code-review 技能对 src/router.c 做一次代码评审，指出可能的问题。" },
   { kind: "skill", label: "周度投资诊断", prompt: "运行 weekly-investment 技能，生成本周的持仓诊断与配置建议摘要。" },
+  { kind: "skill", label: "生成项目 README", prompt: "用 generate-readme 技能，根据 src/ 目录的结构为 agent-httpd 生成一份简洁的 README 草稿。" },
+  { kind: "skill", label: "安全扫描", prompt: "运行 security-scan 技能，扫描 src/ 目录下的常见安全隐患并给出整改建议。" },
+  // — memory — session-scoped facts
   { kind: "memory", label: "记偏好再回忆", prompt: "先记住『我最喜欢的颜色是蓝色』，然后马上问我喜欢什么颜色，验证它真的记住了。" },
+  { kind: "memory", label: "记住我的名字", prompt: "请记住我的名字叫 erishen，之后再问我一次我叫什么，确认你真的记得。" },
+  { kind: "memory", label: "忘掉一条事实", prompt: "如果记忆里有关于『最喜欢的颜色』的记录，请把它忘掉，并告诉我你还剩下哪些记忆。" },
+  // — pse — planner / specialist / evaluator orchestration
   { kind: "pse", label: "规划再执行", prompt: "用 PSE 编排器先规划、再执行一个小任务：把 /tmp 目录下所有 .log 文件按大小列出来。" },
+  { kind: "pse", label: "把任务拆成 3 步", prompt: "用 PSE 编排器把『整理本周工作笔记并生成摘要』这个任务先规划成 3 个子步骤，再逐条执行。" },
+  { kind: "pse", label: "失败自动重试", prompt: "用 PSE 编排器规划一个任务并启用失败自动重试：当某一步出错时最多重试 3 次再上报。" },
 ];
 
 // Bootstrap a sticky session id once (client only): minted and persisted on
@@ -147,7 +161,7 @@ function ActivityChip({ act }: { act: Activity }) {
   return (
     <span
       className={
-        "inline-flex max-w-full items-center gap-1.5 rounded-md border bg-ink/60 px-2 py-0.5 font-mono text-[11px] " +
+        "inline-flex max-w-full items-center gap-1.5 rounded-md border bg-ink/60 px-2 py-0.5 font-mono text-[12px] " +
         s.chip
       }
       title={act.label}
@@ -421,16 +435,16 @@ function Chat() {
             <div className="mt-4 space-y-2">
               {(["tool", "mcp", "skill", "memory", "pse"] as ActKind[]).map((kind) => (
                 <div key={kind} className="flex flex-wrap items-center justify-center gap-1.5">
-                  <span className={"flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider " + ACT_STYLES[kind].chip}>
+                  <span className={"flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider " + ACT_STYLES[kind].chip}>
                     <span className={"h-1.5 w-1.5 rounded-full " + ACT_STYLES[kind].dot} />
                     {ACT_STYLES[kind].tag}
                   </span>
-                  {EXAMPLES.filter((e) => e.kind === kind).map((e, j) => (
+                  {EXAMPLES.filter((e) => e.kind === kind).slice(0, 3).map((e, j) => (
                     <button
                       key={j}
                       onClick={() => setDraft(e.prompt)}
                       className={
-                        "inline-flex max-w-full items-center gap-1.5 rounded-md border bg-ink/60 px-2 py-0.5 font-mono text-[11px] transition hover:brightness-125 " +
+                        "inline-flex max-w-full items-center gap-1.5 rounded-md border bg-ink/60 px-2 py-1 font-mono text-[13px] transition hover:brightness-125 " +
                         ACT_STYLES[e.kind].chip
                       }
                       title={e.prompt}
@@ -485,7 +499,7 @@ function Chat() {
                         inputRef.current?.focus();
                       }}
                       className={
-                        "inline-flex max-w-full items-center gap-1.5 rounded-md border bg-ink/60 px-2 py-0.5 font-mono text-[11px] transition hover:brightness-125 " +
+                        "inline-flex max-w-full items-center gap-1.5 rounded-md border bg-ink/60 px-2 py-1 font-mono text-[13px] transition hover:brightness-125 " +
                         ACT_STYLES[sug.kind].chip
                       }
                       title={sug.prompt}

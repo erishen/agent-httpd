@@ -175,16 +175,22 @@ async function streamFromLlm(message: string, history: ChatMessage[], sink: Chat
  * engine-specific parsing. */
 function demoActNote(message: string): string | null {
   const m = message.toLowerCase();
-  if (/\b(mcp|echo:|pong)\b/.test(m) && !/\bcalc\b/.test(m)) return 'tool echo__pong({"text":"hey"})';
+  // MCP servers carry a "<server>:<tool>" name, so classifyNote maps them to
+  // the mcp chip — order these before the built-in tool/skill/memory branches.
+  if (/\b(echo|pong)\b/.test(m)) return 'tool echo__pong({"text":"hey"})';
+  if (/fs|目录|文件夹|文件列表/.test(m)) return 'tool fs__list_directory({"path":"./"})';
+  if (/think|推理|论证/.test(m)) return 'tool think__sequentialthinking({"thought":"step"})';
+  // session memory (remember / recall / forget) — emits a recall note which
+  // classifyNote maps to the memory chip.
+  if (/\b(remember|recall|记忆|session|记住|忘掉|忘记)\b/.test(m)) return 'tool recall({"key":"color"})';
+  // memory MCP store — only the explicit "memory MCP / 知识库" phrasing.
+  if (/memory mcp|知识库/.test(m)) return 'tool memory__store({"key":"httpd","value":"C teaching server"})';
   if (/\b(tool|calc|计算)\b/.test(m)) return 'tool calc({"expression":"21*2"})';
-  if (/\b(skill|技能)\b/.test(m)) return 'tool skill-run({"skill":"demo-lab"})';
+  if (/\b(skill|技能|评审|诊断|演示|扫描|readme)\b/.test(m)) return 'tool skill-run({"skill":"demo-lab"})';
   if (/\b(time|现在|几点)\b/.test(m)) return "tool get_time()";
   if (/\b(fetch|抓取|下载)\b/.test(m)) return 'tool fetch_url({"url":"https://example.com"})';
   if (/\bread\b|读/.test(m)) return 'tool read_file({"path":"index.html"})';
-  if (/\b(remember|recall|memory|记忆|session|记住)\b/.test(m)) {
-    return 'tool recall({"key":"color"})';
-  }
-  if (/\b(pse|plan|planning|计划|规划)\b/.test(m)) return "PSE cycle 1/3 - Planner";
+  if (/\b(pse|plan|planning|计划|规划|重试)\b/.test(m)) return "PSE cycle 1/3 - Planner";
   return null;
 }
 
