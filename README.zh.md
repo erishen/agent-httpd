@@ -187,6 +187,14 @@ make test   # 冒烟测试: 静态/HEAD/POST/穿越防护/重定向/目录列表
 make bench  # 吞吐对比: keep-alive vs 每请求一连接 (默认 5000 请求/16 并发,
             #   可用 BENCH_REQ/BENCH_CONC/PORT 覆盖; 服务器开了 -l 时
             #   429 会计入 429s 列而不是报错, 延迟分位数只统计 200)
+make test-unit      # 免服务端单测: dev 代理 header 构造 (ASan+UBSan) + FastCGI >64KB 流式中继
+                    #   (起一个一次性 UNIX socket 后端)
+make test-keepalive # 单连接 Keep-Alive 流水线 (真起服务器, fork-per-connection 模式,
+                    #   端口随机; 较慢, 依赖 loopback)
+make test-linux     # Linux/GCC 构建守卫: 只构建 Dockerfile 的 c-build 阶段。glibc 是唯一
+                    #   会暴露 -Wstringop-truncation / -Wformat-truncation /
+                    #   -Wuse-after-free 及 -lm/-lcrypt 链接标志的编译器 —— Apple clang
+                    #   对这些一律沉默, 所以只跑本机构建看不出容器构建已坏
 ```
 
 也可打开浏览器访问:

@@ -337,6 +337,15 @@ make test   # smoke tests: static/HEAD/POST/traversal/redirects/listings/error p
 make bench  # throughput comparison: keep-alive vs per-connection (default 5000 req / 16 conc,
             #   override with BENCH_REQ/BENCH_CONC/PORT; with -l enabled, 429s land in the
             #   429s column instead of failing; latency percentiles count 200s only)
+make test-unit      # standalone regressions, no server needed: dev-proxy header builder under
+                    #   ASan+UBSan, and the FastCGI stream relay (spawns a throwaway backend)
+make test-keepalive # keep-alive pipelining on one connection (starts the real server in
+                    #   fork-per-connection mode on a free port; slower, needs loopback)
+make test-linux     # Linux/GCC build guard: builds the Dockerfile's c-build stage. glibc is the
+                    #   only place the -Wstringop-truncation / -Wformat-truncation /
+                    #   -Wuse-after-free family and the -lm/-lcrypt link flags surface —
+                    #   Apple clang stays silent on all of them, so the host build alone
+                    #   cannot see a broken container build
 ```
 
 Or open these in a browser:
