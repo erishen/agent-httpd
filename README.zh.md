@@ -29,14 +29,15 @@ MCP / 技能 / 记忆 / ReAct / PSE）。
 - **chunked 请求体 (RFC 9110 8.7)**: `Transfer-Encoding: chunked` 的 POST/PUT/PATCH 就地解码为普通 body (含 trailer 段处理与 `Expect: 100-continue` 握手), 解码后 CGI stdin / chat / FCGI 中继零改动; 与 `Content-Length` 并存的走私形请求按 RFC 6.1 直接 400 断连, 不可解码的传输编码 (如 TE: gzip) 回 501
 - **URL query string 兼容**: 静态文件与目录 URL 带 `?query` 正常服务 (此前会 404), `/cgi-bin` 重定向与目录列表同样兼容
 - **ETag/304 条件请求 (RFC 7232)**: 静态资源 (含预压缩 `.gz` 表亲) 返回强校验 `ETag: W/"size-mtime"`, 带 `If-None-Match` 再验证未变时回 `304` (实测重复访问传输量 -94%); 304 按 RFC 9110 15.4.5 省略实体头 (Content-Type/Content-Length/Accept-Ranges 不随 304 下发, 避免代理歧义); `If-None-Match` 列表/`*` 通配、跨表示不误命中 (gzip 与明文 ETag 不同, 修改后自动失效)
-- **Last-Modified / If-Modified-Since (RFC 9110 13.2.2)**: 所有静态 200 响应携带 `Last-Modified` (IMF-fixdate); 只认日期的客户端 (部分 CDN/老代理) 用 `If-Modified-Since` 再验证同样能拿到 304 —— 客户端带 `If-None-Match` 时它让位 (规范优先级)
+- **显式缓存策略**: 所有静态响应 (200/206/304) 携带 `Cache-Control: no-cache`。docroot 的 URL 跨重建始终不变 (`/js/react-ssr.js` 永远叫这个名字), 所以允许存副本、但每次复用前必须再验证 —— ETag 让这次再验证只花一个 304。不加这个头并非中立: 只带 `Last-Modified` 时浏览器会套用启发式新鲜期 (文件年龄的 10%), 于是能在数小时内一直用旧副本、一次都不问服务器; gzip 表亲还会放大这一点 —— 它的 `Last-Modified` 是 `.gz` 文件构建时的 mtime, 而不是它源文件的
+- **Last-Modified / If-Modified-Since (RFC 9110 13.2.2)**: 所有静态 200 响应携带 `Last-Modified` (IMF-fixdate); 只认日期的客户端 (部分 CDN/老代理/`curl -z`) 用 `If-Modified-Since` 再验证同样能拿到 304 —— 包括每天都会发生的那种: 把我们刚发的 `Last-Modified` 原样回放 (比较保留时分秒, 因此「相等」即视为未修改); 客户端带 `If-None-Match` 时它让位 (规范优先级)
 - **TCP_NODELAY + listen backlog 128**: 每个已接受连接显式关 Nagle (避免头/体两次 send 与延迟 ACK 相互作用引入的数十毫秒首字节停顿), 监听队列从 10 提到 128 承受突发连接
 - **sendfile(2) 零拷贝 + Range/206 (RFC 9110 14)**: 大静态文件与 206 字节区间响应走内核零拷贝 (macOS/Linux, 其他平台 fread 回退); 支持单区间 `bytes=N-M`/`N-`/`-N` (多区间回退 200 全量, gzip 协商忽略 Range), 越界回 `416` + `Content-Range: bytes */TOTAL`, 响应携带 `Accept-Ranges: bytes`
 - **优雅停机 (排水)**: SIGTERM 后 worker 先完成手头连接再退出 (keep-alive 循环见停机标志即关连接), 父进程排水最多 5 秒后强杀兼底 —— 重启不再把进行中的请求拦腰砍断
 - **/health 探活端点**: 固定返回 `ok` (位于限流/认证门禁之内), 负载均衡和监控不用再猜 `GET /`
 - **/metrics 可观测端点**: Prometheus 文本格式快照——快/慢路径分流计数、状态码分类、worker 池水位、agent 并发槽占用与上限、上游重试次数、CGI 超时/断开、运行时长; 计数表在 `MAP_SHARED` 共享内存 (master 与 worker 同表, 与限流表同模式), 增量走 `__atomic_fetch_add` 快路径零锁; 端点由快路径直答, chat 挂起时抓取不阻塞
 - **431 Request Header Fields Too Large**: 请求头超出 64KB 缓冲时回 431 并断连 (此前落到笼统的 400)
-- **gzip 预压缩协商**: 静态文件旁存在 `.gz` 时, 客户端带 `Accept-Encoding: gzip` 自动下发压缩版 (`Content-Encoding: gzip`, MIME 保持原扩展名); 按 RFC 7231 解析 q 值 (`gzip;q=0` 拒绝, 显式 `*` 通配接受, deflate-only 不误发); 构建时用 `gzip -9` 预压缩 client bundle
+- **gzip 预压缩协商**: 静态文件旁存在 `.gz` 时, 客户端带 `Accept-Encoding: gzip` 自动下发压缩版 (`Content-Encoding: gzip`, MIME 保持原扩展名); 按 RFC 7231 解析 q 值 (`gzip;q=0` 拒绝, 显式 `*` 通配接受, deflate-only 不误发); 构建时用 `gzip -9` 预压缩 client bundle。浏览器**总**带 gzip, 所以表亲才是它真正执行的那份 —— 镜像里这份必须来自生成明文 bundle 的同一个构建阶段 (`.dockerignore` 挡住随 `COPY www/` 混进来的旧表亲); `make test-container` 比对解压后的**字节**而不只是长度
 - **CGI 响应头 (RFC 3875)**: 脚本输出的 `Location:` 转为 302 重定向 (本地/绝对 URL 均可, 响应头透传), `Status:` 覆盖响应状态行 (如 `Status: 418 I am a teapot`), `Content-Type` 照旧透传
 - **FastCGI 后端**: 可选 `-F <unix-socket>`，充当 FCGI 服务端（类似 PHP-FPM），复用同一套 CGI/静态分发链
 - **FastCGI 客户端转发**: 可选 `-R <unix-socket>`，把 `/react/*` 转发给常驻 React FastCGI 后端; 新的统一接线推荐 `-v <port>` (见下条), FastCGI 保留供 nginx `fastcgi_pass` 场景
@@ -175,6 +176,11 @@ docker compose logs -f httpd # 跟看日志
 - **FCGI socket 权限默认收紧**: react 后端的 UNIX socket 默认 `0700` (owner-only)——socket 直连可绕过 httpd 的认证/限流, 不能让同机任意进程可连; nginx `fastcgi_pass` 场景下 worker 用户不同时, 给 react 服务设 `REACT_FCGI_SOCK_MODE=0777` 放宽
 
 ## 测试
+
+> 套件里的探测都指向 `http://localhost:<端口>`。若 shell 导出了
+> `http_proxy`/`https_proxy`, 这些请求会被代理接走、而不是打到服务器, 于是几十条
+> 断言以 502 失败, 看起来像服务端有 bug —— 有代理时请用
+> `env -u http_proxy -u https_proxy -u ALL_PROXY make test`。
 
 ```bash
 make test   # 冒烟测试: 静态/HEAD/POST/穿越防护/重定向/目录列表/错误页/query string
@@ -694,7 +700,8 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [x] Combined 格式访问日志 + SIGHUP 轮换
 - [x] 静态资源 gzip 预压缩协商 (Accept-Encoding + Content-Encoding)
 - [x] ETag/304 条件请求 (If-None-Match, 强校验器 size+mtime, 覆盖 gzip 表亲)
-- [x] Last-Modified + If-Modified-Since 回退验证
+- [x] Last-Modified + If-Modified-Since 回退验证 (含原样回放自家 Last-Modified)
+- [x] 静态响应的 `Cache-Control: no-cache` 策略 (可存但须再验证, 304 兜住开销)
 - [x] sendfile(2) 零拷贝 + Range/206 断点续传 (单区间, 416, Accept-Ranges)
 - [x] TCP_NODELAY + listen backlog 128
 - [x] 优雅停机排水 + /health 端点

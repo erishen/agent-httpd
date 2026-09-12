@@ -67,9 +67,21 @@ fast & slow paths / agent stack / security depth) see the
   visits); per RFC 9110 15.4.5 the 304 omits entity headers
   (Content-Type/Content-Length/Accept-Ranges stay off 304s, avoiding proxy
   ambiguity); lists / `*` wildcard handled, no cross-representation false hits
+- **Explicit cache policy**: every static response (200/206/304) carries
+  `Cache-Control: no-cache`. The docroot URLs are stable across rebuilds
+  (`/js/react-ssr.js` keeps its name forever), so a stored copy may be kept
+  but has to be revalidated before reuse - the ETag turns that into a 304.
+  Omitting the header is not neutral: with only `Last-Modified` present a
+  browser may apply heuristic freshness (10% of the file's age) and keep
+  serving a stale bundle for hours without ever asking the server. The gzip
+  twin makes this worse than it looks, because its `Last-Modified` is the
+  build-time mtime of the `.gz` file, not of the source it was built from
 - **Last-Modified / If-Modified-Since (RFC 9110 13.2.2)**: all static 200s
-  carry `Last-Modified`; date-only clients (some CDNs, older proxies) get 304s
-  too — it yields when `If-None-Match` is present (spec precedence)
+  carry `Last-Modified`; date-only clients (some CDNs, older proxies, `curl -z`)
+  get 304s too - including the case that happens every day, replaying the exact
+  `Last-Modified` we just sent (the comparison keeps the time of day, so
+  "equal" counts as unmodified); it yields when `If-None-Match` is present
+  (spec precedence)
 - **TCP_NODELAY + listen backlog 128**: Nagle disabled on every accepted
   connection (kills the tens-of-ms first-byte stall from header/body double
   sends interacting with delayed ACK); backlog raised from 10 to 128 for
@@ -97,7 +109,12 @@ fast & slow paths / agent stack / security depth) see the
   sending `Accept-Encoding: gzip` receive it (`Content-Encoding: gzip`, MIME
   from the original extension); q-values parsed per RFC 7231 (`gzip;q=0`
   rejected, explicit `*` accepted, deflate-only never mis-served); the client
-  bundle is pre-compressed with `gzip -9` at build time
+  bundle is pre-compressed with `gzip -9` at build time. Since browsers always
+  advertise gzip, the twin is the copy they actually execute - so the image
+  takes it from the same build stage that produced the identity bundle
+  (`.dockerignore` keeps a stale working-tree twin from riding in with
+  `COPY www/`); `make test-container` compares the inflated twin with the
+  plain bytes rather than only their lengths
 - **CGI response headers (RFC 3875)**: script `Location:` becomes a 302
   redirect (local or absolute URLs, response headers pass through), `Status:`
   overrides the status line (e.g. `Status: 418 I'm a teapot`), `Content-Type`
@@ -325,6 +342,12 @@ Notes:
   `REACT_FCGI_SOCK_MODE=0777` on the react service to loosen it
 
 ## Testing
+
+> Every probe targets `http://localhost:<port>`. If your shell exports
+> `http_proxy`/`https_proxy`, those requests get answered by the proxy instead
+> of the server and dozens of checks fail with 502s that look like server
+> bugs; behind a proxy run
+> `env -u http_proxy -u https_proxy -u ALL_PROXY make test`.
 
 ```bash
 make test   # smoke tests: static/HEAD/POST/traversal/redirects/listings/error pages/query strings
@@ -925,7 +948,8 @@ that Next can't swap in.
 - [x] Combined-format access log + SIGHUP rotation
 - [x] gzip pre-compressed negotiation (Accept-Encoding + Content-Encoding)
 - [x] ETag/304 conditional requests (If-None-Match, strong size+mtime validator, covers gzip siblings)
-- [x] Last-Modified + If-Modified-Since fallback revalidation
+- [x] Last-Modified + If-Modified-Since fallback revalidation (including replaying our own Last-Modified)
+- [x] `Cache-Control: no-cache` policy on static responses (store but revalidate; the 304 absorbs the cost)
 - [x] sendfile(2) zero-copy + Range/206 resume (single range, 416, Accept-Ranges)
 - [x] TCP_NODELAY + listen backlog 128
 - [x] Graceful shutdown draining + /health endpoint

@@ -109,6 +109,12 @@ if [ -f "www/js/react-ssr.js" ]; then
     check "gzip response smaller than raw" "1" "$gz_ok"
     roundtrip=$(curl -s -H "Accept-Encoding: gzip" "$BASE/js/react-ssr.js" | gzip -dc | wc -c | tr -d ' ')
     check "gzip body decompresses to raw size" "$fsize" "$roundtrip"
+    # ...and to the same bytes. Browsers always advertise gzip, so the .gz twin
+    # is what they actually cache and run; a size-only check would let a stale
+    # twin through whenever a rebuild happened to keep the compressed length.
+    gz_same=$(curl -s -H "Accept-Encoding: gzip" "$BASE/js/react-ssr.js" | gzip -dc \
+        | cmp -s - "www/js/react-ssr.js" && echo 1 || echo 0)
+    check "gzip twin decompresses to the same bytes" "1" "$gz_same"
     no_gzip=$(curl -s -I "$BASE/js/react-ssr.js" | grep -c "Content-Encoding")
     check "no Content-Encoding without Accept-Encoding" "0" "$no_gzip"
 fi
@@ -480,6 +486,24 @@ check "If-Modified-Since (file newer) -> 200" "200" \
     "$(status -H 'If-Modified-Since: Mon, 01 Jan 2024 00:00:00 GMT' "$CACHE_BASE/index.html")"
 check "If-Modified-Since (future) -> 304" "304" \
     "$(status -H 'If-Modified-Since: Fri, 01 Jan 2100 00:00:00 GMT' "$CACHE_BASE/index.html")"
+# The case that actually happens: a client replays the Last-Modified we just
+# sent it. RFC 9110 13.2.2 counts "equal" as unmodified, so this must be 304 -
+# and it only is if the parser keeps the time of day (same-day replay).
+CACHE_LM=$(curl -sI "$CACHE_BASE/index.html" | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}')
+check "If-Modified-Since replay of Last-Modified -> 304" "304" \
+    "$(status -H "If-Modified-Since: $CACHE_LM" "$CACHE_BASE/index.html")"
+# Same replay through the gzip twin, which is the representation a browser
+# actually caches (its Last-Modified is the .gz file's own mtime).
+GZ_LM=$(curl -sI -H 'Accept-Encoding: gzip' "$CACHE_BASE/js/react-ssr.js" | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}')
+check "gzip twin: Last-Modified replay -> 304" "304" \
+    "$(status -H 'Accept-Encoding: gzip' -H "If-Modified-Since: $GZ_LM" "$CACHE_BASE/js/react-ssr.js")"
+# Cache policy: without an explicit directive a browser may keep serving a
+# stale copy for 10% of the file's age without asking (hours, for a bundle
+# whose .gz sibling carries a build-time mtime).
+check "static 200 carries Cache-Control" "1" \
+    "$(curl -sI "$CACHE_BASE/index.html" | grep -ci '^cache-control: no-cache')"
+check "304 revalidation repeats the cache policy" "1" \
+    "$(curl -sI -H "If-None-Match: *" "$CACHE_BASE/index.html" | grep -ci '^cache-control: no-cache')"
 check "206 start-end exact" "100" \
     "$(curl -s -H 'Range: bytes=0-99' "$CACHE_BASE/range-test-smoke.bin" | wc -c | tr -d ' ')"
 check "206 open-ended range" "65436" \
