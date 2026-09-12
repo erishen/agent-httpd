@@ -179,11 +179,12 @@ function demoActNote(message: string): string | null {
   if (/\b(tool|calc|计算)\b/.test(m)) return 'tool calc({"expression":"21*2"})';
   if (/\b(skill|技能)\b/.test(m)) return 'tool skill-run({"skill":"demo-lab"})';
   if (/\b(time|现在|几点)\b/.test(m)) return "tool get_time()";
-  if (/\bread\b/.test(m)) return 'tool read_file({"path":"index.html"})';
-  if (/\b(remember|recall|memory|记忆|session)\b/.test(m)) {
+  if (/\b(fetch|抓取|下载)\b/.test(m)) return 'tool fetch_url({"url":"https://example.com"})';
+  if (/\bread\b|读/.test(m)) return 'tool read_file({"path":"index.html"})';
+  if (/\b(remember|recall|memory|记忆|session|记住)\b/.test(m)) {
     return 'tool recall({"key":"color"})';
   }
-  if (/\b(pse|plan|planning|计划)\b/.test(m)) return "PSE cycle 1/3 - Planner";
+  if (/\b(pse|plan|planning|计划|规划)\b/.test(m)) return "PSE cycle 1/3 - Planner";
   return null;
 }
 
