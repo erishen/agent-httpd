@@ -150,14 +150,20 @@ check("bundle served", 200, st)
 size = len(raw_body)
 check("ETag present", True, "etag" in h)
 check("Last-Modified present", True, "last-modified" in h)
+check("Cache-Control forbids silent staleness", "no-cache", h.get("cache-control"))
 
 st, h, gz = req("/js/react-ssr.js", headers={"Accept-Encoding": "gzip"})
 check("gzip negotiated", "gzip", h.get("content-encoding"))
 check("gzip body inflates to the raw size", size, len(gzip.decompress(gz)))
+check("gzip twin carries the same cache policy", "no-cache", h.get("cache-control"))
 
 st, h, plain = req("/js/react-ssr.js", headers={"Accept-Encoding": "gzip;q=0"})
 check("gzip;q=0 stays uncompressed", None, h.get("content-encoding"))
 check("uncompressed body matches", size, len(plain))
+# A length check cannot tell a stale twin from a fresh one, so compare bytes:
+# the gzip side is the only one browsers ever run, so an image that assembled
+# it from a different revision than the identity bundle would otherwise pass.
+check("gzip twin inflates to the identity bytes", plain, gzip.decompress(gz))
 
 st, h, part = req("/js/react-ssr.js", headers={"Range": "bytes=0-99"})
 check("206 partial content", 206, st)
