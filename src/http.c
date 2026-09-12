@@ -239,6 +239,22 @@ void set_error_response(HttpResponse *response, int status_code, const char *sta
     response->body_length = strlen(page);
 }
 
+/* One-shot eviction for caches poisoned before the no-store policy existed.
+ * A response header cannot retract a copy a browser stored earlier, but
+ * Clear-Site-Data makes it drop this origin's HTTP cache, so the next fetch
+ * is guaranteed fresh rather than merely revalidated. Enabled per process
+ * from PURGE_CLIENT_CACHE (any value but "0"); read once so the response
+ * path never calls getenv() per request. Meant to be switched on only until
+ * every client has visited once - while on, repeat visitors re-evict. */
+static int purge_client_cache(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("PURGE_CLIENT_CACHE");
+        cached = (v && *v && strcmp(v, "0") != 0);
+    }
+    return cached;
+}
+
 /* RFC 7230 section 6.3: the last response on a connection carries
  * "Connection: close"; HTTP/1.1 defaults to persistent otherwise. */
 int build_response(const HttpResponse *response, int head_only, int keep_alive, char *raw_response, int *response_len) {
@@ -275,6 +291,12 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
          * repeat the cache policy (RFC 9111 4.3.4), or a cache that stored
          * the response from the 304 alone loses it. */
         p += snprintf(p, end - p + 1, "Cache-Control: %s\r\n", response->cache_control);
+    }
+    /* Clear-Site-Data rides only on documents: evicting the origin cache on
+     * every static asset would drop the bundle once per page view, which is
+     * the opposite of what the revalidation policy above is for. */
+    if (purge_client_cache() && strncmp(response->content_type, "text/html", 9) == 0) {
+        p += snprintf(p, end - p + 1, "Clear-Site-Data: \"cache\"\r\n");
     }
     if (response->location[0]) {
         p += snprintf(p, end - p + 1, "Location: %s\r\n", response->location);
@@ -1076,14 +1098,16 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
             (strncmp(request.path, "/react", 6) == 0 &&
              (request.path[6] == '\0' || request.path[6] == '/'))) {
             const char *ip = client_addr ? inet_ntoa(client_addr->sin_addr) : "-";
-            int status = forward_to_fcgi(g_react_sock, &request, ip, client_fd);
+            int fcgi_body_bytes = 0;
+            int status = forward_to_fcgi(g_react_sock, &request, ip, client_fd,
+                                         &fcgi_body_bytes);
             if (status < 0) {
                 /* backend unreachable / protocol error before any byte was
                  * streamed: render our own 502 (forward_to_fcgi streamed
                  * nothing, so this page is the only response). */
                 set_error_response(&response, 502, "Bad Gateway");
             } else {
-                log_request(ip, &request, status, 0);
+                log_request(ip, &request, status, fcgi_body_bytes);
                 close(client_fd);
                 return;
             }

@@ -224,7 +224,7 @@ static void fcgi_put_len(unsigned char *buf, size_t *off, size_t len) {
 }
 
 int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
-                    const char *remote_addr, int client_fd) {
+                    const char *remote_addr, int client_fd, int *body_bytes) {
     struct sockaddr_un addr;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -295,6 +295,9 @@ int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
     int status = -1;
     int got_status = 0;
     int streamed_any = 0;
+    long total_out = 0;    /* bytes forwarded to the client, head included */
+    long header_len = -1;  /* end of the response head within the stream */
+    int head_scan_done = 0;
     /* Stream STDOUT frames straight to the client until END_REQUEST. This
      * removes the old 64KB ceiling that made large SSR pages 502. The status
      * code is scraped from the first "HTTP/1.1 " bytes for logging. */
@@ -325,15 +328,32 @@ int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
                         }
                     }
                 }
+                /* Locate the end of the head while it is still in view: the
+                 * relay forwards whole messages, but the access log wants
+                 * body bytes (%b). A response head is tiny next to the 64KB
+                 * frame cap, so it always arrives whole in this first frame;
+                 * if it somehow does not, the log reports the whole message
+                 * rather than a wrong body count. */
+                if (!head_scan_done) {
+                    head_scan_done = 1;
+                    for (size_t i = 0; i + 4 <= len; i++) {
+                        if (memcmp(frame + i, "\r\n\r\n", 4) == 0) {
+                            header_len = (long)i + 4;
+                            break;
+                        }
+                    }
+                }
                 size_t sent = 0;
                 while (sent < len) {
                     ssize_t w = send(client_fd, frame + sent, len - sent, 0);
                     if (w <= 0) {
                         if (w < 0 && errno == EINTR) continue;
+                        total_out += (long)sent;
                         goto done_streamed;
                     }
                     sent += (size_t)w;
                 }
+                total_out += (long)len;
                 streamed_any = 1;
             } else if (len > 0) {
                 char tmp[64];
@@ -353,10 +373,19 @@ int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
         }
     }
 done_streamed:
+    if (body_bytes) {
+        /* Body bytes only: the log's %b must not count the head. Falls back
+         * to the whole message when no head was located (non-HTTP payload
+         * or a head split across frames). */
+        *body_bytes = (header_len >= 0 && total_out > header_len)
+                          ? (int)(total_out - header_len)
+                          : (int)total_out;
+    }
     close(fd);
     return got_status ? status : 200;
 
 fail:
+    if (body_bytes) *body_bytes = 0;
     close(fd);
     return -1;
 }

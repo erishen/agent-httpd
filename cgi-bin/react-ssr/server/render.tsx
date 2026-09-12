@@ -20,6 +20,24 @@ export { isRenderMode } from "../types";
 // while esbuild matches it via --loader:.css?raw=text.
 import styles from "../tailwind.css?raw";
 
+// Content hash of the client bundle, injected at build time by
+// scripts/build-ssr.sh (esbuild `--define:BUNDLE_QUERY="<hash>"`). Declared
+// here so tsc accepts the identifier; the `typeof` guard below keeps the
+// Vite dev SSR pipeline - which never defines it - from throwing a
+// ReferenceError while rendering.
+declare const BUNDLE_QUERY: string;
+
+// The bundle is served from a stable path (/js/react-ssr.js) but its bytes
+// change on every rebuild, and a URL that never changes is a cache key that
+// never changes: a browser holding the previous copy keeps serving it,
+// revalidation bug or not. Appending this build's content hash makes every
+// new document reference a URL the client has never stored, so a stale
+// entry can no longer be picked up at all. Dev mode yields the plain path.
+export function bundleSrc(): string {
+  const hash = typeof BUNDLE_QUERY !== "undefined" ? BUNDLE_QUERY : "";
+  return hash ? `/js/react-ssr.js?v=${hash}` : "/js/react-ssr.js";
+}
+
 // Everything inlined into <script>window.__SSR_DATA__</script>. The client
 // bundle must be able to reconstruct the exact same values for hydration.
 export interface RenderData {
@@ -101,7 +119,7 @@ export function renderHead(mode: RenderMode): string {
 export function renderTail(data: RenderData): string {
   return `</div>
 <script>window.__SSR_DATA__ = ${safeJson(data)};</script>
-<script type="module" src="/js/react-ssr.js"></script>
+<script type="module" src="${bundleSrc()}"></script>
 </body>
 </html>
 `;
@@ -127,7 +145,7 @@ function csrShell(mode: RenderMode, data: RenderData): string {
 <noscript><p class="mx-auto max-w-3xl px-5 py-10">This page needs JavaScript enabled (client-side rendering mode).</p></noscript>
 <div id="root"></div>
 <script>window.__SSR_DATA__ = ${safeJson(data)};</script>
-<script type="module" src="/js/react-ssr.js"></script>
+<script type="module" src="${bundleSrc()}"></script>
 </body>
 </html>
 `;

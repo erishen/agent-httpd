@@ -189,7 +189,9 @@ async function handleRequest(sock: net.Socket, reqId: number, params: Params, bo
   const isPost = method === "POST";
   if (method !== "GET" && method !== "POST") {
     const err =
-      "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      "HTTP/1.1 405 Method Not Allowed\r\n" +
+      docHeaders() +
+      "Content-Length: 0\r\nConnection: close\r\n\r\n";
     sendFrame(sock, STDOUT, reqId, err);
     sendRequestEnd(sock, reqId);
     return;
@@ -259,7 +261,9 @@ async function handleRequest(sock: net.Socket, reqId: number, params: Params, bo
   } catch (err) {
     console.error("[DEBUG] render failed:", new Date().toISOString(), err);
     const resp = Buffer.from(
-      "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\nConnection: close\r\n\r\n" +
+      "HTTP/1.1 500 Internal Server Error\r\n" +
+        docHeaders() +
+        "Content-Length: 21\r\nConnection: close\r\n\r\n" +
         "React SSR: render error",
       "utf8"
     );
@@ -270,12 +274,44 @@ async function handleRequest(sock: net.Socket, reqId: number, params: Params, bo
   sendRequestEnd(sock, reqId);
 }
 
+// Headers every document response carries. The C server streams these bytes
+// to the client verbatim ("-R" relay) or nginx does (fastcgi_pass), so
+// anything missing here is missing end to end - this process is the origin.
+//
+// Date: RFC 9110 6.6.1 requires it on every response. The C paths get it
+// from build_response; nothing adds it back on this one.
+//
+// Cache-Control: the document embeds per-request state (serverTime, the
+// rendered view) on top of this process's own 60s ISR entry, so the client
+// must store it only to revalidate. Silence is not neutral: with no policy
+// the browser invents a heuristic freshness window from Last-Modified and
+// serves a stale page - which a freshly built bundle then fails to hydrate.
+//
+// PURGE_CLIENT_CACHE="1": one-shot eviction for caches that were already
+// poisoned before the policy above existed. A response header cannot
+// retract a copy a browser stored earlier, but Clear-Site-Data makes it
+// drop the origin's HTTP cache, after which the next fetch is fresh. Keep
+// it enabled only until every client has visited once: it re-evicts on
+// every visit while on.
+const PURGE_CLIENT_CACHE = process.env.PURGE_CLIENT_CACHE === "1";
+
+function docHeaders(): string {
+  let out = "Date: " + new Date().toUTCString() + "\r\n";
+  out += "Cache-Control: no-store\r\n";
+  out += "X-Content-Type-Options: nosniff\r\n";
+  out += "X-Frame-Options: DENY\r\n";
+  out += "Referrer-Policy: no-referrer\r\n";
+  if (PURGE_CLIENT_CACHE) out += 'Clear-Site-Data: "cache"\r\n';
+  return out;
+}
+
 // Buffered response (cache hit / non-streaming path): carries Content-Length.
 function sendHttpResponse(sock: net.Socket, reqId: number, html: string): void {
   const head =
     "HTTP/1.1 200 OK\r\n" +
     "Content-Type: text/html; charset=utf-8\r\n" +
     "Content-Length: " + Buffer.byteLength(html) + "\r\n" +
+    docHeaders() +
     "Connection: close\r\n\r\n";
   sendStreamChunk(sock, reqId, head);
   sendStreamChunk(sock, reqId, html);
@@ -289,6 +325,7 @@ function sendHeadOnly(sock: net.Socket, reqId: number): void {
     reqId,
     "HTTP/1.1 200 OK\r\n" +
       "Content-Type: text/html; charset=utf-8\r\n" +
+      docHeaders() +
       "Connection: close\r\n\r\n"
   );
 }
@@ -372,11 +409,14 @@ const httpPort = Number(process.env.REACT_HTTP_PORT || process.argv[3] || 0);
 if (httpPort > 0) {
   const httpSrv = http.createServer(async (req, res) => {
     // Match the C server's security headers so proxied responses carry the
-    // same set as direct ones (the -v relay streams these verbatim).
+    // same set as direct ones (the -v relay streams these verbatim). The
+    // http module supplies Date on its own here.
+    res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Server", "AgentHTTPD");
+    if (PURGE_CLIENT_CACHE) res.setHeader("Clear-Site-Data", '"cache"');
     try {
       const url = req.url || "/react";
       const qi = url.indexOf("?");

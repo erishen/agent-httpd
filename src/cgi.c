@@ -299,6 +299,31 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
                     }
                 }
 
+                /* Cache policy for script output. A CGI body is produced per
+                 * request and often echoes the request back, so reusing one
+                 * without asking us is never right. A script that knows its
+                 * output better can still say so itself: an explicit
+                 * Cache-Control wins, otherwise default to no-store.
+                 * Silence is not neutral - with no policy at all a browser
+                 * invents a heuristic freshness window and keeps serving the
+                 * previous request's page. */
+                char *cc = strcasestr(output, "Cache-Control:");
+                if (cc && (size_t)(cc - output) < hdr_len) {
+                    cc += 14;
+                    while (*cc == ' ') cc++;
+                    char *end = strchr(cc, '\r');
+                    if (!end) end = strchr(cc, '\n');
+                    if (end) {
+                        int len = (int)(end - cc);
+                        if (len > 0 && len < (int)sizeof(response->cache_control)) {
+                            memcpy(response->cache_control, cc, (size_t)len);
+                            response->cache_control[len] = '\0';
+                        }
+                    }
+                } else {
+                    set_str(response->cache_control, sizeof(response->cache_control), "no-store");
+                }
+
                 /* plain 200 only when Location/Status did not decide it */
                 if (response->status_code == 0) {
                     response->status_code = 200;
