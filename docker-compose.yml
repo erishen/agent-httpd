@@ -7,6 +7,10 @@
 #   docker compose up -d --build
 #     http://localhost:18080  -> agent-httpd 直连 (含 /react/ 的 -R 中继)
 #     http://localhost:18081  -> nginx 入口 (静态/CGI 反代, /react/ 走 FastCGI)
+#   两个入口最终都打到同一个驻留 React 后端 (一条经 httpd 的 -R 中继, 一条由
+#   nginx 直接 fastcgi_pass), 所以 /react/* 的 HTML 逐字节相同、客户端包也是
+#   同一个 /js/react-ssr.js。若浏览器里两个入口表现不一致, 先怀疑大响应被
+#   截断 (客户端包被切断 -> 模块解析失败 -> 页面静默不水合): `make test-stream`。
 #   docker compose logs -f httpd
 #
 # socket 目录只用一个卷 (react-sock): react 在里面建 react.sock, httpd 在里面建

@@ -201,6 +201,11 @@ make test-container # 探测正在运行的容器 (需先 `docker compose up -d`
                     #   大响应流式 (无 64KB 截断)
 make test-upstream  # 上游不可达路径: 聊天必须回 error 事件 (并重试), 不能给出静默的
                     #   空答复。自起一个 --network none 的一次性容器, 只需要镜像
+make test-stream    # 大响应流式: 300KB 响应体在读取端停顿的情况下也必须完整送达。
+                    #   由**第二个容器**经私有 bridge 读取 —— 只有这条链路的 socket
+                    #   缓冲区真会被填满, 因此也只有它能抓出「响应体中途被截断」
+                    #   (nginx 报 upstream prematurely closed connection; 浏览器则因
+                    #   JS 资源解析失败而永不水合)
 ```
 
 也可打开浏览器访问:

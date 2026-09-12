@@ -353,6 +353,12 @@ make test-container # probe the running container (start it with `docker compose
 make test-upstream  # upstream-failure path: chat must answer an unreachable model with
                     #   an error event (and retry), never a silent empty reply. Spins a
                     #   throwaway container on --network none; needs only the image
+make test-stream    # large-response streaming: a 300 KB body must arrive whole when the
+                    #   reader pauses. Reads it from a *second* container over a private
+                    #   bridge — the only path where the socket buffer actually fills, so
+                    #   it is the only one that catches a body truncated mid-stream
+                    #   (nginx: "upstream prematurely closed connection"; browser: the
+                    #   JS asset never parses, so the React page never hydrates)
 ```
 
 Or open these in a browser:
