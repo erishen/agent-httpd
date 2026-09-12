@@ -109,6 +109,14 @@ typedef struct {
     /* 200 static-file responses: Last-Modified (IMF-fixdate) for clients
      * that only speak If-Modified-Since. */
     char last_modified[40];
+    /* Static-file responses: explicit cache policy. The docroot URLs are not
+     * content-addressed ("/js/react-ssr.js" is the same URL across rebuilds),
+     * so a copy may be stored but must be revalidated before every reuse.
+     * Omitting this header is not neutral: with only Last-Modified present a
+     * browser may apply heuristic freshness (10% of the age since the file's
+     * mtime) and serve a stale bundle for hours without ever asking the
+     * server. Revalidation stays cheap - a matching validator answers 304. */
+    char cache_control[64];
     /* 206/416 only: Content-Range header value, e.g. "bytes 0-99/1234". */
     char content_range[80];
     /* 405/OPTIONS only: methods the resource understands, echoed as the

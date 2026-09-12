@@ -19,6 +19,13 @@
  * 但 Content-Length 仍报全长,客户端会挂死。超此上限的一律走流式。 */
 #define MAX_MEM_BODY_SIZE 60000
 
+/* Every static response carries this. The URL is stable across rebuilds, so
+ * "no-cache" (store, but revalidate before reuse) is the policy that is both
+ * correct and cheap here: the ETag turns the revalidation into a 304. Note
+ * the header travels even on 304, where RFC 9111 4.3.4 wants the cache
+ * directives the 200 would have carried. */
+#define STATIC_CACHE_CONTROL "no-cache"
+
 /* snprintf 返回「应写入长度」而非实际字节;缓冲将满时直接累加会让 p 越过
  * end,随后 (end - p) 转 size_t 变成巨量而越界写。LIST_APPEND 每次写完后
  * 把 p 钳制在缓冲内,满了则置 end+1,调用方以 p > end 判定截断。 */
@@ -106,7 +113,15 @@ void format_http_date(char *out, size_t outsz, time_t t) {
 /* RFC 9110 13.2.2 fallback validator: parse an If-Modified-Since header
  * (IMF-fixdate; the obsolete RFC 850 and asctime forms are also accepted
  * leniently via the same day/month/year scan) and compare against the
- * file mtime. Returns 1 when the resource has NOT changed since then. */
+ * file mtime. Returns 1 when the resource has NOT changed since then.
+ *
+ * The time of day is part of the comparison: a client replaying the
+ * Last-Modified value we just sent is asking about the very second the file
+ * changed, and "earlier than or equal" counts as unmodified. Parsing only
+ * the date would read every same-day replay as a modification, so a client
+ * that holds a Last-Modified but no ETag (curl -z, wget, older proxies)
+ * would re-download the whole body - 269 KB of client bundle - instead of
+ * getting the 304 the validator already earns it. */
 int not_modified_since(const char *header, time_t mtime) {
     if (!header || !*header) return 0;
     struct tm tm_v;
@@ -116,8 +131,13 @@ int not_modified_since(const char *header, time_t mtime) {
     if (p) p++;
     else p = header;
     int day = 0, year = 0;
+    int hour = 0, minute = 0, second = 0;
     char mon[16] = "";
-    if (sscanf(p, " %d %15[a-zA-Z] %d", &day, mon, &year) != 3) return 0;
+    int got = sscanf(p, " %d %15[a-zA-Z] %d %d:%d:%d",
+                     &day, mon, &year, &hour, &minute, &second);
+    /* A bare date is accepted (time defaults to midnight); a truncated clock
+     * ("... 2026 08:49") is not - reject rather than guess. */
+    if (got != 3 && got != 6) return 0;
     static const char *months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     int mon_idx = -1;
@@ -125,12 +145,16 @@ int not_modified_since(const char *header, time_t mtime) {
         if (strncasecmp(mon, months[i], 3) == 0) { mon_idx = i; break; }
     }
     if (mon_idx < 0 || day < 1 || day > 31 || year < 1970) return 0;
+    if (hour > 23 || minute > 59 || second > 60) return 0;
     /* Two-digit years from the obsolete RFC 850 form: 00-49 -> 20xx,
      * 50-99 -> 19xx (RFC 9110 5.6.7 interpretation rules). */
     if (year < 100) year += (year < 50) ? 2000 : 1900;
     tm_v.tm_mday = day;
     tm_v.tm_mon = mon_idx;
     tm_v.tm_year = year - 1900;
+    tm_v.tm_hour = hour;
+    tm_v.tm_min = minute;
+    tm_v.tm_sec = second;
     time_t vtime = timegm(&tm_v);
     if (vtime == (time_t)-1) return 0;
     /* Not modified when the file has not been changed strictly after the
@@ -429,9 +453,9 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
 
     /* Conditional request (RFC 7232): when If-None-Match matches the file's
      * validator, skip the body entirely - 304 costs only the header block.
-     * The validator reflects the served representation's size (the .gz
-     * sibling when gzip is active) with the original's mtime, so a rebuilt
-     * file invalidates caches even when its compressed size is unchanged. */
+     * The validator reflects the size and mtime of the representation being
+     * served (the .gz sibling when gzip is active), so a rebuilt file
+     * invalidates caches even when its compressed size is unchanged. */
     compute_etag(&st, etag_buf, sizeof(etag_buf));
     /* RFC 9110 13.2.2: when the client sends If-None-Match it is the
      * authoritative validator - If-Modified-Since is then ignored
@@ -442,6 +466,7 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
         set_str(response->content_type, sizeof(response->content_type), get_content_type(real_path));
         response->body_length = 0;
         set_str(response->etag, sizeof(response->etag), etag_buf);
+        set_str(response->cache_control, sizeof(response->cache_control), STATIC_CACHE_CONTROL);
         return 0;
     }
     if (request->if_none_match[0] == '\0' &&
@@ -451,6 +476,7 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
         set_str(response->content_type, sizeof(response->content_type), get_content_type(real_path));
         response->body_length = 0;
         format_http_date(response->last_modified, sizeof(response->last_modified), st.st_mtime);
+        set_str(response->cache_control, sizeof(response->cache_control), STATIC_CACHE_CONTROL);
         return 0;
     }
     validated = etag_buf;
@@ -492,6 +518,7 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
             set_str(response->etag, sizeof(response->etag), validated);
             format_http_date(response->last_modified, sizeof(response->last_modified), st.st_mtime);
         }
+        set_str(response->cache_control, sizeof(response->cache_control), STATIC_CACHE_CONTROL);
         response->stream_offset = r_start;
         response->stream_path = strdup(serve_path);
         if (!response->stream_path) {
@@ -512,5 +539,6 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
     set_str(response->content_type, sizeof(response->content_type), get_content_type(real_path));
     set_str(response->etag, sizeof(response->etag), validated);
     format_http_date(response->last_modified, sizeof(response->last_modified), st.st_mtime);
+    set_str(response->cache_control, sizeof(response->cache_control), STATIC_CACHE_CONTROL);
     return 0;
 }
