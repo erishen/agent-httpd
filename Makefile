@@ -16,6 +16,14 @@ ifeq ($(UNAME_S),Darwin)
     # _POSIX_C_SOURCE —— 它会把 macOS 头收紧到纯 POSIX, 反而藏掉 BSD API。
     CFLAGS_EXTRA += -D_DARWIN_C_SOURCE
 endif
+# Test-only garbage-collection flags: standalone compilation of a single .c
+# (e.g. src/fastcgi.c for the stream test) discards unused functions that
+# reference main.c globals, so no project globals need stubbing. The comma
+# inside -Wl,--gc-sections must live inside a variable, not a $(if) argument.
+GC_LINUX = -ffunction-sections -fdata-sections -Wl,--gc-sections
+GC_DARWIN = -Wl,-dead_strip
+GC = $(if $(filter $(UNAME_S),Linux),$(GC_LINUX),$(GC_DARWIN))
+
 CFLAGS = -Wall -Wextra -Werror -O2 $(CFLAGS_EXTRA)
 LDFLAGS = $(LDFLAGS_EXTRA)
 TARGET = bin/agent-httpd
@@ -25,7 +33,7 @@ SRCS = src/main.c src/http.c src/static.c src/cgi.c \
        src/auth.c src/ratelimit.c src/worker.c src/util.c src/fastcgi.c \
        src/llm.c src/minijson.c src/chatio.c src/tools.c src/agent.c \
        src/skills.c src/session.c src/mcp.c src/pse.c src/router.c src/event.c \
-       src/metrics.c
+       src/metrics.c src/vite.c
 HDRS = src/httpd.h src/internal.h src/llm.h src/minijson.h src/chatio.h \
        src/tools.h src/agent.h src/skills.h src/session.h src/mcp.h src/pse.h \
        src/router.h
@@ -140,6 +148,16 @@ uninstall:
 test: all
 	@echo "Running smoke tests..."
 	@sh scripts/smoke-test.sh
+
+# Unit tests for the dev-proxy header builder (ASan+UBSan) and the FastCGI
+# stream relay (end-to-end, large responses must not be capped at 64KB).
+# Standalone: no live server required, so they run in CI without a backend.
+test-unit: all
+	@mkdir -p tests
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -I src tests/test_vite_header.c src/vite.c -o tests/t_vite
+	./tests/t_vite
+	$(CC) -Wall -Wextra -O2 -pthread -I src tests/test_fcgi_stream.c src/fastcgi.c $(GC) -o tests/t_fcgi
+	./tests/t_fcgi
 
 # Throughput benchmark: keep-alive vs connection-per-request.
 # Override with PORT=xxx BENCH_REQ=5000 BENCH_CONC=16.
