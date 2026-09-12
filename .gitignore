@@ -19,3 +19,7 @@ logs/
 # macOS noise
 .DS_Store
 ._*
+
+# unit-test binaries (built by `make test-unit`)
+tests/t_vite
+tests/t_fcgi
