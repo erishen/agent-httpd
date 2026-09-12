@@ -40,8 +40,10 @@
 
 static ToolDef g_tools[TOOL_MAX];
 static int g_ntools = 0;
-static char g_schema_cache[TOOL_MAX * (TOOL_NAME_MAX + TOOL_DESC_MAX +
-                                      TOOL_PARAMS_MAX + 256) + 256];
+/* Heap-owned cache: the old fixed TOOL_MAX*(...)+256 buffer silently
+ * byte-truncated the tools array when the MCP fleet grew past it, and a
+ * truncated tools array is invalid JSON that 400s every agent request. */
+static char *g_schema_cache = NULL;
 static int g_schema_dirty = 1;
 
 static const char *tool_params_or_empty(const ToolDef *t) {
@@ -49,7 +51,7 @@ static const char *tool_params_or_empty(const ToolDef *t) {
 }
 
 const char *tools_schema_json(void) {
-    if (!g_schema_dirty) return g_schema_cache;
+    if (!g_schema_dirty && g_schema_cache) return g_schema_cache;
     sbuf b = {0};
     sb_chr(&b, '[');
     for (int i = 0; i < g_ntools; i++) {
@@ -67,16 +69,16 @@ const char *tools_schema_json(void) {
         free(b.p);
         return "[]";
     }
-    set_str(g_schema_cache, sizeof g_schema_cache, b.p ? b.p : "[]");
-    if (b.len + 1 > sizeof g_schema_cache) {
-        fprintf(stderr,
-                "[tools] schema cache overflow (%zu bytes needed, %zu capped) — "
-                "request body will be truncated UTF-8\n",
-                b.len, sizeof g_schema_cache);
-    }
+    char *fresh = strdup(b.p ? b.p : "[]");
     free(b.p);
-    g_schema_dirty = 0;
-    return g_schema_cache;
+    if (fresh) {
+        free(g_schema_cache);
+        g_schema_cache = fresh;
+        g_schema_dirty = 0;
+    }
+    /* on strdup failure keep serving the previous cache (still valid JSON)
+     * and stay dirty so the next call retries */
+    return g_schema_cache ? g_schema_cache : "[]";
 }
 
 int tools_register(const char *name, const char *desc, const char *params_json,
@@ -92,8 +94,19 @@ int tools_register(const char *name, const char *desc, const char *params_json,
     nb = utf8_valid_prefix(desc ? desc : "", TOOL_DESC_MAX);
     memcpy(t->desc, desc ? desc : "", nb);
     t->desc[nb] = '\0';
-    nb = utf8_valid_prefix(params_json ? params_json : "{}", TOOL_PARAMS_MAX);
-    memcpy(t->params, params_json ? params_json : "{}", nb);
+    const char *params = params_json ? params_json : "{}";
+    if (strlen(params) >= TOOL_PARAMS_MAX) {
+        /* A byte-truncated params JSON is invalid JSON, and one invalid
+         * entry poisons the whole tools array sent upstream (every agent
+         * request 400s). Drop the params instead — the tool stays callable,
+         * just without schema hints. */
+        fprintf(stderr, "[tools] %s: params JSON too long (%zu > %d), "
+                        "registering with {}\n", name, strlen(params),
+                TOOL_PARAMS_MAX);
+        params = "{}";
+    }
+    nb = utf8_valid_prefix(params, TOOL_PARAMS_MAX);
+    memcpy(t->params, params, nb);
     t->params[nb] = '\0';
     t->fn = fn;
     t->data = data;
@@ -510,15 +523,24 @@ static void tool_fetch_url(void *data, const char *args,
     }
     close(out_pipe[0]);
     kill(pid, SIGKILL);
+    /* SIGCHLD is SIG_IGN process-wide (main.c): the kernel reaps curl as it
+     * exits and waitpid() comes back ECHILD with `status` untouched. A zeroed
+     * status reads as "exited 0", so a real curl failure code was reported
+     * as success. Only trust the exit code when we actually reaped (same
+     * guard as agent.c / router.c). */
     int status = 0;
-    waitpid(pid, &status, 0);
+    pid_t reaped;
+    do {
+        reaped = waitpid(pid, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    int code_known = (reaped == pid);
 
     if (result->oom) {
         sb_str(result, "error: out of memory");
         return;
     }
-    if (n == 0 && (failed || WIFEXITED(status))) {
-        int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (n == 0 && (failed || code_known)) {
+        int code = (code_known && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
         sb_str(result, code == 127
                            ? "error: curl(1) not found in PATH"
                            : "error: fetch returned no body (curl exit code in tool output above)");

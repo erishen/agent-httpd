@@ -301,11 +301,14 @@ try:
 
     # The chat endpoint keeps its own body parse; a valid body must not come
     # back as a parse error (the upstream itself may legitimately fail).
+    # The agent loop may run several upstream rounds with tool calls, so
+    # this one request legitimately outlives the default 20s socket timeout.
     _, _, chat = req(
         "/react/api/chat",
         method="POST",
         headers={"Content-Type": "application/json"},
         body=b'{"message":"ping"}',
+        timeout=90,
     )
     check("chat accepts a valid body", True, b"request body must be JSON" not in chat)
     check("chat answers as SSE", True, chat.startswith(b"data: "))
