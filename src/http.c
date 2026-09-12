@@ -683,6 +683,24 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
     int nodelay = 1;
     setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
+    /* This handler does blocking I/O: every send loop below (the in-buffer
+     * send(), the sendfile streamer, the CGI/FastCGI relays) treats a short
+     * write as fatal. The event loop accepts with O_NONBLOCK because *it*
+     * needs that for epoll/kqueue, and hands the very same socket to a pool
+     * worker over SCM_RIGHTS - so the flag is still set here. Without this
+     * clear, a body larger than the socket send buffer fails with EAGAIN
+     * mid-stream, the response is abandoned under a Content-Length that
+     * promised all of it, and the client sees a truncated file (from nginx:
+     * "upstream prematurely closed connection"; from a browser: a JS bundle
+     * that never parses, so the page silently never hydrates). A fast local
+     * reader rarely fills the buffer, which is why it looked fine. */
+    {
+        int fl = fcntl(client_fd, F_GETFL, 0);
+        if (fl != -1 && (fl & O_NONBLOCK)) {
+            (void)fcntl(client_fd, F_SETFL, fl & ~O_NONBLOCK);
+        }
+    }
+
     /* HTTP/1.1 persistent-connection loop (RFC 7230 section 6.3): serve
      * requests back-to-back until the client asks to close, the request or
      * response cap is hit, an error/timeout strikes, or the response length
