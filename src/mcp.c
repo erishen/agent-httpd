@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <poll.h>
 #include <time.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 
 #include "internal.h"
@@ -32,10 +33,19 @@
 #define MCP_TEXT_MAX 512             /* per content[].text item cap */
 #define MCP_FINAL_MAX 65536          /* final assembled tool text cap */
 
+/* JSON-RPC initialize params (kept near the top so the resident-connection
+ * helpers below can reference it). */
+static const char MCP_INIT_PARAMS[] =
+    "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},"
+    "\"clientInfo\":{\"name\":\"agent-httpd\",\"version\":\"1.0\"}}";
+
 static McpServerCfg g_servers[MCP_SERVERS_MAX];
 static int g_nservers = 0;
 static McpToolInfo g_tools[MCP_TOOLS_MAX];
 static int g_ntools = 0;
+
+/* forward declaration: defined further down with the tool-catalog helpers */
+static void mcp_digest_tools(const McpServerCfg *s, const char *resp);
 
 /* ---- config --------------------------------------------------------- */
 
@@ -307,26 +317,122 @@ static int mcpproc_send(McpProc *p, long id, const char *method,
     return rc;
 }
 
-/* ---- one-shot lifecycle for a single call --------------------------- */
+/* ---- resident connection pool --------------------------------------- */
+/* A spawned MCP server is kept alive across calls: each worker process
+ * hands its own pipe pair + pid, so every tools/call reuses the handshake
+ * instead of paying fork()+exec()+initialize+tools/list again. The pool is
+ * parallel to g_servers; the worker model is prefork + serial-per-connection
+ * (see worker.c), so a module-level pool needs no locking. */
 
-static const char MCP_INIT_PARAMS[] =
-    "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},"
-    "\"clientInfo\":{\"name\":\"agent-httpd\",\"version\":\"1.0\"}}";
+typedef struct {
+    McpProc proc;   /* pid + pipe pair (reused for every call) */
+    int alive;      /* 1 once spawned + handshaked, 0 if dead/empty */
+    long seq;       /* next JSON-RPC request id to issue */
+} McpConn;
 
-/* Spawn a fresh server, initialize it, send the initialized notification,
- * and execute tools/call. The helper owns the child. */
-static int mcp_tools_call_raw(const McpServerCfg *s, const char *tool,
-                              const char *args_json, sbuf *resp) {
-    McpProc p;
-    memset(&p, 0, sizeof p);
-    if (mcpproc_spawn(s, &p) < 0) return -1;
+static McpConn g_conn[MCP_SERVERS_MAX];
 
+static void mcp_conn_kill(McpConn *c) {
+    mcpproc_close(&c->proc);
+    if (c->proc.pid > 0) {
+        kill(c->proc.pid, SIGKILL);
+        for (int i = 0; i < 200; i++) {
+            pid_t r = waitpid(c->proc.pid, NULL, WNOHANG);
+            if (r == c->proc.pid || (r < 0 && errno == ECHILD)) break;
+            usleep(10 * 1000);
+        }
+        c->proc.pid = -1;
+    }
+    c->alive = 0;
+}
+
+/* Kill every resident child and reset the pool (called on (re)load so a
+ * SIGHUP resync or a fresh config never inherits a stale child). */
+static void mcp_conn_reset_all(void) {
+    for (int i = 0; i < MCP_SERVERS_MAX; i++) {
+        if (g_conn[i].alive) mcp_conn_kill(&g_conn[i]);
+        g_conn[i].proc.pid = -1;
+        g_conn[i].proc.to_child[1] = -1;
+        g_conn[i].proc.from_child[0] = -1;
+        g_conn[i].alive = 0;
+        g_conn[i].seq = 3; /* init uses 1, tools/list uses 2 */
+    }
+}
+
+/* True when the resident child has exited (zombie reaped, or no longer
+ * killable). A surviving child passes kill(pid,0). */
+static int mcp_conn_dead(McpConn *c) {
+    if (c->proc.pid <= 0) return 1;
+    pid_t r = waitpid(c->proc.pid, NULL, WNOHANG);
+    if (r == c->proc.pid || (r < 0 && errno == ECHILD)) return 1;
+    if (kill(c->proc.pid, 0) != 0) return 1;
+    return 0;
+}
+
+/* Discard any bytes already buffered by the child (e.g. unsolicited
+ * notifications) so the next read_response starts clean. Non-blocking:
+ * returns once nothing is immediately readable. */
+static void mcp_drain_stale(McpProc *p) {
+    int fd = p->from_child[0];
+    if (fd < 0) return;
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl < 0) return;
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    char buf[4096];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof buf);
+        if (n <= 0) break;
+    }
+    fcntl(fd, F_SETFL, fl);
+}
+
+/* Spawn + handshake a server, harvesting its tool catalog; on success the
+ * child is left resident in *c (alive=1). On failure the child is killed. */
+static int mcp_conn_start(const McpServerCfg *s, McpConn *c) {
+    memset(&c->proc, 0, sizeof c->proc);
+    c->proc.pid = -1;
+    c->proc.to_child[1] = -1;
+    c->proc.from_child[0] = -1;
+    if (mcpproc_spawn(s, &c->proc) < 0) return -1;
     int rc = -1;
     sbuf init_resp = {0};
-    if (mcpproc_send(&p, 1, "initialize", MCP_INIT_PARAMS, 0) != 0) goto out;
-    if (!mcpproc_read_response(&p, 1, MCP_BOOT_TIMEOUT, &init_resp)) goto out;
-    if (mcpproc_send(&p, -1, "notifications/initialized", NULL, 1) != 0)
-        goto out;
+    if (mcpproc_send(&c->proc, 1, "initialize", MCP_INIT_PARAMS, 0) == 0 &&
+        mcpproc_read_response(&c->proc, 1, MCP_BOOT_TIMEOUT, &init_resp)) {
+        mcpproc_send(&c->proc, -1, "notifications/initialized", NULL, 1);
+        sbuf list_resp = {0};
+        if (mcpproc_send(&c->proc, 2, "tools/list", NULL, 0) == 0 &&
+            mcpproc_read_response(&c->proc, 2, MCP_BOOT_TIMEOUT, &list_resp)) {
+            mcp_digest_tools(s, list_resp.p);
+            rc = 0;
+        }
+        free(list_resp.p);
+    }
+    free(init_resp.p);
+    if (rc == 0) {
+        c->alive = 1;
+        c->seq = 3;
+    } else {
+        mcp_conn_kill(c);
+    }
+    return rc;
+}
+
+/* ---- resident tools/call -------------------------------------------- */
+
+/* Execute tools/call against a resident server connection (spawned once in
+ * mcp_init, reused for every call). A crashed/dead child is respawned
+ * lazily; a child that wedges mid-call is killed and reported as a failure
+ * (the caller retries on the next turn). */
+static int mcp_tools_call_raw(const McpServerCfg *s, const char *tool,
+                              const char *args_json, sbuf *resp) {
+    int idx = (int)(s - g_servers);
+    if (idx < 0 || idx >= g_nservers) return -1;
+    McpConn *c = &g_conn[idx];
+    if (!c->alive || mcp_conn_dead(c)) {
+        if (mcp_conn_start(s, c) != 0) return -1;
+    }
+
+    mcp_drain_stale(&c->proc); /* clear stray notifications from a prior call */
 
     sbuf params = {0};
     sb_str(&params, "{\"name\":");
@@ -335,23 +441,19 @@ static int mcp_tools_call_raw(const McpServerCfg *s, const char *tool,
     sb_mem(&params, args_json ? args_json : "{}", args_json ? strlen(args_json) : 2);
     sb_str(&params, "}");
     sbuf call_resp = {0};
-    if (mcpproc_send(&p, 2, "tools/call", params.p, 0) == 0 &&
-        mcpproc_read_response(&p, 2, MCP_CALL_TIMEOUT, &call_resp)) {
+    int rc = -1;
+    long id = c->seq++;
+    if (mcpproc_send(&c->proc, id, "tools/call", params.p, 0) == 0 &&
+        mcpproc_read_response(&c->proc, id, MCP_CALL_TIMEOUT, &call_resp)) {
         sbuf_copy(resp, &call_resp);
         rc = 0;
+    } else {
+        /* child died or wedged during the call: drop it so the next call
+         * respawns a fresh one. */
+        mcp_conn_kill(c);
     }
     free(call_resp.p);
     free(params.p);
-out:
-    free(init_resp.p);
-    mcpproc_close(&p);
-    kill(p.pid, SIGKILL);
-    /* WNOHANG reap, same defensive pattern as mcp_init. */
-    for (int i = 0; i < 200; i++) {
-        pid_t r = waitpid(p.pid, NULL, WNOHANG);
-        if (r == p.pid || (r < 0 && errno == ECHILD)) break;
-        usleep(10 * 1000);
-    }
     return rc;
 }
 
@@ -679,6 +781,7 @@ int mcp_init(void) {
      * reload keep their own COW copy and stay consistent). */
     g_nservers = 0;
     memset(g_servers, 0, sizeof g_servers);
+    mcp_conn_reset_all(); /* kill any resident children from an old config */
     mcp_config_load();
     if (g_nservers == 0) return 0;
     /* Whole-init wall clock: npx-backed servers cold-start in seconds each
@@ -704,38 +807,41 @@ int mcp_init(void) {
             long left = (long)(deadline - time(NULL));
             per_to = (left < 1) ? 1 : (left > 25 ? 25 : (int)left);
         }
-        McpProc p;
-        memset(&p, 0, sizeof p);
-        if (mcpproc_spawn(s, &p) < 0) {
+        McpConn *c = &g_conn[i];
+        memset(&c->proc, 0, sizeof c->proc);
+        c->proc.pid = -1;
+        c->proc.to_child[1] = -1;
+        c->proc.from_child[0] = -1;
+        c->alive = 0;
+        if (mcpproc_spawn(s, &c->proc) < 0) {
             fprintf(stderr, "[mcp] %s: spawn failed\n", s->id);
             continue;
         }
         int rc = -1;
         sbuf init_resp = {0};
-        if (mcpproc_send(&p, 1, "initialize", MCP_INIT_PARAMS, 0) == 0 &&
-            mcpproc_read_response(&p, 1, per_to, &init_resp)) {
-            mcpproc_send(&p, -1, "notifications/initialized", NULL, 1);
+        if (mcpproc_send(&c->proc, 1, "initialize", MCP_INIT_PARAMS, 0) == 0 &&
+            mcpproc_read_response(&c->proc, 1, per_to, &init_resp)) {
+            mcpproc_send(&c->proc, -1, "notifications/initialized", NULL, 1);
             sbuf list_resp = {0};
-            if (mcpproc_send(&p, 2, "tools/list", NULL, 0) == 0 &&
-                mcpproc_read_response(&p, 2, per_to, &list_resp)) {
+            if (mcpproc_send(&c->proc, 2, "tools/list", NULL, 0) == 0 &&
+                mcpproc_read_response(&c->proc, 2, per_to, &list_resp)) {
                 mcp_digest_tools(s, list_resp.p);
                 rc = 0;
             }
             free(list_resp.p);
         }
         free(init_resp.p);
-        mcpproc_close(&p);
-        kill(p.pid, SIGKILL);
-        /* Reap defensively (WNOHANG + 2s cap): a plain waitpid() can park
-         * indefinitely on some platforms/edge states (observed with npx
-         * wrappers on macOS), and a wedged catalog init must never wedge
-         * the boot — see the init budget above. */
-        for (int i = 0; i < 200; i++) {
-            pid_t r = waitpid(p.pid, NULL, WNOHANG);
-            if (r == p.pid || (r < 0 && errno == ECHILD)) break;
-            usleep(10 * 1000);
+        if (rc == 0) {
+            /* Keep the child resident: every later tools/call reuses this
+             * pipe pair instead of paying fork()+exec()+handshake again. */
+            c->alive = 1;
+            c->seq = 3;
+            fprintf(stderr, "[mcp] %s: resident (pid %d)\n", s->id,
+                    (int)c->proc.pid);
+        } else {
+            mcp_conn_kill(c);
+            fprintf(stderr, "[mcp] %s: handshake failed\n", s->id);
         }
-        if (rc != 0) fprintf(stderr, "[mcp] %s: handshake failed\n", s->id);
     }
     return g_ntools;
 }
