@@ -134,6 +134,16 @@ check("Connection: close honoured (EOF)", True, b" 200 " in cl.split(b"\r\n")[0]
 h10 = raw(b"GET / HTTP/1.0\r\n\r\n")
 check("HTTP/1.0 answered", True, b" 200 " in h10.split(b"\r\n")[0])
 
+# Two requests in ONE write. The server must answer both without waiting for
+# more bytes: a carried-over pipelined request is already complete, so
+# blocking on recv() before parsing would park it until the keep-alive
+# timeout (the client sees one response and a hang).
+pipe = raw(
+    b"GET /__pipeline_probe__ HTTP/1.1\r\nHost: x\r\n\r\n"
+    b"GET /__pipeline_probe__ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+)
+check("pipelined requests both answered", 2, pipe.count(b"HTTP/1.1 "))
+
 print("\n=== E. negotiation / caching / ranges (/js/react-ssr.js) ===")
 st, h, raw_body = req("/js/react-ssr.js")
 check("bundle served", 200, st)
@@ -209,6 +219,47 @@ try:
     _, _, xss = req("/cgi-bin/form.cgi?name=%3Cscript%3Ealert(1)%3C/script%3E")
     check("form.cgi escapes input (no raw <script>)", True, b"<script>alert" not in xss)
     check("form.cgi shows the escaped tag", True, b"&lt;script&gt;" in xss)
+
+    # A POST whose body never reaches the handler still answers 200, so the
+    # status-only check above cannot catch a dropped body: assert the CGI
+    # actually received the bytes. Read stdin into a variable first — `wc -c`
+    # drains stdin, so counting before `cat` would echo nothing.
+    echo_cgi = os.path.join(CBIN, ".probe-echo.cgi")
+    with open(echo_cgi, "w") as f:
+        f.write(
+            "#!/bin/sh\n"
+            "echo 'Content-Type: text/plain'\n"
+            "echo\n"
+            "body=$(cat)\n"
+            "echo \"STDIN_BYTES=$(printf '%s' \"$body\" | wc -c | tr -d ' ')\"\n"
+            "printf '%s' \"$body\"\n"
+        )
+    os.chmod(echo_cgi, 0o755)
+    tmp.append(echo_cgi)
+    payload = b"name=Alice&x=1"
+    _, _, echoed = req(
+        "/cgi-bin/.probe-echo.cgi",
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        body=payload,
+    )
+    check(
+        "POST body reaches the CGI (%d bytes)" % len(payload),
+        True,
+        ("STDIN_BYTES=%d" % len(payload)).encode() in echoed,
+    )
+    check("POST body is intact", True, payload in echoed)
+
+    # The chat endpoint keeps its own body parse; a valid body must not come
+    # back as a parse error (the upstream itself may legitimately fail).
+    _, _, chat = req(
+        "/react/api/chat",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body=b'{"message":"ping"}',
+    )
+    check("chat accepts a valid body", True, b"request body must be JSON" not in chat)
+    check("chat answers as SSE", True, chat.startswith(b"data: "))
 finally:
     for p in tmp:
         try:
