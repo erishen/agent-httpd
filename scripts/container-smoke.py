@@ -18,8 +18,10 @@ request smuggling, connection reuse, content negotiation, ranges, and the
 64KB streaming ceiling.
 """
 import gzip
+import hashlib
 import http.client
 import os
+import re
 import socket
 import sys
 
@@ -179,6 +181,47 @@ etag = req("/js/react-ssr.js")[1].get("etag")
 st, _, b = req("/js/react-ssr.js", headers={"If-None-Match": etag})
 check("If-None-Match -> 304", 304, st)
 check("304 has no body", 0, len(b))
+
+# --- build fingerprint + document cache policy ---------------------------
+# What the server embedded at build time has to match the bytes actually
+# shipped, or nobody ever fetches a rebuilt bundle - a failure that looks
+# exactly like "the server is serving new code" while every browser runs the
+# old one.
+bundle = open("/app/www/js/react-ssr.js", "rb").read()
+want_hash = hashlib.sha256(bundle).hexdigest()[:8]
+check(
+    "fingerprinted bundle URL serves the shipped bytes",
+    size,
+    len(req("/js/react-ssr.js?v=%s" % want_hash)[2]),
+)
+for art in ("/app/cgi-bin/react-ssr.cgi", "/app/bin/react-ssr-server"):
+    if not os.path.exists(art):
+        continue
+    blob = open(art, "rb").read()
+    name = os.path.basename(art)
+    check("%s links a fingerprinted bundle URL" % name, True,
+          b"react-ssr.js?v=" in blob)
+    check("%s embeds the shipped bundle's hash" % name, True,
+          want_hash.encode() in blob)
+
+st, h, doc = req("/react/chat")
+check("SSR document served", 200, st)
+check("SSR document carries Date", True, "date" in h)
+check("SSR document carries Cache-Control: no-store", "no-store",
+      h.get("cache-control"))
+m = re.search(rb"react-ssr\.js\?v=([0-9a-f]{8})", doc)
+check("SSR document references the shipped bundle's hash",
+      want_hash.encode(), m.group(1) if m else None)
+# The purge switch is a deployment choice, so assert the document agrees
+# with how this container was configured instead of hardcoding either way.
+if os.environ.get("PURGE_CLIENT_CACHE") == "1":
+    check("purge on: document asks to drop the origin cache", True,
+          "clear-site-data" in h)
+    check("purge on: assets do not evict", True,
+          "clear-site-data" not in req("/js/react-ssr.js")[1])
+else:
+    check("purge off: no Clear-Site-Data on documents", True,
+          "clear-site-data" not in h)
 
 print("\n=== F. CGI protocol details ===")
 tmp = []

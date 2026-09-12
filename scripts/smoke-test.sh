@@ -23,6 +23,10 @@ REACT_ARGS=""
 # the environment beats the project-root .env (which may hold a real key),
 # keeping chat cases deterministic and offline.
 export LLM_API_KEY=""
+# The one-shot cache purge must be OFF unless a case turns it on explicitly:
+# the suite asserts its absence as the default, so a developer shell that
+# happened to export it would silently invert that check.
+unset PURGE_CLIENT_CACHE
 # MCP servers from the developer's .data/mcp-servers.json (npx-based ones can
 # take seconds to cold-start) must not slow instance startup here — C loads
 # that file unconditionally, so park it for the run and restore on exit. The
@@ -212,9 +216,17 @@ check "404 status" "404" "$err"
 
 # React SSR CGI (GET + POST) - requires node (compiled single-file cgi)
 if command -v node >/dev/null 2>&1; then
-    ssr_get=$(curl -s "$BASE/cgi-bin/react-ssr.cgi?name=SSR&message=hi" \
-        | grep -c "Rendered on the server")
-    check "React SSR GET" "1" "$ssr_get"
+    curl -s -D /tmp/ssr-h.txt -o /tmp/ssr-b.txt "$BASE/cgi-bin/react-ssr.cgi?name=SSR&message=hi"
+    check "React SSR GET" "1" "$(grep -c 'Rendered on the server' /tmp/ssr-b.txt)"
+    # The document must ask for a cache-busted bundle URL: with a stable URL
+    # a browser that cached the previous bundle keeps serving it, and the new
+    # markup fails to hydrate against the old JS.
+    check "SSR document links the fingerprinted bundle" "1" \
+        "$(grep -c 'react-ssr\.js?v=[0-9a-f]\{8\}' /tmp/ssr-b.txt)"
+    # Script output is per-request, so it must not be reusable without asking.
+    check "SSR CGI response carries Cache-Control: no-store" "1" \
+        "$(grep -ci '^cache-control: no-store' /tmp/ssr-h.txt)"
+    rm -f /tmp/ssr-h.txt /tmp/ssr-b.txt
     ssr_post=$(curl -s -X POST -d "name=SRRPOST&message=yo" "$BASE/cgi-bin/react-ssr.cgi" \
         | grep -c "Hello, SRRPOST")
     check "React SSR POST" "1" "$ssr_post"
@@ -301,6 +313,24 @@ teapot=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/cgi-bin/.status-test.cgi"
 check "CGI Status header honoured (418)" "418" "$teapot"
 teapot_body=$(curl -s "$BASE/cgi-bin/.status-test.cgi" | grep -c "short and stout")
 check "CGI Status response has body" "1" "$teapot_body"
+
+# Cache policy on the CGI path (src/cgi.c). Script output is produced per
+# request, so silence must not mean "cache me heuristically": the default is
+# no-store, while a script that states its own directive keeps it - the
+# default is a fallback, never an override.
+chkcgi="$PWD/cgi-bin/.cachectl-test.cgi"
+printf '#!/bin/bash\necho "Content-Type: text/plain"\necho "Cache-Control: max-age=60"\necho ""\necho script policy\n' > "$chkcgi"
+chmod +x "$chkcgi"
+check "CGI default cache policy is no-store" "1" \
+    "$(curl -s -D - -o /dev/null "$BASE/cgi-bin/hello.cgi" | grep -ci '^cache-control: no-store')"
+check "CGI explicit Cache-Control is honoured, not overridden" "1" \
+    "$(curl -s -D - -o /dev/null "$BASE/cgi-bin/.cachectl-test.cgi" | grep -ci '^cache-control: max-age=60')"
+rm -f "$chkcgi"
+
+# Clear-Site-Data is opt-in: without PURGE_CLIENT_CACHE nothing may ask a
+# browser to drop its store, or every response would evict the bundle.
+check "Clear-Site-Data absent unless purge is enabled" "0" \
+    "$(curl -s -D - -o /dev/null "$BASE/" | grep -ci '^clear-site-data')"
 
 # Accept-Encoding quality values: gzip;q=0 must NOT be served gzip,
 # wildcard * must be, plain list still matches, deflate-only does not.
@@ -522,6 +552,77 @@ check "/health answers ok" "ok" "$(curl -s "$CACHE_BASE/health")"
 kill "$CACHE_PID" 2>/dev/null
 wait "$CACHE_PID" 2>/dev/null
 rm -f "$TESTBIN"
+
+# --- Bundle fingerprint + the SSR response policy ------------------------
+# Two halves of one failure mode: what the server EMBEDDED at build time
+# (checked offline against the bytes actually shipped) and what it SERVES
+# over the wire (checked against a live resident backend). A stale bundle
+# that no URL change ever invalidates looks exactly like "the server is
+# serving new code" while every browser runs the old one.
+if [ -f www/js/react-ssr.js ]; then
+    want_hash=$( (sha256sum www/js/react-ssr.js 2>/dev/null \
+        || shasum -a 256 www/js/react-ssr.js) | cut -c1-8 )
+    for art in cgi-bin/react-ssr.cgi bin/react-ssr-server; do
+        [ -f "$art" ] || continue
+        # The bundles are minified, so the URL and the hash do not survive as
+        # one literal to regex out: assert both halves are present instead.
+        url_ok=$(grep -qF 'react-ssr.js?v=' "$art" && echo 1 || echo 0)
+        hash_ok=$(grep -qF "$want_hash" "$art" && echo 1 || echo 0)
+        check "$art links the fingerprinted bundle URL" "1" "$url_ok"
+        check "$art embeds the shipped bundle's hash" "1" "$hash_ok"
+    done
+    # The fingerprinted URL must resolve: the static chain has to ignore the
+    # query when locating the file, exactly as it does for any other ?query.
+    check "fingerprinted bundle URL serves the whole file" \
+        "$(wc -c < www/js/react-ssr.js | tr -d ' ')" \
+        "$(curl -s "$BASE/js/react-ssr.js?v=$want_hash" | wc -c | tr -d ' ')"
+fi
+
+if [ -x bin/react-ssr-server ]; then
+    SSR_PORT=3118
+    SSR_BASE="http://localhost:$SSR_PORT"
+    SSR_SOCK="/tmp/agent-httpd-react-smoke.sock"
+    rm -f "$SSR_SOCK"
+    # The resident backend is the origin for these documents - it composes
+    # the response the relay forwards verbatim - so the purge switch has to
+    # be set on BOTH processes, exactly as docker-compose does it.
+    PURGE_CLIENT_CACHE=1 REACT_FCGI_SOCK="$SSR_SOCK" \
+        bin/react-ssr-server > /tmp/agent-httpd-react-smoke.log 2>&1 &
+    SSR_REACT_PID=$!
+    PURGE_CLIENT_CACHE=1 "$SERVER" -p "$SSR_PORT" -R "$SSR_SOCK" \
+        -L /tmp/agent-httpd-ssr-access.log > /tmp/agent-httpd-ssr-stdout.log 2>&1 &
+    SSR_PID=$!
+    ssr_ready=0
+    i=0
+    while [ "$i" -lt 60 ]; do
+        if curl -s -o /dev/null --max-time 1 "$SSR_BASE/react/chat" 2>/dev/null; then
+            ssr_ready=1
+            break
+        fi
+        i=$((i + 1))
+        sleep 0.25
+    done
+    check "SSR relay instance up" "1" "$ssr_ready"
+    curl -s -D /tmp/ssr-relay-h.txt -o /tmp/ssr-relay-b.txt "$SSR_BASE/react/chat"
+    # The relay streams the backend's bytes verbatim, so whatever the
+    # resident server omits is missing end to end - Date included.
+    check "SSR relay document carries Date" "1" \
+        "$(grep -ci '^date: .*GMT' /tmp/ssr-relay-h.txt)"
+    check "SSR relay document carries Cache-Control: no-store" "1" \
+        "$(grep -ci '^cache-control: no-store' /tmp/ssr-relay-h.txt)"
+    check "SSR relay document asks for the fingerprinted bundle" "1" \
+        "$(grep -c 'react-ssr\.js?v=[0-9a-f]\{8\}' /tmp/ssr-relay-b.txt)"
+    check "purge on: document asks to drop the origin cache" "1" \
+        "$(grep -ci '^clear-site-data: "cache"' /tmp/ssr-relay-h.txt)"
+    # Only documents evict. A per-asset Clear-Site-Data would drop the bundle
+    # on every page view, defeating the policy it exists to repair.
+    check "purge on: assets do NOT evict" "0" \
+        "$(curl -s -D - -o /dev/null "$SSR_BASE/js/react-ssr.js" | grep -ci '^clear-site-data')"
+    rm -f /tmp/ssr-relay-h.txt /tmp/ssr-relay-b.txt
+    kill "$SSR_PID" "$SSR_REACT_PID" 2>/dev/null
+    wait "$SSR_PID" "$SSR_REACT_PID" 2>/dev/null
+    rm -f "$SSR_SOCK"
+fi
 
 # Native C LLM chat endpoint (src/llm.c): SSE envelope identical to the
 # node backend's chat.ts. LLM_API_KEY is exported empty above, so the
@@ -961,16 +1062,25 @@ if [ -x "bin/react-ssr-server" ] && command -v node >/dev/null 2>&1; then
     fi
 
     # relay: HTTP /react/ -> -R -> resident backend
+    # Other instances append to logs/access.log too, so remember where the
+    # log stood and look at what THIS case appended.
+    RELAY_LOG_BASE=$(wc -l < logs/access.log | tr -d ' ')
     relay_status=$(status "$BASE/react/?name=Resident")
     check "HTTP /react/ relay (GET)" "200" "$relay_status"
     relay_token=$(curl -s "$BASE/react/?name=Resident" | grep -c "Hello, Resident")
     check "relayed SSR renders Hello, Resident" "1" "$relay_token"
 
-    # -R relay must log real byte counts (used to always log 0)
-    relay_bytes=$(tail -1 logs/access.log | sed -E 's/.*" ([0-9]{3}) ([0-9]+) .*/\2/')
+    # -R relay must log real body byte counts (it once logged a hardcoded 0
+    # for every relayed response). Read the lines this case appended, not the
+    # file's last line: several instances share this log, so "tail -1" used
+    # to report whatever request happened to land last, passing or failing
+    # for reasons that had nothing to do with the relay.
+    relay_line=$(tail -n +"$((RELAY_LOG_BASE + 1))" logs/access.log \
+        | grep 'react/?name=Resident' | tail -1)
+    relay_bytes=$(printf '%s' "$relay_line" | sed -E 's/.*" ([0-9]{3}) ([0-9]+) .*/\2/')
     relay_bytes_ok=0
     [ -n "$relay_bytes" ] && [ "$relay_bytes" -gt 0 ] && relay_bytes_ok=1
-    check "relay logs nonzero bytes ($relay_bytes)" "1" "$relay_bytes_ok"
+    check "relay logs nonzero body bytes ($relay_bytes)" "1" "$relay_bytes_ok"
     relay_post=$(curl -s -X POST -d "name=SVCPOST" "$BASE/react/" | grep -c "Hello, SVCPOST")
     check "relayed SSR POST" "1" "$relay_post"
     relay_about=$(curl -s "$BASE/react/about" | grep -c "How the routing works")
