@@ -49,10 +49,16 @@ typedef struct {
     const char *args; /* NULL -> no args; "$FSROOT" substituted for fs */
 } RouterMcpTemplate;
 
+/* Local spawn recipes for the MCP servers the router mounts. Versions are
+ * pinned so the Docker image can pre-warm the exact same specs into its npx
+ * cache (see Dockerfile) — an unpinned "latest" re-resolves on every boot and
+ * re-downloads whenever upstream publishes, which on a cold C-network easily
+ * blows the MCP init budget and fails every handshake ("[mcp] ... handshake
+ * failed"). Keep these versions in sync with the Dockerfile pre-warm step. */
 static const RouterMcpTemplate k_known_mcps[] = {
-    {"fs", "npx", "-y @modelcontextprotocol/server-filesystem $FSROOT"},
-    {"think", "npx", "-y @modelcontextprotocol/server-sequential-thinking"},
-    {"memory", "npx", "-y @modelcontextprotocol/server-memory"},
+    {"fs", "npx", "-y @modelcontextprotocol/server-filesystem@2026.8.31 $FSROOT"},
+    {"think", "npx", "-y @modelcontextprotocol/server-sequential-thinking@2026.8.31"},
+    {"memory", "npx", "-y @modelcontextprotocol/server-memory@2026.8.31"},
 };
 #define KNOWN_MCPS (sizeof k_known_mcps / sizeof k_known_mcps[0])
 
@@ -319,8 +325,14 @@ static void sync_mcps(void) {
                     fprintf(stderr, "[router] mcp 'fs': MCP_FS_ROOT unset, skip\n");
                     continue;
                 }
-                if (snprintf(args, sizeof args, "-y @modelcontextprotocol/server-filesystem %s",
-                             root) >= (int)sizeof args) continue;
+                /* 替换模板里的 $FSROOT 占位符（而不是复制一份 spec），
+                 * 版本钉在模板里、这里只换路径，两边不会漂移。 */
+                const char *ph = strstr(t->args, "$FSROOT");
+                size_t pre = (size_t)(ph - t->args);
+                if (pre + strlen(root) + strlen(ph + 7) >= sizeof args) continue;
+                memcpy(args, t->args, pre);
+                strcpy(args + pre, root);
+                strcat(args, ph + 7);
             } else {
                 if (snprintf(args, sizeof args, "%s", t->args) >= (int)sizeof args) continue;
             }
