@@ -13,6 +13,21 @@
 # fcgi.sock, nginx 只读挂进来连 react.sock。刻意不再声明第二个 fcgi-sock 卷 ——
 # 两个卷挂同一个挂载点时 Docker 只让后声明的生效, 前者永远不会被创建 (旧配置就是
 # 这样, 且注释声称它把 socket 暴露给了 nginx, 而 nginx.conf 从不 fastcgi_pass 它)。
+#
+# LLM 上游地址: .env 里的 LLM_API_URL 是给宿主 (make dev / 直接跑 bin/agent-httpd)
+# 用的, 通常写成 http://localhost:9070/v1 指向本机 llm-router。容器里的 localhost
+# 是容器自己的 loopback, 那个地址连不通, 聊天会静默失败 —— 所以 httpd 与 react
+# 两个服务在这里做容器专用覆盖, .env 保持原样, 宿主链路不受影响。
+#
+# 这层覆盖是可靠的: environment 在 compose 里优先于 env_file, 而服务端自带的 .env
+# 加载器是 setenv(..., 0) (已存在者优先), 不会再盖回来; 镜像里也不含 .env
+# (.dockerignore 已排除), 所以容器内环境变量就是唯一来源。
+#
+# Docker Desktop / OrbStack 原生解析 host.docker.internal; 下面 extra_hosts 的
+# host-gateway 只是让同一份 compose 在 Linux 上也成立 (实测两者解析到同一 IP)。
+# 上游不在宿主本机时换掉它, 例如:
+#   LLM_API_URL_CONTAINER=http://10.0.0.5:9070/v1 docker compose up -d
+x-llm-api-url: &container_llm_api_url "${LLM_API_URL_CONTAINER:-http://host.docker.internal:9070/v1}"
 
 services:
   httpd:
@@ -25,8 +40,13 @@ services:
       RATE_LIMIT: "0"       # 每 IP 限流 (req/s); 0 = 关闭
       FCGI_SOCK: /run/agent-httpd/fcgi.sock
       REACT_SOCK: /run/agent-httpd/react.sock
+      # 容器内覆盖 .env 的 localhost 上游 (见文件顶部说明)
+      LLM_API_URL: *container_llm_api_url
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # C 聊天端点 (/react/api/chat, src/llm.c) 在 httpd 进程内调 LLM 上游,
-    # LLM_* 配置同样从项目根 .env 注入 (文件不存在也能启动, 回落演示引擎)
+    # LLM_* 配置同样从项目根 .env 注入 (文件不存在也能启动, 回落演示引擎);
+    # 上面的 LLM_API_URL 覆盖只改地址, KEY / MODEL 仍走 .env
     env_file:
       - path: .env
         required: false
@@ -57,6 +77,11 @@ services:
       # 命名卷里, 仅本栈三个容器可见, 不落宿主机路径, 因此这里放宽不增加暴露面。
       # 单独跑 react 后端 (不经本 compose) 时默认仍是 0700。
       REACT_FCGI_SOCK_MODE: "0777"
+      # chat.ts 同样读 process.env.LLM_API_URL (值守后端进程, 启动时读一次),
+      # 容器内必须用宿主网关地址, 理由与 httpd 一致
+      LLM_API_URL: *container_llm_api_url
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # LLM 聊天后端配置从项目根 .env 注入 (LLM_API_URL / LLM_API_KEY / LLM_MODEL);
     # 文件不存在也能启动 —— 回落到内置演示引擎
     env_file:
