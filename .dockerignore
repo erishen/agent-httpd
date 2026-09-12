@@ -28,5 +28,14 @@ cgi-bin/java.cgi
 docs/
 *.log
 
+# smoke 套件的临时夹具。脚本跑完自己会删, 但运行被中断时会留在工作树里;
+# 尤其 www/fixlist 是「大目录列表」用例造的两千项目录, 一旦进上下文就会
+# 被 `COPY www/ www/` 原样搬进镜像 —— 与上面的 .gz 表亲是同一类事故:
+# 构建一切"成功", 镜像里却混着宿主工作树的测试残渣。
+cgi-bin/.*-test.cgi
+www/fixlist/
+www/range-test-smoke.bin
+www/js/fix-mid.bin
+
 # 密钥文件绝不进镜像 (compose 在运行时经 env_file 注入容器)
 .env

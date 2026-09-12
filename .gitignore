@@ -28,3 +28,11 @@ cgi-bin/.!*
 tests/t_vite
 tests/t_fcgi
 tests/t_ka
+
+# smoke-test scratch. The suite writes these into the docroot and removes them
+# again; a run cut short (or one whose deletes hit the sandbox's bulk-delete
+# guard, e.g. after www/fixlist's 2000 entries) leaves them behind.
+cgi-bin/.*-test.cgi
+www/fixlist/
+www/range-test-smoke.bin
+www/js/fix-mid.bin
