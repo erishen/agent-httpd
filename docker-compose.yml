@@ -46,6 +46,13 @@ services:
       REACT_SOCK: /run/agent-httpd/react.sock
       # 容器内覆盖 .env 的 localhost 上游 (见文件顶部说明)
       LLM_API_URL: *container_llm_api_url
+      # 一次性清缓存开关。开着的期间, HTML 响应额外带
+      # Clear-Site-Data: "cache", 浏览器收到后会丢掉本 origin 的 HTTP 缓存。
+      # 存在的理由: 服务端改缓存策略只能约束"今后"的响应, 拦不住浏览器里
+      # 早已存下的旧副本 (缓存条目自带写入时的策略, 没有任何响应头能撤回它)。
+      # 这是唯一不需要用户动手的补救办法。让所有客户端都访问过一次后, 改成
+      # "0" 或删掉这两行 —— 开着时重复访问者每次访问都会被清一次缓存。
+      PURGE_CLIENT_CACHE: "1"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # C 聊天端点 (/react/api/chat, src/llm.c) 在 httpd 进程内调 LLM 上游,
@@ -84,6 +91,9 @@ services:
       # chat.ts 同样读 process.env.LLM_API_URL (值守后端进程, 启动时读一次),
       # 容器内必须用宿主网关地址, 理由与 httpd 一致
       LLM_API_URL: *container_llm_api_url
+      # 一次性清缓存开关, 与 httpd 同名同义 (SSR 文档由本进程直接产出,
+      # C 侧补不了它的头)。清完同样建议改回 "0" 或删掉。
+      PURGE_CLIENT_CACHE: "1"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # LLM 聊天后端配置从项目根 .env 注入 (LLM_API_URL / LLM_API_KEY / LLM_MODEL);

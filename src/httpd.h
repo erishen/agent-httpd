@@ -182,9 +182,12 @@ void log_request(const char *client_ip, const HttpRequest *request, int status_c
  * its raw HTTP/1.1 response straight to client_fd (no fixed-size cap, so
  * large SSR pages no longer 502). Returns the backend status code (>=100)
  * on success, or -1 if the exchange could not even be attempted (nothing
- * was streamed yet — the caller should render its own 502). */
+ * was streamed yet — the caller should render its own 502).
+ * `body_bytes` (may be NULL) receives the response BODY bytes forwarded,
+ * for the access log's %b field: the head is located inside the first
+ * STDOUT frame, since the relay itself only ever sees whole messages. */
 int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
-                    const char *remote_addr, int client_fd);
+                    const char *remote_addr, int client_fd, int *body_bytes);
 
 /* Dev-proxy (-v) header construction, extracted to src/vite.c for unit tests.
  * line_has_embedded_crlf is also used by proxy_to_vite for request-line checks. */
