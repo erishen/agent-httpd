@@ -42,6 +42,18 @@ void signal_handler(int sig) {
     }
 }
 
+/* Replace control characters (including CR/LF) so a crafted Referer or
+ * User-Agent cannot forge a new log line or break Combined Log Format
+ * parsing. */
+static void log_field(const char *src, char *dst, size_t n) {
+    size_t i = 0;
+    for (; src && src[i] && i + 1 < n; i++) {
+        unsigned char c = (unsigned char)src[i];
+        dst[i] = (c < 0x20 || c == 0x7f) ? '?' : (char)c;
+    }
+    dst[i] = '\0';
+}
+
 void log_request(const char *client_ip, const HttpRequest *request, int status_code, int bytes) {
     /* Metrics: classify by status family. Runs on every path (fast loop,
      * workers, fork mode) since they all log here. */
@@ -54,13 +66,17 @@ void log_request(const char *client_ip, const HttpRequest *request, int status_c
     localtime_r(&now, &tm_now);
     char time_str[64];
     strftime(time_str, sizeof(time_str), "%d/%b/%Y:%H:%M:%S %z", &tm_now);
+    char ref_buf[sizeof(request->referer)];
+    char ua_buf[sizeof(request->user_agent)];
+    log_field(request->referer, ref_buf, sizeof(ref_buf));
+    log_field(request->user_agent, ua_buf, sizeof(ua_buf));
     fprintf(g_log_fp, "%s - - [%s] \"%s %s %s\" %d %d \"%s\" \"%s\"\n",
             client_ip, time_str,
             request->method, request->path,
             request->protocol[0] ? request->protocol : "-",
             status_code, bytes,
-            request->referer[0] ? request->referer : "-",
-            request->user_agent[0] ? request->user_agent : "-");
+            ref_buf[0] ? ref_buf : "-",
+            ua_buf[0] ? ua_buf : "-");
     fflush(g_log_fp);
 }
 
@@ -506,6 +522,19 @@ int create_server_socket(int port) {
  * transforms and dev SSR pages — everything the C server cannot render
  * itself. Runs on a blocking pool worker; the header block is replayed
  * verbatim (minus Host/Connection, which we control). */
+/* A smuggled request hides inside a header value as an embedded CRLF
+ * (e.g. "Foo: bar\r\nGET /x HTTP/1.1\r\n"). We are the framing authority, so
+ * reject any header line that carries a CR/LF anywhere except its own
+ * CRLF terminator (the last two bytes). */
+static int line_has_embedded_crlf(const char *line, size_t ll) {
+    if (ll < 2) return 0; /* no room for a CRLF terminator */
+    size_t last = ll - 2; /* bytes before the trailing CRLF */
+    for (size_t i = 0; i < last; i++) {
+        if (line[i] == '\r' || line[i] == '\n') return 1;
+    }
+    return 0;
+}
+
 static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
                           const HttpRequest *req) {
     int up = socket(AF_INET, SOCK_STREAM, 0);
@@ -531,6 +560,15 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
     const char *nl = memchr(raw, '\n', hdr_len);
     size_t first_len = nl ? (size_t)(nl - raw + 1) : hdr_len;
     size_t off = first_len;
+    /* reject a smuggled request line (embedded CRLF before its terminator) */
+    if (line_has_embedded_crlf(raw, first_len)) {
+        const char *err = "HTTP/1.1 400 Bad Request\r\n"
+                          "Content-Length: 0\r\nConnection: close\r\n\r\n";
+        (void)send(client_fd, err, (int)strlen(err), 0);
+        close(up);
+        close(client_fd);
+        return;
+    }
     if (send(up, raw, first_len, 0) < 0) goto done;
 
     /* remaining header lines, dropping hop-by-hop headers we control.
@@ -543,7 +581,7 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
     static const char *const strip_pfx[] = {
         "Host:", "Connection:", "Transfer-Encoding:", "TE:",
         "Keep-Alive:", "Proxy-Connection:", "Proxy-Authenticate:",
-        "Proxy-Authorization:", "Upgrade:", "Trailer:", NULL,
+        "Proxy-Authorization:", "Upgrade:", "Trailer:", "Expect:", NULL,
     };
     char buf[16384];
     size_t blen = 0;
@@ -560,7 +598,18 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
                 break;
             }
         }
-        if (!drop && blen + ll < sizeof(buf)) {
+        /* a header value with an embedded CRLF is a smuggled second request
+         * aimed at the upstream Vite; do not forward it */
+        if (!drop && line_has_embedded_crlf(line, ll)) {
+            const char *err = "HTTP/1.1 400 Bad Request\r\n"
+                              "Content-Length: 0\r\nConnection: close\r\n\r\n";
+            (void)send(client_fd, err, (int)strlen(err), 0);
+            goto done;
+        }
+        /* keep >=64 bytes of headroom so the trailing Host/Connection line
+         * below can never push blen past the buffer (a 16KB header block is
+         * pathological; we simply stop forwarding extra hop-by-hop lines). */
+        if (!drop && blen + ll + 64 <= sizeof(buf)) {
             memcpy(buf + blen, line, ll);
             blen += ll;
         }
@@ -569,7 +618,10 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
     int extra = snprintf(buf + blen, sizeof(buf) - blen,
                          "Host: 127.0.0.1:%d\r\nConnection: close\r\n\r\n",
                          g_vite_upstream_port);
-    blen += extra;
+    if (extra < 0) extra = 0;
+    if ((size_t)blen + (size_t)extra > sizeof(buf))
+        extra = (int)(sizeof(buf) - blen); /* clamp: never read OOB in send */
+    blen += (size_t)extra;
     if (send(up, buf, blen, 0) < 0) goto done;
     if (req->body && req->content_length > 0) {
         size_t left = (size_t)req->content_length;
@@ -679,6 +731,11 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
      * requests back-to-back until the client asks to close, the request or
      * response cap is hit, an error/timeout strikes, or the response length
      * is unknown (streamed relay) - then close. */
+    int carry = 0;                  /* bytes of the next pipelined request
+                                     * still parked in buffer from a prior
+                                     * request (HTTP/1.1 keep-alive pipelining) */
+    long prev_consumed = 0;         /* end offset of the last fully-parsed
+                                     * request within buffer */
     for (int served = 0;;) {
     HttpRequest request;
     HttpResponse response;
@@ -687,7 +744,20 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
     int keep_alive_force_close = 0; /* set by the 401 challenge path */
     int headers_oversized = 0;      /* header block exceeded the buffer */
 
-    memset(buffer, 0, sizeof(buffer));
+    if (carry > 0) {
+        /* A previous request left bytes of the next pipelined request in
+         * buffer. Shift them to the front and keep parsing from there
+         * instead of discarding them: the old code zeroed the buffer and
+         * re-recv'd, which silently dropped any pipelined request that had
+         * already arrived (the client would hang until its timeout). */
+        memmove(buffer, buffer + prev_consumed, (size_t)carry);
+        total = carry;
+        buffer[total] = '\0';
+        memset(buffer + total, 0, sizeof(buffer) - (size_t)total);
+        carry = 0;
+    } else {
+        memset(buffer, 0, sizeof(buffer));
+    }
     memset(&response, 0, sizeof(response));
     memset(&request, 0, sizeof(request));
     snprintf(request.remote_addr, sizeof(request.remote_addr), "%s", client_ip);
@@ -949,6 +1019,14 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
                     int avail = (int)sizeof(buffer) - 1 - total;
                     if (request.content_length - have > avail) {
                         set_error_response(&response, 413, "Request Entity Too Large");
+                        /* Body did not fit the single read buffer: the
+                         * remaining bytes are still on the socket. If we
+                         * kept the connection alive the client's trailing
+                         * body would be parsed as the next request
+                         * (keep-alive desync / request smuggling). Force a
+                         * close so the client must resend on a fresh
+                         * connection. */
+                        keep_alive_force_close = 1;
                     } else {
                         while (have < request.content_length) {
                             if (deadline && time(NULL) >= deadline) {
@@ -972,12 +1050,20 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
                 }
                 if (have >= request.content_length &&
                     response.status_code == 0 &&
-                    request.content_length > 0) {
-                    request.body = malloc(request.content_length + 1);
-                    if (request.body) {
-                        memcpy(request.body, buffer + body_start, request.content_length);
-                        request.body[request.content_length] = '\0';
+                    (request.content_length == 0 || request.body != NULL)) {
+                    if (request.content_length > 0) {
+                        request.body = malloc(request.content_length + 1);
+                        if (request.body) {
+                            memcpy(request.body, buffer + body_start, request.content_length);
+                            request.body[request.content_length] = '\0';
+                        }
                     }
+                    /* Everything from here on in buffer belongs to a
+                     * subsequent pipelined request: remember its offset so
+                     * the next keep-alive iteration can carry it forward
+                     * instead of dropping it (HTTP/1.1 pipelining). */
+                    prev_consumed = (long)header_end_len + request.content_length;
+                    carry = total - (int)prev_consumed;
                 }
             }
 
@@ -999,30 +1085,18 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         } else if (g_react_sock[0] &&
             (strncmp(request.path, "/react", 6) == 0 &&
              (request.path[6] == '\0' || request.path[6] == '/'))) {
-            char resp[MAX_RESPONSE_SIZE];
-            int rlen = MAX_RESPONSE_SIZE;
             const char *ip = client_addr ? inet_ntoa(client_addr->sin_addr) : "-";
-            if (forward_to_fcgi(g_react_sock, &request, ip, resp, &rlen) == 0) {
-                int status = 502;
-                if (rlen >= 9 && strncmp(resp, "HTTP/1.1 ", 9) == 0) {
-                    status = atoi(resp + 9);
-                }
-                /* relay the backend's full response (headers + body),
-                 * send() may take only part of it (SIGPIPE is ignored) */
-                int sent_total = 0;
-                while (sent_total < rlen) {
-                    ssize_t sw = send(client_fd, resp + sent_total, (size_t)(rlen - sent_total), 0);
-                    if (sw <= 0) {
-                        if (sw < 0 && errno == EINTR) continue;
-                        break;
-                    }
-                    sent_total += (int)sw;
-                }
-                log_request(ip, &request, status, sent_total);
+            int status = forward_to_fcgi(g_react_sock, &request, ip, client_fd);
+            if (status < 0) {
+                /* backend unreachable / protocol error before any byte was
+                 * streamed: render our own 502 (forward_to_fcgi streamed
+                 * nothing, so this page is the only response). */
+                set_error_response(&response, 502, "Bad Gateway");
+            } else {
+                log_request(ip, &request, status, 0);
                 close(client_fd);
                 return;
             }
-            set_error_response(&response, 502, "Bad Gateway");
         } else {
             process_request(&request, &response, client_fd);
         }
@@ -1061,6 +1135,12 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         }
     }
     if (keep_alive_force_close) {
+        keep_alive = 0;
+    }
+    if (request.chunked) {
+        /* Keep-alive pipelining after a chunked body is not decoded for
+         * carry-over (the trailer's end offset is awkward to track), so
+         * close instead of risking a swallowed request. Valid per HTTP/1.1. */
         keep_alive = 0;
     }
     int response_len;

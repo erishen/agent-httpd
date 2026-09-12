@@ -171,13 +171,17 @@ int handle_directory(const char *real_path, const char *request_path, HttpRespon
     char *p = listing;
     char *const end = listing + sizeof(listing) - 1;
     char escaped_name[MAX_PATH_SIZE];
+    char escaped_path[MAX_PATH_SIZE];
     char entry_path[MAX_PATH_SIZE];
+    /* the requested path is reflected into <title>/<h1>; escape it so a path
+     * containing < > & cannot inject markup (reflected XSS) */
+    html_escape(request_path, escaped_path, sizeof(escaped_path));
 
     LIST_APPEND(p, end,
                 "<!DOCTYPE html>\n<html>\n<head><title>Index of %s</title></head>\n"
                 "<body>\n<h1>Index of %s</h1>\n<hr>\n<table>\n"
                 "<tr><th align=\"left\">Name</th><th>Last modified</th><th>Size</th></tr>\n",
-                request_path, request_path);
+                escaped_path, escaped_path);
     LIST_APPEND(p, end,
                 "<tr><td><a href=\"../\">Parent Directory</a></td><td>-</td><td>-</td></tr>\n");
 

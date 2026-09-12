@@ -336,18 +336,34 @@ static void tool_read_file(void *data, const char *args,
  * literal address and every getaddrinfo result are checked (a hostname
  * resolving into 127.0.0.1 must not slip through; DNS rebinding inside the
  * 10s curl window is out of scope for this teaching server). */
+/* Block loopback / private / link-local / reserved IPv4 ranges. Shared by the
+ * literal AF_INET path and the IPv4-mapped/compatible forms of IPv6
+ * (::ffff:a.b.c.d and ::a.b.c.d), which the kernel routes as IPv4. */
+static int v4_blocked(const unsigned char *b) {
+    /* 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (CGNAT), 127.0.0.0/8,
+     * 169.254.0.0/16 (link-local / cloud metadata), 172.16.0.0/12,
+     * 192.0.0.0/24, 192.0.2.0/24 (TEST-NET-1), 192.168.0.0/16,
+     * 198.18.0.0/15 (benchmarking), 198.51.100.0/24 (TEST-NET-2),
+     * 203.0.113.0/24 (TEST-NET-3) */
+    if (b[0] == 0 || b[0] == 10 || b[0] == 127 ||
+        (b[0] == 100 && (b[1] & 0xc0) == 64) ||
+        (b[0] == 169 && b[1] == 254) ||
+        (b[0] == 172 && (b[1] & 0xf0) == 16) ||
+        (b[0] == 192 && (b[1] == 0 || b[1] == 2 || b[1] == 168)) ||
+        (b[0] == 198 && (b[1] & 0xfe) == 18) ||
+        (b[0] == 198 && b[1] == 51 && b[2] == 100) ||
+        (b[0] == 203 && b[1] == 0 && b[2] == 113)) {
+        return 1;
+    }
+    return 0;
+}
+
 static int addr_is_blocked(const struct sockaddr *sa, socklen_t salen) {
     (void)salen;
     if (sa->sa_family == AF_INET) {
         const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
         const unsigned char *b = (const unsigned char *)&sin->sin_addr;
-        /* 0.x, 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16 */
-        if (b[0] == 0 || b[0] == 10 || b[0] == 127 ||
-            (b[0] == 169 && b[1] == 254) ||
-            (b[0] == 172 && (b[1] & 0xf0) == 16) ||
-            (b[0] == 192 && b[1] == 168)) {
-            return 1;
-        }
+        return v4_blocked(b);
     } else if (sa->sa_family == AF_INET6) {
         const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
         const struct in6_addr *a = &sin6->sin6_addr;
@@ -356,6 +372,13 @@ static int addr_is_blocked(const struct sockaddr *sa, socklen_t salen) {
             IN6_IS_ADDR_LINKLOCAL(a) || IN6_IS_ADDR_SITELOCAL(a) ||
             (b[0] & 0xfe) == 0xfc) { /* fc00::/7 unique-local */
             return 1;
+        }
+        /* ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible) are routed as
+         * IPv4 by the kernel, so a literal [::ffff:169.254.169.254] would
+         * otherwise slip past the v4 blocklist and reach the cloud metadata
+         * service. Apply the same v4 guard to the embedded address. */
+        if (IN6_IS_ADDR_V4MAPPED(a) || IN6_IS_ADDR_V4COMPAT(a)) {
+            return v4_blocked(b + 12);
         }
     }
     return 0;
