@@ -159,6 +159,17 @@ test-unit: all
 	$(CC) -Wall -Wextra -O2 -pthread -I src tests/test_fcgi_stream.c src/fastcgi.c $(GC) -o tests/t_fcgi
 	./tests/t_fcgi
 
+# Keep-alive pipelining regression (fix D): start the real server in
+# fork-per-connection mode, pipeline two GETs on one connection, assert both
+# are served. The spawned server uses REQUEST_TIMEOUT_SECONDS=2 so the
+# broken path fails fast instead of hanging for the default 60s. This is a
+# slower integration test (the server spawns resident MCP subprocesses at
+# startup), so it is kept separate from the fast `test-unit` target.
+test-keepalive: all
+	@mkdir -p tests
+	$(CC) $(CFLAGS) -I src tests/test_keepalive_pipeline.c -o tests/t_ka
+	./tests/t_ka
+
 # Throughput benchmark: keep-alive vs connection-per-request.
 # Override with PORT=xxx BENCH_REQ=5000 BENCH_CONC=16.
 bench: all
@@ -175,4 +186,4 @@ bench: all
 clean:
 	rm -rf $(BUILD_DIR) bin
 
-.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop
+.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive
