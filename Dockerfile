@@ -74,6 +74,11 @@ WORKDIR /app
 # .data/mcp-servers.json, 互不影响。
 COPY deploy/mcp-servers.container.json .data/mcp-servers.json
 COPY scripts/fake-mcp-server.py scripts/
+# 技能索引 (src/skills.c) 扫描 <cwd>/skills —— 本地技能 (demo-lab) 来自仓库
+# 树, 必须随镜像走, 否则容器里只剩 router 同步的技能, "跑 demo-lab" 这类
+# 本地示例在聊天页必然落空。skills/router/ 也会被带上, 但运行时 router
+# 每次启动都会重新物化同名文件覆盖之 (内容以 tsm-hub 为准)。
+COPY skills/ skills/
 # 工作目录即 docroot (agent-httpd 以 cwd 为根, 需要 /app/www)
 COPY --from=c-build /src/bin/agent-httpd bin/
 COPY --from=ssr-build /build/bin/react-ssr-server bin/
