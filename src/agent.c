@@ -495,21 +495,36 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
     free(line.p);
     close(out_pipe[0]);
     if (!eof) kill(pid, SIGKILL);
+    /* SIGCHLD is SIG_IGN process-wide (main.c), so the kernel reaps curl the
+     * moment it exits and this waitpid() comes back ECHILD with `status`
+     * untouched. A zeroed status reads as "exited 0", which turned a fast
+     * upstream failure (connection refused, bad host, immediate reset) into a
+     * clean, empty answer: no error event, no retry, nothing in the log.
+     * router.c already guards its own child this way; do the same here. */
     int status = 0;
-    waitpid(pid, &status, 0);
+    pid_t reaped;
+    do {
+        reaped = waitpid(pid, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    int code_known = (reaped == pid);
 
     int rc = 0;
     if (out->ok) {
-        int code = WIFEXITED(status) ? WEXITSTATUS(status) : 0;
+        int code = (code_known && WIFEXITED(status)) ? WEXITSTATUS(status) : 0;
         if (timed_out) {
             if (up_err) *up_err = UP_ERR_TIMEOUT;
             rc = -1;
-        } else if (!done_seen && code != 0) {
+        } else if (!done_seen && (code != 0 || http_status < 0)) {
+            /* code != 0: curl reported a failure. http_status < 0: the -w
+             * footer never arrived, so no HTTP status was ever produced —
+             * the transport failed even if the exit status got lost above
+             * (curl 7 refused / 6 bad host). Both are round failures. */
             if (up_err) {
                 /* curl -f maps every HTTP>=400 to exit 22; the -w footer
                  * carries the REAL status, which decides retry semantics. */
                 if (http_status >= 400) *up_err = UP_ERR_HTTP_BASE + http_status;
-                else *up_err = code;
+                else if (code != 0) *up_err = code;
+                else *up_err = 7; /* curl: couldn't connect */
             }
             rc = -1;
         }
