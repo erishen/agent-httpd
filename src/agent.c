@@ -46,14 +46,23 @@ int agent_max_concurrent(void) {
 }
 
 /* Tool execution source.
- *   "local"  (default) agent-httpd runs its own ReAct loop and dispatches
- *             the 7 built-in tools + spawned MCPs locally (current behavior).
- *   "gateway" 方案 A: tsm-hub owns the capability pool and runs the tool
- *             loop server-side. agent-httpd sends NO local tool schema and
- *             does NOT re-execute tool_calls — it just relays the gateway's
- *             final stream. Set AGENT_TOOL_SOURCE=gateway once tsm-hub's pool
- *             (built-in tools + configured MCPs + skills) covers what the
- *             chat needs. */
+ *   "local"  (default) agent-httpd runs its own ReAct loop and dispatches its
+ *             built-in tools + spawned MCPs locally. The local tool schema is
+ *             sent to tsm-hub; because a client tools array is present, tsm-hub
+ *             passes the request through to the LLM and relays tool_calls back
+ *             for local execution. This keeps EVERY local tool working — incl.
+ *             the Beijing-time get_time fix and the domain MCPs (portfolio-check
+ *             / weekly-investment) that tsm-hub does NOT have.
+ *   "gateway" 方案 A draft: tsm-hub owns the capability pool and runs the tool
+ *             loop server-side; agent-httpd sends NO local tool schema. CAVEAT
+ *             (verified against tsm-hub internal/proxy): tsm-hub's proxy only
+ *             runs its OWN server-side agent when the client sends NO tools
+ *             array — otherwise it passes through. So in gateway mode tsm-hub
+ *             executes its builtin get_time, which returns UTC (NOT Beijing)
+ *             and it lacks the domain MCPs, i.e. this mode currently DOWNGRADES
+ *             get_time to UTC and drops portfolio-check/weekly-investment. Do
+ *             not enable until tsm-hub side is fixed (get_time +8 and domain
+ *             MCPs adopted as external-mcps). */
 const char *agent_tool_source(void) {
     const char *v = getenv("AGENT_TOOL_SOURCE");
     if (v && strcmp(v, "gateway") == 0) return "gateway";
@@ -682,11 +691,12 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
             break;
         }
 
-        /* 方案 A (gateway): tsm-hub ran the tool loop server-side, so any
-         * tool_calls reaching us are pass-through we cannot execute locally
-         * (we sent no schema and have no matching tools). Surface and stop
-         * instead of looping on an empty dispatch; normally n_calls is 0
-         * here because the gateway already consumed the tool_calls. */
+        /* 方案 A (gateway): we sent no local tool schema, so any tool_calls
+         * reaching us are unexpected pass-through we cannot execute. This only
+         * happens if tsm-hub bypassed its own server-side agent. Surface and
+         * stop instead of looping on an empty dispatch. NOTE: in gateway mode
+         * get_time/domain tools are already lost upstream (see agent_tool_source
+         * caveat) — this branch is a safety net, not a fix. */
         if (gateway_mode) {
             sse_event(out, "note", "tool step handled by upstream gateway");
             round_free(&rs);
