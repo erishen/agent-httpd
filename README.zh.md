@@ -195,6 +195,10 @@ make test-linux     # Linux/GCC 构建守卫: 只构建 Dockerfile 的 c-build �
                     #   会暴露 -Wstringop-truncation / -Wformat-truncation /
                     #   -Wuse-after-free 及 -lm/-lcrypt 链接标志的编译器 —— Apple clang
                     #   对这些一律沉默, 所以只跑本机构建看不出容器构建已坏
+make test-container # 探测正在运行的容器 (需先 `docker compose up -d`): 直接打镜像里
+                    #   发货的二进制 + docroot + CGI 动物园 —— 路由/方法处理/穿越拦截/
+                    #   请求走私/Keep-Alive/gzip/Range/304/CGI Location+Status 头/
+                    #   大响应流式 (无 64KB 截断)
 ```
 
 也可打开浏览器访问:

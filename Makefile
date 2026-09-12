@@ -183,6 +183,18 @@ test-linux:
 	@echo "Checking the Linux/GCC build (Dockerfile stage c-build)..."
 	DOCKER_BUILDKIT=0 docker build --target c-build -t agent-httpd-c-build-check .
 
+# Probe the running container over the wire: the shipped binary, docroot and
+# CGI zoo, not the repo tree. scripts/smoke-test.sh spawns its own server, so
+# nothing else in the suite reaches the image. Requires `docker compose up -d`
+# first; the probe copies itself into the container because its CGI cases write
+# temporary scripts into /app/cgi-bin.
+test-container:
+	@docker inspect -f '{{.State.Running}}' agent-httpd 2>/dev/null | grep -q true \
+		|| { echo "agent-httpd is not running — start it with: docker compose up -d"; exit 1; }
+	@echo "Probing the running container on port 8080..."
+	docker cp scripts/container-smoke.py agent-httpd:/tmp/container-smoke.py
+	docker exec -i agent-httpd python3 /tmp/container-smoke.py
+
 # Throughput benchmark: keep-alive vs connection-per-request.
 # Override with PORT=xxx BENCH_REQ=5000 BENCH_CONC=16.
 bench: all
@@ -199,4 +211,4 @@ bench: all
 clean:
 	rm -rf $(BUILD_DIR) bin
 
-.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux
+.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container

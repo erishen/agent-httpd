@@ -346,6 +346,10 @@ make test-linux     # Linux/GCC build guard: builds the Dockerfile's c-build sta
                     #   -Wuse-after-free family and the -lm/-lcrypt link flags surface —
                     #   Apple clang stays silent on all of them, so the host build alone
                     #   cannot see a broken container build
+make test-container # probe the running container (start it with `docker compose up -d`
+                    #   first): exercises the shipped binary + docroot + CGI zoo over the
+                    #   wire — routing/methods/traversal/smuggling/keep-alive/gzip/Range/
+                    #   304/CGI Location+Status headers/large-response streaming
 ```
 
 Or open these in a browser:
