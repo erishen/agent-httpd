@@ -861,6 +861,16 @@ the tool-call loop, `skill-run` full-text passthrough, sessionId fact
 persistence and `recall` readback, the `echo:pong` MCP tools/call, and a
 single-round PSE Planner→Specialist→Evaluator (PASS).
 
+**Agent / MCP environment variables**:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_TOOL_SOURCE` | `local` | Tool source: `local` executes the local registry; `gateway` delegates to the tsm-hub gateway (no local schema sent, no local dispatch) |
+| `AGENT_MAX_ROUNDS` | `8` | Max tool-loop rounds (1–30) |
+| `AGENT_MAX_CONCURRENT` | `4` | Agent concurrency cap (pipe semaphore, 1–32); excess requests get "server busy" |
+| `MCP_INIT_BUDGET_SECONDS` | `60` | Total startup budget for MCP handshakes + tools/list; servers not initialized in time are skipped |
+| `MCP_FS_ROOT` | — | Root directory for the router-synced `fs` MCP server (server skipped when unset) |
+
 ## Privacy & compliance hardening
 
 The security boundary isn't just request handling — data at rest and

@@ -608,6 +608,16 @@ libc)。`approval` 目前为审计级 (SSE 路径无交互审批通道, 打 stde
 sessionId 事实持久化与 `recall` 回读、`echo:pong` MCP tools/call、
 PSE 单轮 Planner→Specialist→Evaluator(PASS)。
 
+**Agent / MCP 相关环境变量**:
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `AGENT_TOOL_SOURCE` | `local` | 工具来源：`local` 本地注册表执行；`gateway` 交给 tsm-hub 网关（本端不下发本地 schema、不执行工具）|
+| `AGENT_MAX_ROUNDS` | `8` | 工具循环最大轮数（1–30）|
+| `AGENT_MAX_CONCURRENT` | `4` | agent 并发上限（管道信号量，1–32），超限回 "server busy" |
+| `MCP_INIT_BUDGET_SECONDS` | `60` | 启动时所有 MCP server 握手+tools/list 的总预算，超时未完成的服务被跳过 |
+| `MCP_FS_ROOT` | — | router 同步的 `fs` MCP 服务的根目录（未设则跳过该服务）|
+
 ## 隐私与合规加固
 
 安全边界不只在请求处理层, 数据落盘与对外报错同样守:

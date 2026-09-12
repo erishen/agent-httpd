@@ -19,7 +19,7 @@
 
 #define TOOL_NAME_MAX 64
 #define TOOL_DESC_MAX 160
-#define TOOL_PARAMS_MAX 1024
+#define TOOL_PARAMS_MAX 4096
 #define TOOL_MAX 96
 
 typedef void (*ToolFn)(void *data, const char *args_json,

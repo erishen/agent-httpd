@@ -216,7 +216,19 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
         if (killed) {
             kill(pid, SIGKILL);
         }
-        waitpid(pid, &status, 0);
+        /* SIGCHLD is SIG_IGN process-wide (main.c): a child that already
+         * exited was auto-reaped by the kernel and waitpid() returns ECHILD
+         * with `status` untouched (zeroed) — which reads as "exited 0".
+         * Only reject the output when we positively reaped the child and
+         * saw a failure; a lost status means we trust the fully-read
+         * output (same guard discipline as agent.c / router.c). */
+        pid_t reaped;
+        do {
+            reaped = waitpid(pid, &status, 0);
+        } while (reaped < 0 && errno == EINTR);
+        int cgi_failed = (reaped == pid)
+                             ? !(WIFEXITED(status) && WEXITSTATUS(status) == 0)
+                             : 0;
 
         if (killed) {
             free(output);
@@ -226,7 +238,7 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
             return -1;
         }
 
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        if (!cgi_failed) {
             char *body_start = strstr(output, "\r\n\r\n");
             if (body_start) {
                 body_start += 4;

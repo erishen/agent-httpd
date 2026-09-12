@@ -679,7 +679,16 @@ static void copy_json_value(const char *v, char *out, size_t outsz) {
     const char *p = v;
     if (v && jskip_value(&p) == 0 && p > v) {
         size_t n = (size_t)(p - v);
-        if (n > outsz - 1) n = outsz - 1;
+        if (n > outsz - 1) {
+            /* Byte-truncating a JSON value leaves invalid JSON behind, and
+             * this lands in the tools schema sent upstream: one poisoned
+             * entry makes every agent request 400. Fall back to a valid
+             * empty object instead of a truncated fragment. */
+            fprintf(stderr, "[mcp] tool inputSchema.properties too long "
+                            "(%zu > %zu), using {}\n", n, outsz - 1);
+            n = 2;
+            v = "{}";
+        }
         memcpy(out, v, n);
         out[n] = '\0';
     } else if (outsz) {
