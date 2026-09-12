@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <time.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -44,6 +45,9 @@
 
 #define EVENT_MAX_CONN 1024
 #define EVENT_EV_BATCH 64
+/* How long a fast-path response may wait for socket room before the client is
+ * considered stalled (the loop socket is non-blocking: EAGAIN means "later"). */
+#define FAST_SEND_WAIT_MS 5000
 
 typedef struct {
     int fd;
@@ -195,15 +199,37 @@ static void fast_serve(Conn *c, HttpRequest *req, HttpResponse *resp, size_t hdr
 
     recv_consume(c->fd, (int)hdr_len); /* drop the peeked header */
 
+    /* Non-blocking send (accept_http set O_NONBLOCK): a full send buffer is
+     * "come back later", not a dead peer. Wait for room instead of abandoning
+     * a response whose Content-Length already promised every byte. Bounded so
+     * one stalled client cannot pin the loop forever - after that we drop the
+     * connection exactly as the old code did, only now it takes a real stall
+     * rather than the first full socket buffer. */
     int off = 0;
     while (off < raw_len) {
         ssize_t sw = send(c->fd, raw + off, (size_t)(raw_len - off), 0);
+        if (sw < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            struct pollfd pfd;
+            pfd.fd = c->fd;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            if (poll(&pfd, 1, FAST_SEND_WAIT_MS) <= 0) {
+                keep_alive = 0;
+                break;
+            }
+            continue;
+        }
         if (sw <= 0) {
-            if (sw < 0 && errno == EINTR) continue;
             keep_alive = 0;
             break;
         }
         off += (int)sw;
+    }
+    if (off < raw_len) {
+        /* Headers went out promising a body the client never got. Log 0 body
+         * bytes rather than the intended length, so a truncated response is
+         * visible in the access log instead of looking like a clean 200. */
+        body_sent = 0;
     }
 
     log_request(c->ip_str, req, resp->status_code, body_sent);
