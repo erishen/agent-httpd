@@ -5,6 +5,10 @@ logs/
 *.o
 *.d
 
+# toolchain scratch: some builders stage an output as .!<pid>!<name> next to
+# the target before renaming it, which left a stray 0-byte cgi-bin entry
+cgi-bin/.!*
+
 # secrets (template: .env.example)
 .env
 
