@@ -45,6 +45,21 @@ int agent_max_concurrent(void) {
     return v > 0 && v <= 32 ? v : AGENT_MAX_CONCURRENT_DEFAULT;
 }
 
+/* Tool execution source.
+ *   "local"  (default) agent-httpd runs its own ReAct loop and dispatches
+ *             the 7 built-in tools + spawned MCPs locally (current behavior).
+ *   "gateway" 方案 A: tsm-hub owns the capability pool and runs the tool
+ *             loop server-side. agent-httpd sends NO local tool schema and
+ *             does NOT re-execute tool_calls — it just relays the gateway's
+ *             final stream. Set AGENT_TOOL_SOURCE=gateway once tsm-hub's pool
+ *             (built-in tools + configured MCPs + skills) covers what the
+ *             chat needs. */
+const char *agent_tool_source(void) {
+    const char *v = getenv("AGENT_TOOL_SOURCE");
+    if (v && strcmp(v, "gateway") == 0) return "gateway";
+    return "local";
+}
+
 /* ---- concurrency token pipe (created pre-fork in agent_init) --------- */
 
 static int g_tok_r = -1;
@@ -606,6 +621,7 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
                             const char *system_base, const char *system_extra,
                             int max_rounds, sbuf *capture) {
     sbuf msgs = {0};
+    int gateway_mode = (strcmp(agent_tool_source(), "gateway") == 0);
     msgs_system(&msgs, system_base, system_extra);
     for (int i = 0; i < req->n_history; i++) {
         msgs_role_text(&msgs, req->h_role[i], req->h_content[i]);
@@ -630,8 +646,9 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
             memset(&rs, 0, sizeof rs);
             up_err = 0;
             finish = NULL;
-            rc = agent_round(out, &msgs, tools_schema_json(), NULL, capture,
-                             &rs, &finish, &up_err);
+            rc = agent_round(out, &msgs,
+                             gateway_mode ? NULL : tools_schema_json(),
+                             NULL, capture, &rs, &finish, &up_err);
             if (rc == 0 || !agent_retryable(up_err) ||
                 attempt == AGENT_UPSTREAM_ATTEMPTS)
                 break;
@@ -661,6 +678,17 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
         }
         /* no tool calls -> the final answer already streamed; done */
         if (!out->ok || rs.n_calls == 0) {
+            round_free(&rs);
+            break;
+        }
+
+        /* 方案 A (gateway): tsm-hub ran the tool loop server-side, so any
+         * tool_calls reaching us are pass-through we cannot execute locally
+         * (we sent no schema and have no matching tools). Surface and stop
+         * instead of looping on an empty dispatch; normally n_calls is 0
+         * here because the gateway already consumed the tool_calls. */
+        if (gateway_mode) {
+            sse_event(out, "note", "tool step handled by upstream gateway");
             round_free(&rs);
             break;
         }

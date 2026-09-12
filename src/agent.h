@@ -136,5 +136,8 @@ const char *agent_system_default(void);
 /* Config (env-overridable, read per run): */
 int agent_max_rounds(void);       /* AGENT_MAX_ROUNDS, default 8 */
 int agent_max_concurrent(void);   /* AGENT_MAX_CONCURRENT, default 4 */
+const char *agent_tool_source(void); /* AGENT_TOOL_SOURCE: "local" (default)
+                                        or "gateway" (方案 A: tsm-hub runs
+                                        the tool loop server-side) */
 
 #endif /* AGENT_H */
