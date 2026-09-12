@@ -95,7 +95,10 @@ static int add_skill(const char *dir, const char *name) {
         if (strcmp(g_skills[i].name, name) == 0) return 0; /* earlier wins */
     }
     char md[MAX_PATH_SIZE];
-    snprintf(md, sizeof md, "%s/%s/SKILL.md", dir, name);
+    int w = snprintf(md, sizeof md, "%s/%s/SKILL.md", dir, name);
+    /* A root deep enough to overflow the buffer must be skipped, not silently
+     * indexed under a truncated path (which could name an unrelated file). */
+    if (w < 0 || (size_t)w >= sizeof md) return 0;
     /* only index real skills: a collect-layout dir (e.g. skills/router with
      * no top-level SKILL.md) must not leak a phantom entry */
     if (access(md, R_OK) != 0) return 0;
@@ -130,15 +133,18 @@ int skills_init(void) {
          * skill-run can reach the router catalog. */
         snprintf(p, sizeof p, "%s/skills/router", cwd);
         add_root(roots, &n, p);
-        free((void *)cwd);
     }
     add_root(roots, &n, getenv("HARNESS_SKILLS_DIR"));
-    /* auto-detect the resolve-skills submodule next to the server */
+    /* auto-detect the resolve-skills submodule next to the server.
+     * `cwd` is released only after its last use: freeing it inside the block
+     * above left a dangling (but still non-NULL) pointer here. GCC's
+     * -Wuse-after-free flags it; clang does not. */
     if (cwd) {
         char p[MAX_PATH_SIZE];
         if (snprintf(p, sizeof p, "%s/resolve-skills/skills", cwd) > 0) {
             add_root(roots, &n, p);
         }
+        free((void *)cwd);
     }
     const char *extra = getenv("SKILLS_EXTRA_DIRS");
     if (extra) {

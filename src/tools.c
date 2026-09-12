@@ -291,9 +291,14 @@ static void tool_read_file(void *data, const char *args,
     }
     char path_with_slash[512];
     if (path[0] != '/') {
-        snprintf(path_with_slash, sizeof path_with_slash, "/%s", path);
-        strncpy(path, path_with_slash, sizeof path - 1);
-        path[sizeof path - 1] = '\0';
+        /* prefix "/" without ever handing a truncated path to the sandbox
+         * check below; the copy back is bounded by set_str */
+        int w = snprintf(path_with_slash, sizeof path_with_slash, "/%s", path);
+        if (w < 0 || (size_t)w >= sizeof path_with_slash) {
+            sb_str(result, "error: path too long");
+            return;
+        }
+        set_str(path, sizeof path, path_with_slash);
     }
     char real[MAX_PATH_SIZE];
     if (!resolve_within(g_web_root_real, path, real, sizeof real)) {
