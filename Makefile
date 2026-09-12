@@ -4,6 +4,10 @@ CC = gcc
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     LDFLAGS_EXTRA += -lcrypt
+    # libm (pow/fmod in src/tools.c): glibc keeps it out of libc, so the link
+    # fails with "undefined reference to pow" without it; macOS folds libm
+    # into libSystem and needs no flag.
+    LDFLAGS_EXTRA += -lm
     CFLAGS_EXTRA += -DHAVE_CRYPT -DHAVE_CRYPT_H
     # _GNU_SOURCE: strcasestr 等非 POSIX 扩展; 必须在 CFLAGS 里定义
     # (内部头里定义会晚于首个系统头, glibc features.h 已锁死特性集)
@@ -61,7 +65,7 @@ all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
-	# LDFLAGS (-lcrypt) 必须在目标文件之后: GNU ld 默认 --as-needed,
+	# LDFLAGS (-lcrypt/-lm) 必须在目标文件之后: GNU ld 默认 --as-needed,
 	# 库放在对象前面会被当作无引用而丢弃 (macOS ld 无此限制)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 	# 容忍 cgi-bin 缺失 (如容器 C 构建阶段只拷贝了 Makefile + src/)
@@ -170,6 +174,15 @@ test-keepalive: all
 	$(CC) $(CFLAGS) -I src tests/test_keepalive_pipeline.c -o tests/t_ka
 	./tests/t_ka
 
+# Guard the Linux/GCC build without leaving macOS. glibc is the only place the
+# -Wstringop-truncation / -Wformat-truncation / -Wuse-after-free family shows
+# up (Apple clang stays silent on all three), and glibc is also the only place
+# where -lm and -lcrypt are not free. Builds just the Dockerfile's c-build
+# stage, so it needs Docker but no daemon-side state.
+test-linux:
+	@echo "Checking the Linux/GCC build (Dockerfile stage c-build)..."
+	DOCKER_BUILDKIT=0 docker build --target c-build -t agent-httpd-c-build-check .
+
 # Throughput benchmark: keep-alive vs connection-per-request.
 # Override with PORT=xxx BENCH_REQ=5000 BENCH_CONC=16.
 bench: all
@@ -186,4 +199,4 @@ bench: all
 clean:
 	rm -rf $(BUILD_DIR) bin
 
-.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive
+.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux
