@@ -1,13 +1,18 @@
 # agent-httpd 容器编排 —— 三种角色演示:
 #   httpd  : agent-httpd 本体 (HTTP 直连), 兼做 FastCGI 后端 (-F)
 #   react  : 驻留 React SSR FastCGI 后端 (UNIX socket, 不暴露端口)
-#   nginx  : 前置反代 (8081 -> httpd:8080; /react/ 直接 fastcgi_pass 到 react)
+#   nginx  : 前置反代 (18081 -> httpd:8080; /react/ 直接 fastcgi_pass 到 react)
 #
 # 用法:
-#   docker compose up --build
-#     http://localhost:18080  -> agent-httpd 直连
+#   docker compose up -d --build
+#     http://localhost:18080  -> agent-httpd 直连 (含 /react/ 的 -R 中继)
 #     http://localhost:18081  -> nginx 入口 (静态/CGI 反代, /react/ 走 FastCGI)
 #   docker compose logs -f httpd
+#
+# socket 目录只用一个卷 (react-sock): react 在里面建 react.sock, httpd 在里面建
+# fcgi.sock, nginx 只读挂进来连 react.sock。刻意不再声明第二个 fcgi-sock 卷 ——
+# 两个卷挂同一个挂载点时 Docker 只让后声明的生效, 前者永远不会被创建 (旧配置就是
+# 这样, 且注释声称它把 socket 暴露给了 nginx, 而 nginx.conf 从不 fastcgi_pass 它)。
 
 services:
   httpd:
@@ -26,9 +31,7 @@ services:
       - path: .env
         required: false
     volumes:
-      # FastCGI 监听 socket 通过共享卷暴露给 nginx (演示 nginx fastcgi_pass);
-      # 同时让 agent-httpd -R 能直连 react.sock 作 FCGI 客户端 (中继 /react/*)
-      - fcgi-sock:/run/agent-httpd
+      # 单个 socket 目录卷: -F 在这里建 fcgi.sock, -R 在这里连 react.sock
       - react-sock:/run/agent-httpd
     ports:
       - "18080:8080"
@@ -47,6 +50,13 @@ services:
     command: ["react-backend"]
     environment:
       REACT_FCGI_SOCK: /run/agent-httpd/react.sock
+      # nginx 的 worker 跑在 uid 101, 不是本容器的账号, 而本 compose 里 nginx
+      # 服务存在的意义就是演示 /react/ 的 fastcgi_pass 直连 —— 不开这个开关
+      # 该路径必然 502, 文档也就成了空话。服务端默认 (0700) 之所以收紧, 是因为
+      # 直连 socket 会绕过 httpd 的认证/限流; 而这个 socket 只存在于 dockerd 的
+      # 命名卷里, 仅本栈三个容器可见, 不落宿主机路径, 因此这里放宽不增加暴露面。
+      # 单独跑 react 后端 (不经本 compose) 时默认仍是 0700。
+      REACT_FCGI_SOCK_MODE: "0777"
     # LLM 聊天后端配置从项目根 .env 注入 (LLM_API_URL / LLM_API_KEY / LLM_MODEL);
     # 文件不存在也能启动 —— 回落到内置演示引擎
     env_file:
@@ -71,5 +81,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  fcgi-sock:
   react-sock:
