@@ -9,6 +9,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <stdint.h> /* uintptr_t (session_id_new); glibc does not pull it in
+                     * transitively, macOS libc happens to */
 #include <sys/stat.h>
 #include <time.h>
 #include <dirent.h>

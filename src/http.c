@@ -97,42 +97,45 @@ static const char *find_ci(const char *hay, const char *needle) {
     return NULL;
 }
 
+/* Header values go through the project-wide bounded setter (set_str): the
+ * destination is a fixed-size field and is always NUL-terminated, so an
+ * over-long header cannot leave a field unterminated. */
 static void parse_header_line(const char *line, HttpRequest *request) {
     if (strncasecmp(line, "Host:", 5) == 0) {
-        strncpy(request->host, line + 5, sizeof(request->host) - 1);
+        set_str(request->host, sizeof(request->host), line + 5);
         trim_whitespace(request->host);
     } else if (strncasecmp(line, "User-Agent:", 11) == 0) {
-        strncpy(request->user_agent, line + 11, sizeof(request->user_agent) - 1);
+        set_str(request->user_agent, sizeof(request->user_agent), line + 11);
         trim_whitespace(request->user_agent);
     } else if (strncasecmp(line, "Referer:", 8) == 0) {
-        strncpy(request->referer, line + 8, sizeof(request->referer) - 1);
+        set_str(request->referer, sizeof(request->referer), line + 8);
         trim_whitespace(request->referer);
     } else if (strncasecmp(line, "Accept:", 7) == 0) {
-        strncpy(request->accept, line + 7, sizeof(request->accept) - 1);
+        set_str(request->accept, sizeof(request->accept), line + 7);
         trim_whitespace(request->accept);
     } else if (strncasecmp(line, "Accept-Encoding:", 16) == 0) {
-        strncpy(request->accept_encoding, line + 16, sizeof(request->accept_encoding) - 1);
+        set_str(request->accept_encoding, sizeof(request->accept_encoding), line + 16);
         trim_whitespace(request->accept_encoding);
     } else if (strncasecmp(line, "Content-Type:", 13) == 0) {
-        strncpy(request->content_type, line + 13, sizeof(request->content_type) - 1);
+        set_str(request->content_type, sizeof(request->content_type), line + 13);
         trim_whitespace(request->content_type);
     } else if (strncasecmp(line, "Connection:", 11) == 0) {
-        strncpy(request->connection, line + 11, sizeof(request->connection) - 1);
+        set_str(request->connection, sizeof(request->connection), line + 11);
         trim_whitespace(request->connection);
     } else if (strncasecmp(line, "Authorization:", 14) == 0) {
-        strncpy(request->authorization, line + 14, sizeof(request->authorization) - 1);
+        set_str(request->authorization, sizeof(request->authorization), line + 14);
         trim_whitespace(request->authorization);
     } else if (strncasecmp(line, "If-None-Match:", 14) == 0) {
-        strncpy(request->if_none_match, line + 14, sizeof(request->if_none_match) - 1);
+        set_str(request->if_none_match, sizeof(request->if_none_match), line + 14);
         trim_whitespace(request->if_none_match);
     } else if (strncasecmp(line, "If-Modified-Since:", 18) == 0) {
-        strncpy(request->if_modified_since, line + 18, sizeof(request->if_modified_since) - 1);
+        set_str(request->if_modified_since, sizeof(request->if_modified_since), line + 18);
         trim_whitespace(request->if_modified_since);
     } else if (strncasecmp(line, "Expect:", 7) == 0) {
-        strncpy(request->expect, line + 7, sizeof(request->expect) - 1);
+        set_str(request->expect, sizeof(request->expect), line + 7);
         trim_whitespace(request->expect);
     } else if (strncasecmp(line, "Range:", 6) == 0) {
-        strncpy(request->range, line + 6, sizeof(request->range) - 1);
+        set_str(request->range, sizeof(request->range), line + 6);
         trim_whitespace(request->range);
     } else if (strncasecmp(line, "Content-Length:", 15) == 0) {
         long cl = strtol(line + 15, NULL, 10);
@@ -188,7 +191,12 @@ static long parse_headers(const char *raw_request, long len, HttpRequest *reques
             while (p < len && raw_request[p] != '\r' && raw_request[p] != '\n') p++;
             if (p == len) return -1;
             char header[MAX_PATH_SIZE];
-            size_t hl = (size_t)((p - start) < (long)sizeof header - 1 ? p - start : sizeof header - 1);
+            /* clamp in long arithmetic: mixing the two operands of a ?: across
+             * signed/unsigned promotes the whole expression and trips GCC's
+             * -Wsign-compare (fatal under -Werror) */
+            long hlen = p - start;
+            if (hlen > (long)sizeof header - 1) hlen = (long)sizeof header - 1;
+            size_t hl = (size_t)hlen;
             memcpy(header, raw_request + start, hl);
             header[hl] = '\0';
             parse_header_line(header, request);

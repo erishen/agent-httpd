@@ -386,7 +386,19 @@ int create_fastcgi_listener(const char *sock_path) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    /* sun_path is a fixed 108-byte field. A longer socket path used to be
+     * silently truncated by strncpy, so bind() would claim *one* name while
+     * the unlink()/chmod() below touched another — the caller then chases a
+     * socket that does not exist and the mode lands on nothing. Refuse the
+     * oversized path instead of guessing (GCC flags the strncpy at -O2 too). */
+    size_t plen = strlen(path);
+    if (plen >= sizeof(addr.sun_path)) {
+        fprintf(stderr, "fcgi socket path too long (max %zu): %s\n",
+                sizeof(addr.sun_path) - 1, path);
+        close(fd);
+        return -1;
+    }
+    memcpy(addr.sun_path, path, plen + 1);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("fcgi bind");

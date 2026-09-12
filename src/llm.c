@@ -228,9 +228,13 @@ static void canned_reply(const char *message, char *buf, size_t bufsz) {
         if (*w != ' ' && *w != '\t') words++;
     }
     char echo[96];
-    snprintf(echo, sizeof echo, "%s%s", message,
+    /* Bound the copy so the result always fits: 80 bytes of message plus a
+     * 3-byte ellipsis need 84 of the 96 available. The old unbounded %s made
+     * GCC warn that the output could be truncated (it can prove 'message' is
+     * long), and the unconditional echo[80]='\0' afterwards cut the ellipsis
+     * back off anyway — now the marker actually shows. */
+    snprintf(echo, sizeof echo, "%.80s%s", message,
              strlen(message) > 80 ? "..." : "");
-    echo[80] = '\0';
     snprintf(buf, bufsz,
              "You said: \"%s\" — %d words received. As the demo engine I mostly mirror and pace; "
              "ask about agent-httpd, streaming or SSE, or plug in a real model via LLM_API_KEY.",
