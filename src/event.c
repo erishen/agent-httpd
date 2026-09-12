@@ -339,7 +339,7 @@ static void accept_http(int server_fd) {
     }
 }
 
-static void accept_fcgi(int fcgi_fd) {
+static void accept_fcgi(int server_fd, int fcgi_fd) {
     struct sockaddr_un client_sa;
     socklen_t client_len = sizeof(client_sa);
     int client_fd = accept(fcgi_fd, (struct sockaddr *)&client_sa, &client_len);
@@ -347,6 +347,7 @@ static void accept_fcgi(int fcgi_fd) {
     pid_t pid = fork();
     if (pid == 0) {
         close(fcgi_fd);
+        close(server_fd); /* don't leak the listening socket into the handler */
         if (g_kq >= 0) close(g_kq);
         int tfd = pool_token_fd();
         if (tfd >= 0) close(tfd);
@@ -440,7 +441,7 @@ int event_loop(int server_fd, int fcgi_fd) {
             if (fd == server_fd) {
                 accept_http(server_fd);
             } else if (fcgi_fd >= 0 && fd == fcgi_fd) {
-                accept_fcgi(fcgi_fd);
+                accept_fcgi(server_fd, fcgi_fd);
             } else if (token_fd >= 0 && fd == token_fd) {
                 drain_slow_queue();
             } else {
