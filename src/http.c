@@ -526,15 +526,6 @@ int create_server_socket(int port) {
  * (e.g. "Foo: bar\r\nGET /x HTTP/1.1\r\n"). We are the framing authority, so
  * reject any header line that carries a CR/LF anywhere except its own
  * CRLF terminator (the last two bytes). */
-static int line_has_embedded_crlf(const char *line, size_t ll) {
-    if (ll < 2) return 0; /* no room for a CRLF terminator */
-    size_t last = ll - 2; /* bytes before the trailing CRLF */
-    for (size_t i = 0; i < last; i++) {
-        if (line[i] == '\r' || line[i] == '\n') return 1;
-    }
-    return 0;
-}
-
 static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
                           const HttpRequest *req) {
     int up = socket(AF_INET, SOCK_STREAM, 0);
@@ -559,7 +550,6 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
     /* request line (verbatim, keeps the query string) */
     const char *nl = memchr(raw, '\n', hdr_len);
     size_t first_len = nl ? (size_t)(nl - raw + 1) : hdr_len;
-    size_t off = first_len;
     /* reject a smuggled request line (embedded CRLF before its terminator) */
     if (line_has_embedded_crlf(raw, first_len)) {
         const char *err = "HTTP/1.1 400 Bad Request\r\n"
@@ -578,51 +568,9 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
      * Content-Length would desync the upstream's framing (request
      * smuggling). We are the framing authority now: the body is always
      * sent with an exact Content-Length. */
-    static const char *const strip_pfx[] = {
-        "Host:", "Connection:", "Transfer-Encoding:", "TE:",
-        "Keep-Alive:", "Proxy-Connection:", "Proxy-Authenticate:",
-        "Proxy-Authorization:", "Upgrade:", "Trailer:", "Expect:", NULL,
-    };
     char buf[16384];
-    size_t blen = 0;
-    while (off < hdr_len) {
-        const char *ln = memchr(raw + off, '\n', hdr_len - off);
-        size_t ll = ln ? (size_t)(ln - (raw + off) + 1) : hdr_len - off;
-        const char *line = raw + off;
-        /* blank line = end of the header block; stop before it */
-        if (ll == 1 || (ll == 2 && line[0] == '\r')) break;
-        int drop = 0;
-        for (int i = 0; strip_pfx[i]; i++) {
-            if (strncasecmp(line, strip_pfx[i], strlen(strip_pfx[i])) == 0) {
-                drop = 1;
-                break;
-            }
-        }
-        /* a header value with an embedded CRLF is a smuggled second request
-         * aimed at the upstream Vite; do not forward it */
-        if (!drop && line_has_embedded_crlf(line, ll)) {
-            const char *err = "HTTP/1.1 400 Bad Request\r\n"
-                              "Content-Length: 0\r\nConnection: close\r\n\r\n";
-            (void)send(client_fd, err, (int)strlen(err), 0);
-            goto done;
-        }
-        /* keep >=64 bytes of headroom so the trailing Host/Connection line
-         * below can never push blen past the buffer (a 16KB header block is
-         * pathological; we simply stop forwarding extra hop-by-hop lines). */
-        if (!drop && blen + ll + 64 <= sizeof(buf)) {
-            memcpy(buf + blen, line, ll);
-            blen += ll;
-        }
-        off += ll;
-    }
-    int extra = snprintf(buf + blen, sizeof(buf) - blen,
-                         "Host: 127.0.0.1:%d\r\nConnection: close\r\n\r\n",
-                         g_vite_upstream_port);
-    if (extra < 0) extra = 0;
-    if ((size_t)blen + (size_t)extra > sizeof(buf))
-        extra = (int)(sizeof(buf) - blen); /* clamp: never read OOB in send */
-    blen += (size_t)extra;
-    if (send(up, buf, blen, 0) < 0) goto done;
+    size_t n = vite_build_headers(buf, sizeof(buf), raw, hdr_len, g_vite_upstream_port);
+    if (send(up, buf, (int)n, 0) < 0) goto done;
     if (req->body && req->content_length > 0) {
         size_t left = (size_t)req->content_length;
         const char *bp = req->body;
