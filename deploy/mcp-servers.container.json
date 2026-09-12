@@ -1,0 +1,3 @@
+[
+  {"id": "echo", "transport": "stdio", "command": "python3", "args": "/app/scripts/fake-mcp-server.py", "approval": false}
+]

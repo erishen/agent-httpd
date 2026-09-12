@@ -57,7 +57,23 @@ FROM node:20-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 ruby php-cgi default-jre-headless curl \
     && rm -rf /var/lib/apt/lists/*
+# MCP 依赖预热: agent 的 MCP 清单由 router 同步生成 (npx 启动配方, 版本钉在
+# src/router.c 的 k_known_mcps)。npx 冷启动要现场拉包, 国内网络很容易吃满
+# MCP init 预算导致全部握手失败。这里 ① registry 指向国内镜像; ② 把与配方
+# 完全相同的钉定版本预热进 npx 缓存 (HOME=/root, 运行时同 HOME 命中同一份)。
+# MCP server 起来后会在 stdio 上等服务请求, 用 timeout 掐掉, 只为留下缓存;
+# 预热失败不阻断构建 (运行时 npx 仍会自行下载, 只是慢)。
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+RUN for p in server-filesystem server-memory server-sequential-thinking; do \
+        timeout 60 npx -y "@modelcontextprotocol/$p@2026.8.31" --help >/dev/null 2>&1 || true; \
+    done
 WORKDIR /app
+# 容器专用的基础 MCP 配置 (echo 演示 server, python3 自包含零下载), 与
+# 运行时 router 同步出来的 .data/mcp-servers-router.json 合并加载
+# (src/mcp.c 按 id 去重, 先到先得)。宿主机 dev 用 gitignored 的
+# .data/mcp-servers.json, 互不影响。
+COPY deploy/mcp-servers.container.json .data/mcp-servers.json
+COPY scripts/fake-mcp-server.py scripts/
 # 工作目录即 docroot (agent-httpd 以 cwd 为根, 需要 /app/www)
 COPY --from=c-build /src/bin/agent-httpd bin/
 COPY --from=ssr-build /build/bin/react-ssr-server bin/

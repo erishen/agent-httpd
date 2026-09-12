@@ -44,6 +44,9 @@ services:
       RATE_LIMIT: "0"       # 每 IP 限流 (req/s); 0 = 关闭
       FCGI_SOCK: /run/agent-httpd/fcgi.sock
       REACT_SOCK: /run/agent-httpd/react.sock
+      # fs MCP 的根目录: .env 里的 MCP_FS_ROOT 是宿主机路径, 容器内不存在
+      # (compose environment 优先于 env_file)。指向 docroot, 供 fs 工具演示
+      MCP_FS_ROOT: /app
       # 容器内覆盖 .env 的 localhost 上游 (见文件顶部说明)
       LLM_API_URL: *container_llm_api_url
     extra_hosts:
