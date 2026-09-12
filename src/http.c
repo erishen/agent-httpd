@@ -724,7 +724,25 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
      * subsequent keep-alive requests use the shorter KEEPALIVE_TIMEOUT. */
     int wait_to = (served == 0) ? req_to : KEEPALIVE_TIMEOUT_SECONDS;
     time_t deadline = wait_to > 0 ? time(NULL) + wait_to : 0;
+    /* Parse from what is already buffered before waiting for more: a
+     * carried-over pipelined request is complete in `buffer` and no further
+     * bytes will ever arrive for it (the client is waiting for our
+     * response), so blocking on select()/recv() first parks it until the
+     * keep-alive timeout and the client sees a swallowed request. */
     while (1) {
+        char *header_end = strstr(buffer, "\r\n\r\n");
+        if (header_end) {
+            header_end_len = (header_end + 4) - buffer;
+            break;
+        }
+        if (total >= (int)sizeof(buffer) - 1) {
+            headers_oversized = 1; /* no \r\n\r\n and no room left */
+            break;
+        }
+        if (deadline && time(NULL) >= deadline) {
+            close(client_fd); /* overall request window spent */
+            return;
+        }
         struct timeval tv = {wait_to > 0 ? wait_to : 300, 0};
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -740,20 +758,6 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         }
         total += n;
         buffer[total] = '\0';
-
-        char *header_end = strstr(buffer, "\r\n\r\n");
-        if (header_end) {
-            header_end_len = (header_end + 4) - buffer;
-            break;
-        }
-        if (total >= (int)sizeof(buffer) - 1) {
-            headers_oversized = 1; /* no \r\n\r\n and no room left */
-            break;
-        }
-        if (deadline && time(NULL) >= deadline) {
-            close(client_fd);
-            return;
-        }
     }
 
     if (headers_oversized) {
@@ -1004,9 +1008,15 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
                         }
                     }
                 }
+                /* Runs for framed and body-less requests alike: the
+                 * pipelining bookkeeping below is what carries a subsequent
+                 * request forward, so a zero-length body must not skip it.
+                 * Do NOT add a `request.body != NULL` clause here — this
+                 * branch is only reached while body is still NULL, so such a
+                 * guard is never true and silently drops every POST body
+                 * (CGI stdin empty, chat endpoint unable to parse). */
                 if (have >= request.content_length &&
-                    response.status_code == 0 &&
-                    (request.content_length == 0 || request.body != NULL)) {
+                    response.status_code == 0) {
                     if (request.content_length > 0) {
                         request.body = malloc(request.content_length + 1);
                         if (request.body) {
