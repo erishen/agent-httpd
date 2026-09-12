@@ -199,6 +199,8 @@ make test-container # 探测正在运行的容器 (需先 `docker compose up -d`
                     #   发货的二进制 + docroot + CGI 动物园 —— 路由/方法处理/穿越拦截/
                     #   请求走私/Keep-Alive/gzip/Range/304/CGI Location+Status 头/
                     #   大响应流式 (无 64KB 截断)
+make test-upstream  # 上游不可达路径: 聊天必须回 error 事件 (并重试), 不能给出静默的
+                    #   空答复。自起一个 --network none 的一次性容器, 只需要镜像
 ```
 
 也可打开浏览器访问:
@@ -513,6 +515,13 @@ handle_client 只记日志并断连 —— SSE 以 close 定界, 不进 keep-ali
 - **`.env` 兼容**: 首个聊天请求时从工作目录读 `.env` 的 `LLM_*`
   (`setenv(..., overwrite=0)`, 环境变量优先), 与 compose `env_file` /
   `make dev --env-file-if-exists` 三方共用同一份配置
+- **容器内 `LLM_API_URL` 要换主机**: `.env` 里那个值只在宿主成立 ——
+  容器里的 `localhost` 是容器自己。出货的 `docker-compose.yml` 因此给
+  `httpd` / `react` 两个服务单独覆盖它 (`x-llm-api-url`, 默认
+  `host.docker.internal`), `.env` 与宿主 `make dev` 都不受影响
+- **上游不可达会被报出来, 不会被吞掉**: 失败的一轮发 `error` 事件并按退避
+  重试, 所以路由器挂掉会在聊天里显形, 而不是回一个空答复
+  (`make test-upstream` 守卫这条路径)
 - **上游 URL 两种写法都收**: 完整端点或 OpenAI-SDK 风格 base URL
   (`https://host/v1` 自动补 `/chat/completions`)
 - node 侧 `chat.ts` 保留为 HMR 开发模式 (`make dev`) 的实现, 两端 SSE

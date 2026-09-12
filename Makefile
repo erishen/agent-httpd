@@ -183,6 +183,12 @@ test-linux:
 	@echo "Checking the Linux/GCC build (Dockerfile stage c-build)..."
 	DOCKER_BUILDKIT=0 docker build --target c-build -t agent-httpd-c-build-check .
 
+# 上游不可达时, 聊天必须把失败告诉客户端, 而不是回一个「成功但空」的答复。
+# 自带 --network none 的一次性容器 + 故意打不通的 LLM_API_URL, 不需要 compose 栈。
+test-upstream:
+	@echo "Checking the upstream-failure path (must surface an error, not a silent empty answer)..."
+	sh scripts/upstream-failure-check.sh
+
 # Probe the running container over the wire: the shipped binary, docroot and
 # CGI zoo, not the repo tree. scripts/smoke-test.sh spawns its own server, so
 # nothing else in the suite reaches the image. Requires `docker compose up -d`
@@ -211,4 +217,4 @@ bench: all
 clean:
 	rm -rf $(BUILD_DIR) bin
 
-.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container
+.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream
