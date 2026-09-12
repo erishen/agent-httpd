@@ -165,7 +165,8 @@ int main(void) {
         return 1;
     }
 
-    int rc = forward_to_fcgi(path, &req, "127.0.0.1", sv[1]);
+    int body_bytes = 0;
+    int rc = forward_to_fcgi(path, &req, "127.0.0.1", sv[1], &body_bytes);
     close(sv[1]); /* signal EOF to the reader thread */
     pthread_join(tid, NULL);
 
@@ -173,6 +174,15 @@ int main(void) {
         fprintf(stderr, "FAIL: forward_to_fcgi returned %d (expected >=100)\n", rc);
         return 1;
     }
+    /* The access log's %b must count body bytes only, and must not be the
+     * hardcoded 0 it recorded for every relayed response: the relay sees
+     * whole messages, so locating the head is its own job. */
+    if (body_bytes <= 0 || body_bytes >= (int)ra.len) {
+        fprintf(stderr, "FAIL: body byte count %d out of range (%zu relayed total)\n",
+                body_bytes, ra.len);
+        return 1;
+    }
+    printf("forward_to_fcgi body bytes: %d of %zu relayed\n", body_bytes, ra.len);
     if (ra.len < (size_t)100000) {
         fprintf(stderr, "FAIL: only %zu bytes relayed (old 64KB cap would truncate)\n", ra.len);
         return 1;
