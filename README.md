@@ -350,6 +350,9 @@ make test-container # probe the running container (start it with `docker compose
                     #   first): exercises the shipped binary + docroot + CGI zoo over the
                     #   wire — routing/methods/traversal/smuggling/keep-alive/gzip/Range/
                     #   304/CGI Location+Status headers/large-response streaming
+make test-upstream  # upstream-failure path: chat must answer an unreachable model with
+                    #   an error event (and retry), never a silent empty reply. Spins a
+                    #   throwaway container on --network none; needs only the image
 ```
 
 Or open these in a browser:
@@ -717,6 +720,14 @@ Key points:
   `LLM_*` from the working directory's `.env` (`setenv(..., overwrite=0)`;
   existing env vars win), sharing one config across compose `env_file` /
   `make dev --env-file-if-exists`
+- **In a container, `LLM_API_URL` gets a different host**: the value in `.env`
+  holds for the host only — inside a container `localhost` is the container.
+  The shipped `docker-compose.yml` therefore overrides it for the `httpd` and
+  `react` services (`x-llm-api-url`, defaulting to `host.docker.internal`),
+  leaving `.env` and host `make dev` untouched
+- **An unreachable upstream is reported, not swallowed**: a failed round emits
+  an `error` event and retries with backoff, so a dead router shows up in the
+  chat instead of an empty answer (`make test-upstream` guards this)
 - **Both upstream URL styles accepted**: a full endpoint, or the
   OpenAI-SDK-style base URL (`https://host/v1` gets `/chat/completions`
   appended)
