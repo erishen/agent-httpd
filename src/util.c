@@ -81,10 +81,18 @@ const char *get_content_type(const char *path) {
     if (strcmp(ext, ".png") == 0) return "image/png";
     if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) return "image/jpeg";
     if (strcmp(ext, ".gif") == 0) return "image/gif";
+    if (strcmp(ext, ".webp") == 0) return "image/webp";
+    if (strcmp(ext, ".ico") == 0) return "image/x-icon";
+    if (strcmp(ext, ".svg") == 0) return "image/svg+xml";
     if (strcmp(ext, ".txt") == 0 || strcmp(ext, ".text") == 0) return "text/plain";
     if (strcmp(ext, ".xml") == 0) return "application/xml";
     if (strcmp(ext, ".pdf") == 0) return "application/pdf";
     if (strcmp(ext, ".cgi") == 0) return "application/x-executable";
+    if (strcmp(ext, ".webmanifest") == 0) return "application/manifest+json";
+    if (strcmp(ext, ".wasm") == 0) return "application/wasm";
+    if (strcmp(ext, ".woff") == 0) return "font/woff";
+    if (strcmp(ext, ".woff2") == 0) return "font/woff2";
+    if (strcmp(ext, ".mjs") == 0) return "application/javascript";
 
     return "application/octet-stream";
 }

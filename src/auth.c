@@ -36,19 +36,19 @@ static struct htpasswd_entry g_htpasswd[HTPASSWD_MAX_ENTRIES];
 static int g_htpasswd_count = 0;
 
 void b64_decode(const char *in, char *out, size_t out_size) {
-    static const int8_t T[256] = {
-        ['A'] = 0, ['B'] = 1, ['C'] = 2, ['D'] = 3, ['E'] = 4, ['F'] = 5,
-        ['G'] = 6, ['H'] = 7, ['I'] = 8, ['J'] = 9, ['K'] = 10, ['L'] = 11,
-        ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15, ['Q'] = 16, ['R'] = 17,
-        ['S'] = 18, ['T'] = 19, ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
-        ['Y'] = 24, ['Z'] = 25, ['a'] = 26, ['b'] = 27, ['c'] = 28, ['d'] = 29,
-        ['e'] = 30, ['f'] = 31, ['g'] = 32, ['h'] = 33, ['i'] = 34, ['j'] = 35,
-        ['k'] = 36, ['l'] = 37, ['m'] = 38, ['n'] = 39, ['o'] = 40, ['p'] = 41,
-        ['q'] = 42, ['r'] = 43, ['s'] = 44, ['t'] = 45, ['u'] = 46, ['v'] = 47,
-        ['w'] = 48, ['x'] = 49, ['y'] = 50, ['z'] = 51, ['0'] = 52, ['1'] = 53,
-        ['2'] = 54, ['3'] = 55, ['4'] = 56, ['5'] = 57, ['6'] = 58, ['7'] = 59,
-        ['8'] = 60, ['9'] = 61, ['+'] = 62, ['/'] = 63,
-    };
+    static int8_t T[256];
+    static int initialized = 0;
+    if (!initialized) {
+        /* Anything outside the base64 alphabet maps to -1 (sentinel): a
+         * malformed Authorization header then stops decoding instead of
+         * being silently rewritten into 'A' bytes (which could wrongfully
+         * authenticate). */
+        for (int i = 0; i < 256; i++) T[i] = -1;
+        static const char alpha[] =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; i < 64; i++) T[(unsigned char)alpha[i]] = (int8_t)i;
+        initialized = 1;
+    }
     size_t o = 0;
     int acc = 0, bits = 0;
     for (; *in && *in != '=' && o + 1 < out_size; in++) {
@@ -64,16 +64,30 @@ void b64_decode(const char *in, char *out, size_t out_size) {
     out[o] = '\0';
 }
 
+/* Constant-time string equality: never short-circuits on the first
+ * differing byte, so it leaks neither the position of a mismatch nor
+ * (beyond an equality bit) the lengths. Used for credential comparison. */
+static int ct_eq(const char *a, const char *b) {
+    size_t la = strlen(a), lb = strlen(b);
+    unsigned diff = (unsigned)(la ^ lb);
+    const unsigned char *pa = (const unsigned char *)a;
+    const unsigned char *pb = (const unsigned char *)b;
+    for (size_t i = 0; i < la && i < lb; i++) {
+        diff |= (unsigned)(pa[i] ^ pb[i]);
+    }
+    return diff == 0;
+}
+
 static int secret_matches(const char *supplied, const char *stored) {
     int stored_is_hash = (stored[0] == '$') ||
                          (strlen(stored) == 13 && strspn(stored, "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") == 13);
     if (!stored_is_hash) {
-        return strcmp(supplied, stored) == 0; /* plaintext (incl. {SHA}-style) */
+        return ct_eq(supplied, stored); /* plaintext (incl. {SHA}-style) */
     }
 #ifdef HAVE_CRYPT
     const char *got = crypt(supplied, stored);
     if (!got) return 0; /* unsupported scheme on this platform: deny */
-    return strcmp(got, stored) == 0; /* constant-time-ish: only final compare */
+    return ct_eq(got, stored);
 #else
     (void)supplied;
     return 0; /* crypt unavailable: hash entries can never match */
