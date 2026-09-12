@@ -29,7 +29,9 @@ MCP / 技能 / 记忆 / ReAct / PSE）。
 - **chunked 请求体 (RFC 9110 8.7)**: `Transfer-Encoding: chunked` 的 POST/PUT/PATCH 就地解码为普通 body (含 trailer 段处理与 `Expect: 100-continue` 握手), 解码后 CGI stdin / chat / FCGI 中继零改动; 与 `Content-Length` 并存的走私形请求按 RFC 6.1 直接 400 断连, 不可解码的传输编码 (如 TE: gzip) 回 501
 - **URL query string 兼容**: 静态文件与目录 URL 带 `?query` 正常服务 (此前会 404), `/cgi-bin` 重定向与目录列表同样兼容
 - **ETag/304 条件请求 (RFC 7232)**: 静态资源 (含预压缩 `.gz` 表亲) 返回强校验 `ETag: W/"size-mtime"`, 带 `If-None-Match` 再验证未变时回 `304` (实测重复访问传输量 -94%); 304 按 RFC 9110 15.4.5 省略实体头 (Content-Type/Content-Length/Accept-Ranges 不随 304 下发, 避免代理歧义); `If-None-Match` 列表/`*` 通配、跨表示不误命中 (gzip 与明文 ETag 不同, 修改后自动失效)
-- **显式缓存策略**: 所有静态响应 (200/206/304) 携带 `Cache-Control: no-cache`。docroot 的 URL 跨重建始终不变 (`/js/react-ssr.js` 永远叫这个名字), 所以允许存副本、但每次复用前必须再验证 —— ETag 让这次再验证只花一个 304。不加这个头并非中立: 只带 `Last-Modified` 时浏览器会套用启发式新鲜期 (文件年龄的 10%), 于是能在数小时内一直用旧副本、一次都不问服务器; gzip 表亲还会放大这一点 —— 它的 `Last-Modified` 是 `.gz` 文件构建时的 mtime, 而不是它源文件的
+- **显式缓存策略**: 所有静态响应 (200/206/304) 携带 `Cache-Control: no-cache`, CGI 输出与 SSR 文档一律 `no-store` (脚本自己声明了 `Cache-Control` 就透传它 —— 默认值只是兜底, 永不覆盖)。docroot 的 URL 跨重建始终不变, 所以允许存副本、但每次复用前必须再验证 —— ETag 让这次再验证只花一个 304。不加这个头并非中立: 只带 `Last-Modified` 时浏览器会套用启发式新鲜期 (文件年龄的 10%), 于是能在数小时内一直用旧副本、一次都不问服务器; gzip 表亲还会放大这一点 —— 它的 `Last-Modified` 是 `.gz` 文件构建时的 mtime, 而不是它源文件的
+- **带内容指纹的 bundle URL**: `scripts/build-ssr.sh` 先算客户端 bundle 的摘要, 再把摘要嵌进两个服务端 bundle, 于是 SSR 文档引用的是 `/js/react-ssr.js?v=<hash>`。缓存策略只能约束「从此以后」的响应: 浏览器**早已存下**的副本自带它被写入时的规则, 没有任何响应头能把那份副本撤回。URL 随字节变化则直接绕开整个问题 —— 新文档要的是一个客户端从没见过的 URL。无指纹的路径仍然照常再验证, 老客户端与直接抓取不受影响
+- **一次性清缓存**(可选开关 `PURGE_CLIENT_CACHE=1`): 文档响应会额外带 `Clear-Site-Data: "cache"`, 让浏览器丢掉本 origin 的 HTTP 缓存 —— 这是修复「策略存在之前就被污染的浏览器缓存」的唯一办法。默认关闭; `docker-compose.yml` 里打开, 等所有客户端都访问过一次后就该关回去 (开着期间每次访问都会重清一次)。只对文档下发: 连静态资源一起清的话, 每看一页就会把 bundle 扔掉一次
 - **Last-Modified / If-Modified-Since (RFC 9110 13.2.2)**: 所有静态 200 响应携带 `Last-Modified` (IMF-fixdate); 只认日期的客户端 (部分 CDN/老代理/`curl -z`) 用 `If-Modified-Since` 再验证同样能拿到 304 —— 包括每天都会发生的那种: 把我们刚发的 `Last-Modified` 原样回放 (比较保留时分秒, 因此「相等」即视为未修改); 客户端带 `If-None-Match` 时它让位 (规范优先级)
 - **TCP_NODELAY + listen backlog 128**: 每个已接受连接显式关 Nagle (避免头/体两次 send 与延迟 ACK 相互作用引入的数十毫秒首字节停顿), 监听队列从 10 提到 128 承受突发连接
 - **sendfile(2) 零拷贝 + Range/206 (RFC 9110 14)**: 大静态文件与 206 字节区间响应走内核零拷贝 (macOS/Linux, 其他平台 fread 回退); 支持单区间 `bytes=N-M`/`N-`/`-N` (多区间回退 200 全量, gzip 协商忽略 Range), 越界回 `416` + `Content-Range: bytes */TOTAL`, 响应携带 `Accept-Ranges: bytes`
@@ -702,6 +704,9 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [x] ETag/304 条件请求 (If-None-Match, 强校验器 size+mtime, 覆盖 gzip 表亲)
 - [x] Last-Modified + If-Modified-Since 回退验证 (含原样回放自家 Last-Modified)
 - [x] 静态响应的 `Cache-Control: no-cache` 策略 (可存但须再验证, 304 兜住开销)
+- [x] CGI 与 SSR 文档一律 `no-store` (脚本自带指令优先) + 可选的一次性清缓存 `Clear-Site-Data` (`PURGE_CLIENT_CACHE`)
+- [x] 带内容指纹的 bundle URL (`/js/react-ssr.js?v=<hash>`, 构建期嵌入) —— 重建的 bundle 不会再被缓存副本顶掉
+- [x] 中继请求记录真实响应体字节数 (此前每条中继响应在访问日志里都记 0)
 - [x] sendfile(2) 零拷贝 + Range/206 断点续传 (单区间, 416, Accept-Ranges)
 - [x] TCP_NODELAY + listen backlog 128
 - [x] 优雅停机排水 + /health 端点

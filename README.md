@@ -68,14 +68,32 @@ fast & slow paths / agent stack / security depth) see the
   (Content-Type/Content-Length/Accept-Ranges stay off 304s, avoiding proxy
   ambiguity); lists / `*` wildcard handled, no cross-representation false hits
 - **Explicit cache policy**: every static response (200/206/304) carries
-  `Cache-Control: no-cache`. The docroot URLs are stable across rebuilds
-  (`/js/react-ssr.js` keeps its name forever), so a stored copy may be kept
-  but has to be revalidated before reuse - the ETag turns that into a 304.
-  Omitting the header is not neutral: with only `Last-Modified` present a
-  browser may apply heuristic freshness (10% of the file's age) and keep
-  serving a stale bundle for hours without ever asking the server. The gzip
-  twin makes this worse than it looks, because its `Last-Modified` is the
-  build-time mtime of the `.gz` file, not of the source it was built from
+  `Cache-Control: no-cache`, CGI output and the SSR documents carry
+  `no-store` (a script that declares its own directive keeps it - the
+  default is a fallback, never an override). The docroot URLs are stable
+  across rebuilds, so a stored copy has to be revalidated before reuse - the
+  ETag turns that into a 304. Omitting the header is not neutral: with only
+  `Last-Modified` present a browser may apply heuristic freshness (10% of
+  the file's age) and keep serving a stale bundle for hours without ever
+  asking the server. The gzip twin makes this worse than it looks, because
+  its `Last-Modified` is the build-time mtime of the `.gz` file, not of the
+  source it was built from
+- **Cache-busting bundle URL**: `scripts/build-ssr.sh` hashes the client
+  bundle and embeds the digest into both server bundles, so SSR documents
+  link `/js/react-ssr.js?v=<hash>`. A cache policy only governs responses
+  from the moment it ships: a copy a browser stored earlier keeps the rules
+  it was stored with, and no response header can retract it. A URL that
+  changes with the bytes sidesteps that entirely - the new document asks for
+  a URL the client has never seen. The un-versioned path still revalidates,
+  so old clients and direct fetches keep working
+- **One-shot cache eviction** (opt-in, `PURGE_CLIENT_CACHE=1`): document
+  responses additionally carry `Clear-Site-Data: "cache"`, which tells a
+  browser to drop this origin's HTTP cache - the only way to repair clients
+  whose store was poisoned before the policy above existed. Off by default;
+  `docker-compose.yml` turns it on until every client has visited once, then
+  it should be turned back off (while on, every visit re-evicts). Only
+  documents carry it: evicting on assets too would drop the bundle once per
+  page view
 - **Last-Modified / If-Modified-Since (RFC 9110 13.2.2)**: all static 200s
   carry `Last-Modified`; date-only clients (some CDNs, older proxies, `curl -z`)
   get 304s too - including the case that happens every day, replaying the exact
@@ -950,6 +968,9 @@ that Next can't swap in.
 - [x] ETag/304 conditional requests (If-None-Match, strong size+mtime validator, covers gzip siblings)
 - [x] Last-Modified + If-Modified-Since fallback revalidation (including replaying our own Last-Modified)
 - [x] `Cache-Control: no-cache` policy on static responses (store but revalidate; the 304 absorbs the cost)
+- [x] `no-store` on CGI and SSR documents (script-declared directives win) + opt-in `Clear-Site-Data` eviction (`PURGE_CLIENT_CACHE`)
+- [x] Content-hashed bundle URL (`/js/react-ssr.js?v=<hash>`, embedded at build time) so a rebuilt bundle is never shadowed by a cached copy
+- [x] Relay requests log real body byte counts (the access log recorded 0 for every relayed response)
 - [x] sendfile(2) zero-copy + Range/206 resume (single range, 416, Accept-Ranges)
 - [x] TCP_NODELAY + listen backlog 128
 - [x] Graceful shutdown draining + /health endpoint
