@@ -579,7 +579,7 @@ handle_client 只记日志并断连 —— SSE 以 close 定界, 不进 keep-ali
 SSE 写回 (note/delta/error/done 信封不变)
 ```
 
-**内置工具** (`src/tools.c`, `tools_init()` 注册): `get_time` (本地时间),
+**内置工具** (`src/tools.c`, `tools_init()` 注册): `get_time` (北京时间 UTC+8, 容器无 tzdata 故显式 +8 小时),
 `calc` (递归下降算术解析), `read_file` (web 根内解析 + 穿越防护),
 `fetch_url` (http(s) 抓取首 16KB), `skill-run` (读取技能全文),
 `remember` / `recall` (会话记忆事实读写, 无 sessionId 落全局池)。
