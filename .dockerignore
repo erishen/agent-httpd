@@ -11,6 +11,12 @@ docker-compose.override.yml
 cgi-bin/react-ssr/node_modules
 cgi-bin/react-ssr/tailwind.css
 
+# 客户端 bundle 及其预压缩表亲由 ssr-build 阶段生成 (Dockerfile 里显式 COPY)。
+# 构建上下文里的那两份是宿主工作树的旧产物, 而浏览器只读 gzip 那份 —— 一旦它
+# 陈旧, 所有人都在跑上一次的代码, 构建却一切"成功"。禁止它们混进来。
+www/js/react-ssr.js
+www/js/react-ssr.js.gz
+
 # 平台相关的宿主机预编译 CGI (macOS Mach-O): 容器内由 cgi-build 阶段
 # 用 Linux 工具链重新编译, 这里的旧产物不进构建上下文。
 # cgi-langs/ 源码必须保留 —— Dockerfile 的 cgi-build 阶段要用它们编译。

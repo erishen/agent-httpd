@@ -270,6 +270,12 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
     if (response->content_encoding[0]) {
         p += snprintf(p, end - p + 1, "Content-Encoding: %s\r\n", response->content_encoding);
     }
+    if (response->cache_control[0]) {
+        /* Outside the 304 entity-header skip: a revalidation answer has to
+         * repeat the cache policy (RFC 9111 4.3.4), or a cache that stored
+         * the response from the 304 alone loses it. */
+        p += snprintf(p, end - p + 1, "Cache-Control: %s\r\n", response->cache_control);
+    }
     if (response->location[0]) {
         p += snprintf(p, end - p + 1, "Location: %s\r\n", response->location);
     }

@@ -62,8 +62,12 @@ WORKDIR /app
 COPY --from=c-build /src/bin/agent-httpd bin/
 COPY --from=ssr-build /build/bin/react-ssr-server bin/
 COPY www/ www/
-# 客户端 bundle 以 ssr-build 阶段产出为准, 保证与 SSR 服务端同源
+# 客户端 bundle 以 ssr-build 阶段产出为准, 保证与 SSR 服务端同源。预压缩表亲
+# 也必须来自同一阶段: 它是浏览器唯一真正执行的那份 (浏览器总带
+# Accept-Encoding: gzip), 若留着构建上下文里的旧副本, 就只有非浏览器客户端
+# 能拿到新代码 —— 表面"构建成功", 实际所有人都在跑上一次的 bundle。
 COPY --from=ssr-build /build/www/js/react-ssr.js www/js/react-ssr.js
+COPY --from=ssr-build /build/www/js/react-ssr.js.gz www/js/react-ssr.js.gz
 # 脚本类 CGI (bash/python/ruby 源自仓库); 原生类 (go/rust/java/php 包装器)
 # 取自 cgi-build 阶段 —— 与容器工具链匹配的新鲜产物
 COPY cgi-bin/ cgi-bin/
