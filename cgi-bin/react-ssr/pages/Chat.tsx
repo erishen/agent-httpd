@@ -73,27 +73,29 @@ function classifyNote(note: string): Activity {
   return { kind: "info", label: note };
 }
 
-// Example questions exercising the full agent stack. Each maps to a built-in
-// tool (calc / get_time / read_file / fetch_url / skill-run / remember /
-// recall), an MCP tool (echo__pong from .data/mcp-servers.json, plus
-// fs__*/memory__*/think__* synced from the llm-router catalog), a skill
-// (local demo-lab, or skills/router/* materialized from the router), or the
-// PSE orchestrator. Natural-language phrasing works against a real upstream;
-// the local fake upstream (scripts/fake-llm-upstream.py) also routes some.
+// Example tasks exercising the full agent stack. Each is phrased as a real
+// natural-language request (not a tool-macro) and maps to a built-in tool
+// (calc / get_time / read_file / fetch_url / skill-run / remember / recall),
+// an MCP tool (echo__pong from .data/mcp-servers.json, plus fs__* /
+// memory__* / think__* synced from the llm-router catalog), a skill (local
+// demo-lab, or skills/router/* materialized from the router), or the PSE
+// orchestrator. A real upstream parses the wording and picks the tool; the
+// local demo engine (server/chat.ts) also keys off these phrases to light up
+// the matching activity chip.
 const EXAMPLES: { kind: ActKind; label: string; prompt: string }[] = [
-  { kind: "tool", label: "calc · 21*2", prompt: "Use the calc tool to compute 21*2" },
-  { kind: "tool", label: "get_time", prompt: "What time is it right now? Call get_time." },
-  { kind: "tool", label: "read_file", prompt: "Read the server home page (index.html) with read_file." },
-  { kind: "tool", label: "fetch_url", prompt: "Fetch https://example.com with fetch_url and summarize it." },
-  { kind: "mcp", label: "echo.pong", prompt: "Call the echo.pong MCP tool with text hey" },
-  { kind: "mcp", label: "fs · list root", prompt: "Use fs__list_directory to list the project root /home/user/projects." },
-  { kind: "mcp", label: "memory · facts", prompt: "Use memory__create_entities to store the fact that agent-httpd is a small research HTTP server." },
-  { kind: "mcp", label: "think · deep dive", prompt: "Use think__sequentialthinking to reason step by step about the llm-router skill-sync design." },
-  { kind: "skill", label: "demo-lab", prompt: "Run the demo-lab skill" },
-  { kind: "skill", label: "code-review", prompt: "Run the code-review skill on src/router.c" },
-  { kind: "skill", label: "weekly-investment", prompt: "Run the weekly-investment skill" },
-  { kind: "memory", label: "remember + recall", prompt: "Remember my favorite color is blue, then recall it later." },
-  { kind: "pse", label: "plan + execute", prompt: "Plan and execute a short task with PSE" },
+  { kind: "tool", label: "算组合数 C(20,8)", prompt: "帮我用计算工具算一下从 20 个人里选 8 个人有多少种组合，也就是 C(20,8) 等于多少？" },
+  { kind: "tool", label: "现在几点", prompt: "现在服务器时间是几点？请调用 get_time 工具告诉我当前时间。" },
+  { kind: "tool", label: "读首页", prompt: "用 read_file 工具读取网站首页 index.html 的内容，并简单说说它大概由哪些区块组成。" },
+  { kind: "tool", label: "抓取并总结网页", prompt: "用 fetch_url 工具抓取 https://example.com 这个页面，然后用一两句话总结它的主要内容。" },
+  { kind: "mcp", label: "回声工具", prompt: "调用 echo MCP 服务的 pong 工具，给我回一句 hello。" },
+  { kind: "mcp", label: "列项目目录", prompt: "通过 fs MCP 的 list_directory 工具，列出项目根目录 /home/user/projects 下的文件和子目录。" },
+  { kind: "mcp", label: "存一条事实", prompt: "用 memory MCP 把『agent-httpd 是一个用 C 写的小型教学用 HTTP 服务器』这条事实写入知识库。" },
+  { kind: "mcp", label: "分步推理论证", prompt: "借助 think MCP 的 sequentialthinking 工具，一步步推理一下 llm-router 的 skill 同步设计有什么优点和隐患。" },
+  { kind: "skill", label: "跑 demo-lab", prompt: "运行 demo-lab 技能，看看它演示了哪些能力。" },
+  { kind: "skill", label: "代码评审", prompt: "用 code-review 技能对 src/router.c 做一次代码评审，指出可能的问题。" },
+  { kind: "skill", label: "周度投资诊断", prompt: "运行 weekly-investment 技能，生成本周的持仓诊断与配置建议摘要。" },
+  { kind: "memory", label: "记偏好再回忆", prompt: "先记住『我最喜欢的颜色是蓝色』，然后马上问我喜欢什么颜色，验证它真的记住了。" },
+  { kind: "pse", label: "规划再执行", prompt: "用 PSE 编排器先规划、再执行一个小任务：把 /tmp 目录下所有 .log 文件按大小列出来。" },
 ];
 
 // Bootstrap a sticky session id once (client only): minted and persisted on
