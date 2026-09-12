@@ -825,7 +825,8 @@ SSE written back (note/delta/error/done envelope unchanged)
 ```
 
 **Built-in tools** (`src/tools.c`, registered by `tools_init()`): `get_time`
-(local time), `calc` (recursive-descent arithmetic parser), `read_file`
+(Beijing time, UTC+8 — the image ships no tzdata so the offset is applied
+explicitly), `calc` (recursive-descent arithmetic parser), `read_file`
 (resolved inside the web root + traversal protection), `fetch_url` (grabs the
 first 16KB over http(s)), `skill-run` (reads a skill's full text),
 `remember` / `recall` (session memory facts; without a sessionId they land

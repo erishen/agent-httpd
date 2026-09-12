@@ -267,11 +267,18 @@ static void tool_get_time(void *data, const char *args,
     (void)session_id;
     char human[64], http[40];
     time_t now = time(NULL);
+    /* The server runs in Shenzhen (China, UTC+8). Report Beijing time
+     * explicitly rather than the container's local time: the Docker image
+     * ships no tzdata and sets no TZ, so localtime_r yields UTC and would
+     * mislead the operator by 8 hours. China keeps a fixed UTC+8 with no
+     * DST, so a constant offset is correct. Shift the epoch and read it back
+     * as a UTC wall clock — that wall clock IS the Beijing clock. */
+    time_t beijing = now + 8 * 3600;
     struct tm tmv;
-    localtime_r(&now, &tmv);
-    strftime(human, sizeof human, "%Y-%m-%d %H:%M:%S %Z", &tmv);
+    gmtime_r(&beijing, &tmv);
+    strftime(human, sizeof human, "%Y-%m-%d %H:%M:%S", &tmv);
     format_http_date(http, sizeof http, now);
-    sb_str(result, "server local time: ");
+    sb_str(result, "server time (Beijing, UTC+8): ");
     sb_str(result, human);
     sb_str(result, " (HTTP date: ");
     sb_str(result, http);
