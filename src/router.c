@@ -216,8 +216,14 @@ static char **parse_skill_names(const char *json, int *out) {
  * JSON string value (opening quote included); unescaped once here. */
 static void materialize_skill(const char *name, const char *body) {
     if (!name || !*name || !body || !*body) return;
-    /* name is dir-safe by construction (skills.c rejects '/' and '\\'),
-     * and we only write into the skills/ subtree. */
+    /* name arrives from the router /skills response, NOT from skills.c's own
+     * loader, so do not trust the "dir-safe by construction" assumption there.
+     * Reject any separator or ".." component to prevent writing outside the
+     * skills/ subtree (e.g. "../../etc/cron.d/x"). */
+    if (strpbrk(name, "/\\") || strstr(name, "..")) {
+        fprintf(stderr, "[router] skill name rejected (path separator): %s\n", name);
+        return;
+    }
     char dir[ROUTER_PATH_MAX];
     if (snprintf(dir, sizeof dir, "skills/router/%s", name) >= (int)sizeof dir) return;
     if (mkdir("skills/router", 0755) != 0 && errno != EEXIST) return;
