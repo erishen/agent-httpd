@@ -170,10 +170,12 @@ void set_error_response(HttpResponse *response, int status_code, const char *sta
 
 void log_request(const char *client_ip, const HttpRequest *request, int status_code, int bytes);
 
-/* FCGI client: relay one request to a resident FastCGI backend and collect
- * its raw HTTP response into out_buf (out_len is in/out capacity usable).
- * Returns 0 on success. */
+/* FCGI client: relay one request to a resident FastCGI backend and stream
+ * its raw HTTP/1.1 response straight to client_fd (no fixed-size cap, so
+ * large SSR pages no longer 502). Returns the backend status code (>=100)
+ * on success, or -1 if the exchange could not even be attempted (nothing
+ * was streamed yet — the caller should render its own 502). */
 int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
-                    const char *remote_addr, char *out_buf, int *out_len);
+                    const char *remote_addr, int client_fd);
 
 #endif

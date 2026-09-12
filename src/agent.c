@@ -372,7 +372,11 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
     }
 
     char auth[1024];
-    snprintf(auth, sizeof auth, "Authorization: Bearer %s", api_key);
+    /* api_key may be unset in dev/test: a NULL here is UB for %s (and on
+     * some libc a hard crash), so substitute an empty bearer instead of
+     * letting the upstream call fail catastrophically. */
+    snprintf(auth, sizeof auth, "Authorization: Bearer %s",
+             api_key ? api_key : "");
     int timeout_s = env_int("LLM_TIMEOUT", 60);
     if (timeout_s <= 0 || timeout_s > 600) timeout_s = 60;
     char max_time[16];

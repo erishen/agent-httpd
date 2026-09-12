@@ -221,7 +221,8 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
         if (killed) {
             free(output);
             METRICS_INC(cgi_errors_total);
-            set_error_response(response, killed ? 504 : 500, "Gateway Timeout");
+            /* reached only when killed != 0, so the status is always 504 */
+            set_error_response(response, 504, "Gateway Timeout");
             return -1;
         }
 

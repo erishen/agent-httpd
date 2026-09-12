@@ -205,10 +205,11 @@ static long param_long(const FcgParam *p, int n, const char *name, long dflt) {
     return (end == v) ? dflt : r;
 }
 
-/* --- FCGI client: forward one agent-httpd request to another FastCGI
- *     backend (e.g. the resident React server). The backend answers with
- *     a complete HTTP/1.1 response inside STDOUT frames, which we collect
- *     verbatim into out_buf. Returns 0 on success. */
+/* --- FCGI client: forward one agent-httpd request to a resident FastCGI
+ *     backend (e.g. the resident React server). The backend answers with a
+ *     complete HTTP/1.1 response inside STDOUT frames, which we stream
+ *     straight to client_fd (no fixed 64KB cap). Returns the backend status
+ *     code (>=100) on success, or -1 if the exchange could not be attempted. */
 
 static void fcgi_put_len(unsigned char *buf, size_t *off, size_t len) {
     if (len < 128) {
@@ -223,7 +224,7 @@ static void fcgi_put_len(unsigned char *buf, size_t *off, size_t len) {
 }
 
 int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
-                    const char *remote_addr, char *out_buf, int *out_len) {
+                    const char *remote_addr, int client_fd) {
     struct sockaddr_un addr;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -291,18 +292,49 @@ int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
     }
     if (send_frame(fd, FCGI_STDIN, 1, NULL, 0) < 0) goto fail; /* end of stdin */
 
-    /* collect STDOUT frames until END_REQUEST */
+    int status = -1;
+    int got_status = 0;
+    int streamed_any = 0;
+    /* Stream STDOUT frames straight to the client until END_REQUEST. This
+     * removes the old 64KB ceiling that made large SSR pages 502. The status
+     * code is scraped from the first "HTTP/1.1 " bytes for logging. */
     {
         FcgHeader hdr;
-        size_t total = 0;
+        char frame[65536];
         for (;;) {
-            if (recv_n(fd, &hdr, FCGI_HEADER_LEN) < 0 || hdr.version != FCGI_VERSION) goto fail;
+            if (recv_n(fd, &hdr, FCGI_HEADER_LEN) < 0 || hdr.version != FCGI_VERSION) {
+                if (streamed_any) goto done_streamed;
+                goto fail;
+            }
             unsigned int len = be16(hdr.content_length);
             if (hdr.type == FCGI_STDOUT) {
-                if (total + len + 1 > MAX_RESPONSE_SIZE) goto fail;
-                if (recv_n(fd, out_buf + total, len) < 0) goto fail;
-                total += len;
-                out_buf[total] = '\0';
+                if (len > sizeof(frame)) {
+                    if (streamed_any) goto done_streamed;
+                    goto fail;
+                }
+                if (recv_n(fd, frame, len) < 0) {
+                    if (streamed_any) goto done_streamed;
+                    goto fail;
+                }
+                if (!got_status) {
+                    for (size_t i = 0; i + 9 <= len; i++) {
+                        if (memcmp(frame + i, "HTTP/1.1 ", 9) == 0) {
+                            status = atoi((char *)frame + i + 9);
+                            got_status = 1;
+                            break;
+                        }
+                    }
+                }
+                size_t sent = 0;
+                while (sent < len) {
+                    ssize_t w = send(client_fd, frame + sent, len - sent, 0);
+                    if (w <= 0) {
+                        if (w < 0 && errno == EINTR) continue;
+                        goto done_streamed;
+                    }
+                    sent += (size_t)w;
+                }
+                streamed_any = 1;
             } else if (len > 0) {
                 char tmp[64];
                 unsigned int dropped = 0;
@@ -319,10 +351,10 @@ int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
             }
             if (hdr.type == FCGI_END_REQUEST) break;
         }
-        *out_len = (int)total;
     }
+done_streamed:
     close(fd);
-    return 0;
+    return got_status ? status : 200;
 
 fail:
     close(fd);

@@ -192,7 +192,10 @@ void session_prune_old(double max_age_days) {
     while ((e = readdir(d)) != NULL) {
         const char *name = e->d_name;
         size_t l = strlen(name);
-        if (l <= 2 || l > SESSION_ID_MAX + 5) continue;
+        /* need at least 5 chars for an "x.json" name; the shorter guard
+         * also prevents `name + l - 5` (the .json suffix test below) from
+         * reading bytes before `name`. */
+        if (l < 5 || l > SESSION_ID_MAX + 5) continue;
         if (strcmp(name, "memory.json") == 0) continue;
         if (strcmp(name + l - 5, ".json") != 0) continue;
         char p[MAX_PATH_SIZE];
