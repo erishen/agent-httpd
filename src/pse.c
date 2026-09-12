@@ -133,6 +133,7 @@ static int pse_round_once(ChatOut *out, const char *sys, const char *user,
 /* Sanitize role output: strip any stray XML-looking tool tags the model
  * dribbles out (resolve-studio does the same). In-place. */
 static void sanitize_role_output(char *s) {
+    if (!s) return; /* capture may be empty (model returned nothing) */
     char *dst = s;
     const char *p = s;
     while (*p) {
