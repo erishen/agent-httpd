@@ -5,7 +5,7 @@
 #   保留: C 服务器本体 + 全部静态 UI + chat SSE 中继 (fork curl) +
 #         bash/python/go/rust/java/php/ruby CGI 动物园 + React SSR CGI +
 #         python3 echo MCP 演示 + healthcheck/LLM 上游共用的 python3+curl
-#   运行时基座: node:20-bookworm-slim (即 debian bookworm-slim + node20),
+#   运行时基座: node:24-bookworm-slim (即 debian bookworm-slim + node24),
 #         node 供 react-ssr.cgi 自包含 bundle 使用 (无需 node_modules)
 #   失去: router 同步出的 npx 版 MCP server 预热缓存 (运行时可现装,
 #         echo 演示不受影响) —— 只影响首次 MCP init 速度
@@ -37,10 +37,12 @@ COPY cgi-langs/ cgi-langs/
 COPY scripts/build-cgis.sh scripts/
 RUN sh scripts/build-cgis.sh
 
-# ---------- 阶段 3: 运行时 (node:20-bookworm-slim + CGI 解释器, 约 600MB) ----------
-FROM node:20-bookworm-slim
-# node:20-bookworm-slim = debian bookworm-slim + node/npm: react-ssr.cgi 是
+# ---------- 阶段 3: 运行时 (node:24-bookworm-slim + CGI 解释器, 约 600MB) ----------
+FROM node:24-bookworm-slim
+# node:24-bookworm-slim = debian bookworm-slim + node/npm: react-ssr.cgi 是
 # esbuild 自包含 bundle, 只要 node 就能跑, 不需要 node_modules。
+# 选 bookworm 变体 (而非默认 trixie) 与阶段 1/2 的 debian:bookworm-slim
+# 保持同系 glibc, 避免跨阶段二进制混用不同 glibc。
 # python3: CGI 动物园 + fake MCP 演示 + 容器 healthcheck;
 # curl: src/agent/llm.c 的 LLM 上游通道 (fork curl -N 流式);
 # ca-certificates: curl 走 https 上游必需 (漏掉 chat 会 "upstream connection failed");
