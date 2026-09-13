@@ -31,6 +31,9 @@ tests/t_ka
 tests/t_auth
 tests/t_json
 
+# embedded example binary (built by `make example`)
+examples/embedded
+
 # smoke-test scratch. The suite writes these into the docroot and removes them
 # again; a run cut short (or one whose deletes hit the sandbox's bulk-delete
 # guard, e.g. after www/fixlist's 2000 entries) leaves them behind.

@@ -59,6 +59,12 @@ extern volatile sig_atomic_t g_shutdown_requested;
  * cleared. Returns 0 on clean exit. */
 int event_loop(int server_fd, int fcgi_fd);
 
+/* ---- framework.c (public API declared in agenthttpd.h) ---- */
+/* Custom-route dispatch: runs the agenthttpd_route() table against the
+ * request before the built-in CGI/static gate. Returns 1 when the request
+ * was handled, 0 to fall through. */
+int framework_route_dispatch(HttpRequest *request, HttpResponse *response);
+
 /* ---- util.c ---- */
 int env_int(const char *name, int dflt);
 int get_request_timeout(void);

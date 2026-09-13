@@ -199,37 +199,26 @@ fast & slow paths / agent stack / security depth) see the
 
 ```
 agent-httpd/
-├── src/
-│   ├── main.c           # entry: arg parsing + init + accept loop (dispatch to pool or fork)
-│   ├── http.c           # HTTP core: parse/serialize/error pages/logging + keep-alive + -R + TCP listen
-│   ├── static.c         # static files: traversal defense + listing + gzip negotiation + ETag/304
-│   ├── cgi.c            # CGI/1.1: fork+exec, header parsing (Location/Status), timeouts, spill-to-disk
-│   ├── auth.c           # Basic Auth: htpasswd loading (plaintext/crypt) + BASE64
-│   ├── ratelimit.c      # per-IP rate limiting: fixed-window table in shared memory
-│   ├── metrics.c        # /metrics observability: shared counter table + Prometheus text render
-│   ├── metrics.h        # METRICS_INC macro family / metrics_init / metrics_render
-│   ├── worker.c         # prefork worker pool: pipe-token semaphore + SCM_RIGHTS fd passing
-│   ├── util.c           # shared utilities: env guardrails, string/URL/HTML, MIME
-│   ├── fastcgi.c        # FCGI server (backend for nginx fastcgi_pass) + client (forward_to_fcgi)
-│   ├── llm.c            # native agent chat endpoint: /react/api/chat SSE (routing: PSE / ReAct / demo)
-│   ├── llm.h            # interface declarations for llm.c
-│   ├── agent.c          # ReAct main loop: fork-curl upstream + tool_calls dispatch + concurrency slots
-│   ├── agent.h          # agent_round / agent_run(_ex) / RoundState / slot API
-│   ├── tools.c          # tool registry: get_time/calc/read_file/fetch_url/skill-run/remember/recall built in
-│   ├── tools.h          # ToolDef / tools_register / tools_schema_json / tools_dispatch
-│   ├── skills.c         # skills index: SKILL.md scanning + frontmatter + system prompt injection
-│   ├── skills.h         # skills_init / skills_index_text / skills_read
-│   ├── session.c        # memory: session/fact persistence (.data/sessions/*.json, atomic writes)
-│   ├── session.h        # session_load / session_append / session_fact_* / session_render_extra
-│   ├── mcp.c            # MCP stdio client: tools/list at startup, one-shot child per call, jq prettify
-│   ├── mcp.h            # McpServerCfg / McpToolInfo / mcp_init / mcp_call
-│   ├── pse.c            # PSE orchestrator (Planner→Specialist→Evaluator, ≤3 retries)
-│   ├── pse.h            # pse_run / pse_enabled
-│   ├── chatio.c         # SSE envelope (note/delta/error/done) + capture buffer (cap_on)
-│   ├── chatio.h         # ChatOut / sse_event
-│   ├── internal.h       # private cross-module declarations (except fastcgi.c)
-│   └── httpd.h          # shared structs/declarations (HTTP, FCGI server/client reuse)
+├── src/                 # layered: umbrella headers at the root, one dir per layer
+│   ├── agenthttpd.h     # public framework API: embed the server (config + route/tool hooks + run)
+│   ├── httpd.h          # shared structs/declarations (HTTP, FCGI server/client reuse)
+│   ├── internal.h       # private cross-module declarations
+│   ├── core/            # engine layer: main.c (CLI front end) · framework.c (public API impl)
+│   │                    #   event.c (master loop) · worker.c (prefork pool) · router.c (llm-router sync)
+│   │                    #   metrics.c (shared counters) · minijson.c · util.c
+│   ├── http/            # protocol layer: http.c (parse/serialize/keep-alive) · http_parse.c
+│   │                    #   http_resp.c · http_log.c · http_route.c (dispatch) · static.c (traversal
+│   │                    #   defense + ETag/304 + gzip) · chatio.c (SSE envelope)
+│   ├── cgi/             # gateway layer: cgi.c (CGI/1.1) · fastcgi.c (server + client relay)
+│   │                    #   vite.c (dev proxy)
+│   ├── security/        # auth.c (Basic Auth, hash-only) · ratelimit.c (per-IP shared-mem window)
+│   └── agent/           # agent stack: llm.c (chat endpoint) · agent.c (ReAct loop) · mcp.c (MCP
+│                        #   stdio client) · pse.c (Planner/Specialist/Evaluator) · tools.c (registry)
+│                        #   skills.c (SKILL.md index) · session.c (memory store)
 ├── build/               # build artifacts (.o/.d, make clean removes) — src/ holds only sources
+├── examples/
+│   ├── embedded.c       # embedded demo: custom routes + exec tool + tool probe (make example-run)
+│   └── tools/wordcount.py # external exec tool: JSON on stdin, JSON on stdout
 ├── cgi-bin/             # deploy artifacts: executables the server execl()s directly
 │   ├── hello.cgi        # bash: env vars and time
 │   ├── form.cgi         # bash: GET query / POST body form
@@ -260,9 +249,32 @@ agent-httpd/
 ├── Dockerfile           # multi-stage build: C compile → SSR bundle → node:20-slim runtime
 ├── docker-compose.yml   # three services: httpd / react / nginx
 ├── .dockerignore
-├── bin/                 # build output
+├── docs/
+│   └── FRAMEWORK.md     # framework-ization write-up: motivation, design, process, verification
+├── bin/                 # build output (server binary, libagenthttpd.a)
 └── Makefile
 ```
+
+### Embedding as a library
+
+The server is also a framework: link `bin/libagenthttpd.a` (`make lib`),
+register custom routes and agent tools, and run it inside your own process —
+the CLI binary is just a thin front end over the same API:
+
+```c
+#include "agenthttpd.h"
+
+agenthttpd_route("GET", "/api/status", my_status_handler);
+agenthttpd_tool_exec("wordcount", "...", params_json, "python3 tools/wordcount.py");
+agenthttpd_run(&(agenthttpd_config){ .port = 18101, .workers = 4 });
+```
+
+```bash
+make example-run   # builds bin/libagenthttpd.a + examples/embedded and serves on :18101
+```
+
+Design decisions, the pre-fork registration model, exec-tool semantics and the
+full process record live in [docs/FRAMEWORK.md](docs/FRAMEWORK.md).
 
 ## Build & run
 
