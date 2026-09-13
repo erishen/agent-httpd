@@ -139,3 +139,19 @@ void set_str(char *dst, size_t dst_size, const char *src) {
     memcpy(dst, src, n);
     dst[n] = '\0';
 }
+
+/* True when any '/'-separated component of the decoded path starts with
+ * '.' (".hidden", ".."; empty components are ignored). Static/CGI serving
+ * refuses such paths so a stray dotfile (editor state, .env, VCS metadata)
+ * dropped into the docroot is not exposed over HTTP, and directory
+ * listings hide the same entries. */
+int path_has_dot_component(const char *path) {
+    const char *p = path;
+    while (*p) {
+        const char *seg = p;
+        while (*p && *p != '/') p++;
+        if (p > seg && seg[0] == '.') return 1;
+        if (*p) p++;
+    }
+    return 0;
+}
