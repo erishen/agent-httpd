@@ -55,37 +55,26 @@ MCP / 技能 / 记忆 / ReAct / PSE）。
 
 ```
 agent-httpd/
-├── src/
-│   ├── main.c           # 入口: 参数解析 + 初始化 + accept 主循环 (连接分发给 worker 池或 fork)
-│   ├── http.c           # HTTP 核心: 解析/序列化/错误页/日志 + keep-alive 循环 + -R 转发 + TCP 监听
-│   ├── static.c         # 静态文件: 穿越防护 + 目录列表 + gzip 协商 + ETag/304
-│   ├── cgi.c            # CGI/1.1: fork+exec、头解析 (Location/Status)、超时、大响应落盘
-│   ├── auth.c           # Basic Auth: htpasswd 加载 (明文/crypt) + BASE64
-│   ├── ratelimit.c      # 每 IP 限流: 共享内存固定窗口计数表
-│   ├── metrics.c        # /metrics 可观测: 共享内存计数表 + Prometheus 文本渲染
-│   ├── metrics.h        # METRICS_INC 家族宏 / metrics_init / metrics_render
-│   ├── worker.c         # prefork worker 池: pipe-token 信号量 + SCM_RIGHTS fd 传递
-│   ├── util.c           # 共享工具: 环境变量防护栏、字符串/URL/HTML、MIME
-│   ├── fastcgi.c        # FCGI 服务端(被 nginx fastcgi_pass 当后端) + 客户端(forward_to_fcgi 转发给常驻后端)
-│   ├── llm.c            # C 原生 Agent 聊天端点: /react/api/chat SSE (路由: PSE / ReAct / 演示引擎)
-│   ├── llm.h            # llm.c 的接口声明
-│   ├── agent.c          # ReAct 主循环: fork curl 上游 + tool_calls 工具调度 + 并发槽
-│   ├── agent.h          # agent_round / agent_run(_ex) / RoundState / 并发槽 API
-│   ├── tools.c          # 工具注册表: 内置 get_time/calc/read_file/fetch_url/skill-run/remember/recall
-│   ├── tools.h          # ToolDef / tools_register / tools_schema_json / tools_dispatch
-│   ├── skills.c         # Skills 索引: SKILL.md 扫描 + frontmatter + 系统提示注入
-│   ├── skills.h         # skills_init / skills_index_text / skills_read
-│   ├── session.c        # Memory: 会话/事实库持久化 (.data/sessions/*.json, 原子写)
-│   ├── session.h        # session_load / session_append / session_fact_* / session_render_extra
-│   ├── mcp.c            # MCP stdio 客户端: 启动时 tools/list, 调用时起一次性子进程, jq 美化
-│   ├── mcp.h            # McpServerCfg / McpToolInfo / mcp_init / mcp_call
-│   ├── pse.c            # PSE 三角色编排器 (Planner→Specialist→Evaluator, ≤3 轮重试)
-│   ├── pse.h            # pse_run / pse_enabled
-│   ├── chatio.c         # SSE 信封 (note/delta/error/done) + 捕获缓冲 (cap_on)
-│   ├── chatio.h         # ChatOut / sse_event
-│   ├── internal.h       # 服务器内部跨模块声明 (fastcgi.c 之外私有)
-│   └── httpd.h          # 共享结构体/函数申明 (HTTP、服务端/客户端 FCGI 复用)
+├── src/                 # 分层结构: 根部放伞型头文件, 每层一个子目录
+│   ├── agenthttpd.h     # 公开框架 API: 嵌入服务器 (config + 路由/工具钩子 + run)
+│   ├── httpd.h          # 共享结构体/函数申明 (HTTP、服务端/客户端 FCGI 复用)
+│   ├── internal.h       # 服务器内部跨模块声明
+│   ├── core/            # 引擎层: main.c (CLI 前端) · framework.c (公开 API 实现)
+│   │                    #   event.c (主事件循环) · worker.c (prefork 池) · router.c (llm-router 同步)
+│   │                    #   metrics.c (共享计数) · minijson.c · util.c
+│   ├── http/            # 协议层: http.c (解析/序列化/keep-alive) · http_parse.c
+│   │                    #   http_resp.c · http_log.c · http_route.c (分发) · static.c (穿越防护
+│   │                    #   + ETag/304 + gzip) · chatio.c (SSE 信封)
+│   ├── cgi/             # 网关层: cgi.c (CGI/1.1) · fastcgi.c (服务端+客户端转发)
+│   │                    #   vite.c (dev 代理)
+│   ├── security/        # auth.c (Basic Auth, 仅强哈希) · ratelimit.c (每 IP 共享内存窗口)
+│   └── agent/           # Agent 栈: llm.c (聊天端点) · agent.c (ReAct 循环) · mcp.c (MCP stdio
+│                        #   客户端) · pse.c (PSE 三角色编排) · tools.c (工具注册表)
+│                        #   skills.c (SKILL.md 索引) · session.c (记忆库)
 ├── build/               # 编译中间产物 (.o/.d, make clean 清除) —— src/ 只放源码
+├── examples/
+│   ├── embedded.c       # 嵌入示例: 自定义路由 + exec 工具 + 工具探针 (make example-run)
+│   └── tools/wordcount.py # 外部 exec 工具: stdin 进 JSON, stdout 出 JSON
 ├── cgi-bin/             # 部署产物: 服务器直接 execl 的可执行文件
 │   ├── hello.cgi        # bash: 环境变量和时间
 │   ├── form.cgi         # bash: GET query / POST body 表单
@@ -116,9 +105,31 @@ agent-httpd/
 ├── Dockerfile           # 三阶段构建: C 编译 → SSR 打包 → node:20-slim 运行时
 ├── docker-compose.yml   # 三服务编排: httpd / react / nginx
 ├── .dockerignore
-├── bin/                 # 编译输出目录
+├── docs/
+│   └── FRAMEWORK.md     # 框架化实录: 动机、设计、过程、验证
+├── bin/                 # 编译输出目录 (服务器二进制, libagenthttpd.a)
 └── Makefile
 ```
+
+### 作为库嵌入
+
+服务器同时也是一个框架: 链接 `bin/libagenthttpd.a` (`make lib`), 注册自定义路由
+和 Agent 工具, 在自己的进程里跑起来 —— CLI 二进制只是同一套 API 的薄前端:
+
+```c
+#include "agenthttpd.h"
+
+agenthttpd_route("GET", "/api/status", my_status_handler);
+agenthttpd_tool_exec("wordcount", "...", params_json, "python3 tools/wordcount.py");
+agenthttpd_run(&(agenthttpd_config){ .port = 18101, .workers = 4 });
+```
+
+```bash
+make example-run   # 构建 bin/libagenthttpd.a + examples/embedded 并起服在 :18101
+```
+
+设计取舍、预 fork 注册模型、exec 工具语义与完整过程记录见
+[docs/FRAMEWORK.md](docs/FRAMEWORK.md)。
 
 ## 构建与运行
 

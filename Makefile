@@ -40,7 +40,7 @@ BUILD_DIR = build
 # Sources are grouped under src/<layer>/ to keep the flat src/ readable.
 # httpd.h / internal.h stay at src/ root as the shared umbrella headers; the
 # -I src flag (in CFLAGS) lets every #include "x.h" resolve from any subdir.
-SRCS = src/core/main.c src/core/event.c src/core/worker.c src/core/router.c \
+SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c src/core/router.c \
        src/core/metrics.c src/core/minijson.c src/core/util.c \
        src/http/http.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
        src/http/http_route.c src/http/static.c src/http/chatio.c \
@@ -48,7 +48,7 @@ SRCS = src/core/main.c src/core/event.c src/core/worker.c src/core/router.c \
        src/security/auth.c src/security/ratelimit.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
        src/agent/tools.c src/agent/skills.c src/agent/session.c
-HDRS = src/httpd.h src/internal.h \
+HDRS = src/httpd.h src/agenthttpd.h src/internal.h \
        src/core/minijson.h src/core/metrics.h src/core/router.h \
        src/http/chatio.h \
        src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
@@ -74,6 +74,25 @@ WORKER_ARGS = $(if $(WORKERS),-w $(WORKERS))
 .DEFAULT_GOAL := all
 
 all: $(TARGET)
+
+# Framework artifacts: the same objects as the server binary minus main.o,
+# archived as a static library; examples/embedded.c links it and registers
+# its own routes + tools through the public API (src/agenthttpd.h).
+LIB = bin/libagenthttpd.a
+LIB_OBJS = $(filter-out $(BUILD_DIR)/core/main.o,$(OBJS))
+
+lib: $(LIB)
+
+$(LIB): $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	ar rcs $@ $(LIB_OBJS)
+	@echo "Library complete: $@"
+
+examples/embedded: examples/embedded.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ examples/embedded.c $(LIB) $(LDFLAGS)
+
+example: $(TARGET) examples/embedded
+	@echo "Embedded example built: examples/embedded (run: make example-run)"
 
 $(TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
@@ -241,7 +260,11 @@ bench: all
 		done; \
 		python3 scripts/bench.py $(PORT) $(BENCH_REQ) $(BENCH_CONC)
 
-clean:
-	rm -rf $(BUILD_DIR) bin
+# Run the embedded example (examples/embedded.c) on :18101 in the foreground.
+example-run: example
+	./examples/embedded
 
-.PHONY: all build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream
+clean:
+	rm -rf $(BUILD_DIR) bin examples/embedded
+
+.PHONY: all lib example example-run build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream

@@ -107,6 +107,12 @@ int process_request(HttpRequest *request, HttpResponse *response, int client_fd)
         return 0;
     }
 
+    /* Framework layer: routes registered through agenthttpd_route() run
+     * before the built-in method gate, so a custom route may serve any verb
+     * (POST included, without needing the CGI path form). A handler returns
+     * 0 = handled; -1 = fall through to the dispatch below. */
+    if (framework_route_dispatch(request, response)) return 0;
+
     /* Method dispatch (RFC 9110 9): GET/HEAD read resources, POST/PUT/PATCH
      * carry bodies to CGI, DELETE asks a script to remove something, and
      * OPTIONS is answered by the server itself with an Allow menu. Static
