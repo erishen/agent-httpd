@@ -14,6 +14,10 @@ const char CHAT_SSE_HEAD[] =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/event-stream\r\n"
     "Cache-Control: no-cache\r\n"
+    /* Tell reverse proxies (nginx :18081) not to buffer the stream — without
+     * this a buffered proxy would swallow every event until the connection
+     * closed, defeating the live token typing. */
+    "X-Accel-Buffering: no\r\n"
     "Connection: close\r\n"
     "\r\n";
 
@@ -48,4 +52,13 @@ void sse_event(ChatOut *out, const char *type, const char *data) {
         sb_str(&out->cap, data);
     }
     free(b.p);
+}
+
+void sse_heartbeat(ChatOut *out) {
+    static const char beat[] = ":\n\n";
+    if (out->ok && net_write_all(out->fd, beat, sizeof beat - 1) == 0) {
+        out->bytes += (int)(sizeof beat - 1);
+    } else {
+        out->ok = 0;
+    }
 }

@@ -28,6 +28,11 @@ extern const char CHAT_SSE_HEAD[];
  * for the parameter-less forms ({"t":"done"}). */
 void sse_event(ChatOut *out, const char *type, const char *data);
 
+/* Emit an SSE comment line (":\n\n"). Proxies (e.g. nginx on :18081) ignore
+ * it but it resets their idle timer, so a long upstream think gap does not
+ * drop the stream. Flips out->ok on write failure. */
+void sse_heartbeat(ChatOut *out);
+
 /* Full-write helpers: -1 when the peer is gone (SIGPIPE is ignored
  * server-wide; a vanished client just fails the send). */
 int net_write_all(int fd, const char *buf, size_t n);

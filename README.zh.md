@@ -581,7 +581,7 @@ SSE 写回 (note/delta/error/done 信封不变)
 
 **内置工具** (`src/tools.c`, `tools_init()` 注册): `get_time` (北京时间 UTC+8, 容器无 tzdata 故显式 +8 小时),
 `calc` (递归下降算术解析), `read_file` (web 根内解析 + 穿越防护),
-`fetch_url` (http(s) 抓取首 16KB), `skill-run` (读取技能全文),
+`fetch_url` (http(s) 抓取首 16KB, 见下「SSRF 加固」), `skill-run` (读取技能全文),
 `remember` / `recall` (会话记忆事实读写, 无 sessionId 落全局池)。
 
 **Skills** (`src/skills.c`): 按目录扫描 `SKILL.md` (frontmatter `name` /
@@ -727,6 +727,8 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [x] 每 IP 限流 (`-l <rps>`, 固定窗口 + 共享内存计数表, fork/worker 池共用配额, 429 + Retry-After)
 - [x] chat 上游瞬时故障重试 (3 次尝试 + 1s/2.5s 退避, 瞬时/永久错误分类判定, 退避期监听客户端断开)
 - [x] 隐私与合规加固 (安全头代理同构、FCGI socket 默认 0700、日志文件 0600、对外错误脱敏)
+- [x] `fetch_url` SSRF 加固: 对 IP 字面量、方括号 IPv6、以及**每一个**解析出的地址, 一律拦截回环 / 私网 / 链路本地 / 云元数据 (169.254.169.254); 剥离 `userinfo@` 主机混淆; **DNS 解析失败按失败关闭** (fail-closed); **每一个** HTTP 重定向跳都要重新校验, 因此 `302` 跳到内网地址绝不会被跟随。私网 / 回环地址**始终拦截, 设计上无开关可削弱**。
+- [x] SSE 反代友好: 聊天流输出 `X-Accel-Buffering: no`, 防止前置 nginx (:18081) 缓冲; 另发 15s 一次的 `:` 心跳注释, 防止空闲反代在长生成时掐断连接。
 - [~] 多虚拟主机 —— **暂缓**: 教学场景单 docroot 已够; 真需要时前置 nginx 按 Host 分流到多个 agent-httpd 实例即可, 不必在 C 层重新实现
 - [x] URL 路由 (react-router 客户端路由 + SSR 深链; C 层 `/react/` 转发)
 - [~] SSL/HTTPS 支持 —— **评估后不做**: 生产部署惯例是 nginx/负载均衡终结 TLS (本仓库的 docker-compose 就是这个形态); 在教学服务器里集成 OpenSSL 会显著膨胀代码而偏离主线

@@ -827,8 +827,8 @@ SSE written back (note/delta/error/done envelope unchanged)
 **Built-in tools** (`src/tools.c`, registered by `tools_init()`): `get_time`
 (Beijing time, UTC+8 — the image ships no tzdata so the offset is applied
 explicitly), `calc` (recursive-descent arithmetic parser), `read_file`
-(resolved inside the web root + traversal protection), `fetch_url` (grabs the
-first 16KB over http(s)), `skill-run` (reads a skill's full text),
+(resolved inside the web root + traversal protection), `fetch_url` (grabs up to 16KB over http(s); SSRF-hardened — see the
+security checklist below), `skill-run` (reads a skill's full text),
 `remember` / `recall` (session memory facts; without a sessionId they land
 in the global pool).
 
@@ -992,6 +992,15 @@ that Next can't swap in.
 - [x] Per-IP rate limiting (`-l <rps>`, fixed window + shared-memory table, one quota across fork/pool modes, 429 + Retry-After)
 - [x] Chat upstream transient-failure retries (3 attempts + 1s/2.5s backoff, transient/permanent classification, backoff watches for client disconnects)
 - [x] Privacy & compliance hardening (proxied-path security header parity, FCGI socket default 0700, log files 0600, outbound error scrubbing)
+- [x] SSRF hardening on `fetch_url`: blocks loopback / private / link-local /
+  cloud-metadata (169.254.169.254) targets by IP literal, bracketed IPv6, and
+  **every** resolved address; strips `userinfo@` host obfuscation; fails
+  **closed** on DNS resolution failure; and re-validates **every** HTTP
+  redirect hop, so a `302` to an internal address is never followed. Private /
+  loopback URLs are always blocked by design — there is no toggle to weaken it.
+- [x] SSE proxy-safety: the chat stream emits `X-Accel-Buffering: no` so a
+  fronting nginx (`:18081`) does not buffer it, plus a 15s `:` heartbeat comment
+  so idle proxies don't drop a long generation.
 - [~] Virtual hosts — **deferred**: a single docroot suffices for a teaching server; if truly needed, front nginx and split by Host across multiple agent-httpd instances — no need to re-implement it in C
 - [x] URL routing (react-router client-side routing + SSR deep links; C-side `/react/` forwarding)
 - [~] SSL/HTTPS support — **evaluated, not done**: production convention is to terminate TLS at nginx/load balancers (this repo's docker-compose does exactly that); integrating OpenSSL into a teaching server would bloat the code and derail the focus
