@@ -102,6 +102,34 @@ LLM tool_call ──► tools_dispatch ──► fork ──► /bin/sh -c <comm
 公开 API 覆盖了 CLI 的全部能力（任何 `-x` 旗标都能在 config 里找到对应字段），
 API 不会退化成"演示用的第二接口"。
 
+### 3.5 Node 宿主集成（`examples/node-host/`）
+
+「其他运行时怎么用这个框架」的第一个答案：**Node 进程当宿主，C 服务器当受管子进程**。
+`examples/node-host/host.js`（`make node-example` 一键跑）演示完整生命周期：
+
+```
+node (host.js)                          examples/embedded (:18101)
+  ├─ spawn(cwd = repo 根)  ──────────►  agenthttpd_run()
+  ├─ 轮询 GET /api/status  ──就绪───►   master event loop
+  ├─ GET  /api/status    ──► JSON 存活
+  ├─ POST /api/echo      ──► worker 池回显
+  ├─ POST /api/tool      ──► tools_dispatch → python3 wordcount.py（真实工具链路，无需 LLM）
+  ├─ GET  /api/nope      ──► 内建 404 兜底
+  └─ SIGTERM             ──► 优雅排水退出
+```
+
+两个设计要点：
+
+1. **进程边界是刻意的**。曾评估把 `libagenthttpd.a` 链进 N-API addon（Node
+   原生插件）——否决：`agenthttpd_run()` 是阻塞 accept 循环 + 自带
+   SIGINT/SIGTERM 处理 + prefork worker 池，与 libuv 事件循环天生冲突
+   （addon 里得占死一个 worker 线程，fork 出的 worker 与 V8 堆互不相干）。
+   spawn + HTTP 让两侧崩溃域完全隔离，且零原生编译依赖。
+2. **cwd 必须是 repo 根**。exec 工具命令 `"python3 examples/tools/wordcount.py"`
+   是相对路径，宿主 spawn 时把子进程 cwd 指到 repo 根，工具链路才能通。
+
+四条探针（status/echo/tool/404）全过即退出码 0，可直接当 CI 冒烟用。
+
 ## 四、改动清单（文件级 before/after）
 
 | 文件 | 改动 |
@@ -111,9 +139,10 @@ API 不会退化成"演示用的第二接口"。
 | `src/core/main.c` | 383 → ~150 行：只留 argv 解析 + usage |
 | `src/http/http_route.c` | `process_request` 方法闸门前加 3 行框架分发钩子 |
 | `src/internal.h` | 声明 `framework_route_dispatch` |
-| `Makefile` | SRCS/HDRS 加新文件；新增 `lib`（`bin/libagenthttpd.a`，过滤 main.o）、`example`、`example-run` 目标 |
+| `Makefile` | SRCS/HDRS 加新文件；新增 `lib`（`bin/libagenthttpd.a`，过滤 main.o）、`example`、`example-run`、`node-example` 目标 |
 | `examples/embedded.c` | **新增**：~150 行嵌入式示例（3 条自定义路由 + 1 个 exec 工具 + 工具直调探针路由） |
 | `examples/tools/wordcount.py` | **新增**：外部工具进程（stdin JSON → stdout JSON） |
+| `examples/node-host/host.js` | **新增**：Node 宿主——spawn 嵌入示例 + 就绪轮询 + 4 探针 + SIGTERM 收尾（见 3.5） |
 
 源码里所有 `#include "x.h"` 裸名一行未动——`-I` 搜索路径天然覆盖新文件。
 
@@ -123,6 +152,7 @@ API 不会退化成"演示用的第二接口"。
 |---|---|
 | `make`（macOS clang `-Werror`） | ✅ |
 | `make example`（lib + examples/embedded 链接） | ✅ |
+| `make node-example`（Node 宿主 4 探针：status/echo/tool/404） | ✅ 全 PASS |
 | `make test-unit`（vite/fcgi/auth/minijson 四套 ASan+UBSan） | ✅ ALL PASS |
 | `make test-linux`（glibc/GCC `-Werror` 容器构建） | ✅ |
 | 镜像重建 + `make test-container` | ✅ 63/63 |
