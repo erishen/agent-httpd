@@ -28,20 +28,31 @@ GC_LINUX = -ffunction-sections -fdata-sections -Wl,--gc-sections
 GC_DARWIN = -Wl,-dead_strip
 GC = $(if $(filter $(UNAME_S),Linux),$(GC_LINUX),$(GC_DARWIN))
 
-CFLAGS = -Wall -Wextra -Werror -O2 $(CFLAGS_EXTRA)
+# Header search roots: src/ (umbrella headers stay at the root) plus every
+# layer subdir, so each #include "x.h" resolves no matter which subdir the
+# including .c lives in.
+INCDIRS = -I src -I src/core -I src/http -I src/cgi -I src/security -I src/agent
+CFLAGS = -Wall -Wextra -Werror -O2 $(INCDIRS) $(CFLAGS_EXTRA)
 LDFLAGS = $(LDFLAGS_EXTRA)
 TARGET = bin/agent-httpd
 # Object/dependency files live in build/ so src/ holds sources only.
 BUILD_DIR = build
-SRCS = src/main.c src/http.c src/http_parse.c src/http_resp.c src/http_log.c \
-       src/http_route.c src/static.c src/cgi.c \
-       src/auth.c src/ratelimit.c src/worker.c src/util.c src/fastcgi.c \
-       src/llm.c src/minijson.c src/chatio.c src/tools.c src/agent.c \
-       src/skills.c src/session.c src/mcp.c src/pse.c src/router.c src/event.c \
-       src/metrics.c src/vite.c
-HDRS = src/httpd.h src/internal.h src/llm.h src/minijson.h src/chatio.h \
-       src/tools.h src/agent.h src/skills.h src/session.h src/mcp.h src/pse.h \
-       src/router.h
+# Sources are grouped under src/<layer>/ to keep the flat src/ readable.
+# httpd.h / internal.h stay at src/ root as the shared umbrella headers; the
+# -I src flag (in CFLAGS) lets every #include "x.h" resolve from any subdir.
+SRCS = src/core/main.c src/core/event.c src/core/worker.c src/core/router.c \
+       src/core/metrics.c src/core/minijson.c src/core/util.c \
+       src/http/http.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
+       src/http/http_route.c src/http/static.c src/http/chatio.c \
+       src/cgi/cgi.c src/cgi/fastcgi.c src/cgi/vite.c \
+       src/security/auth.c src/security/ratelimit.c \
+       src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
+       src/agent/tools.c src/agent/skills.c src/agent/session.c
+HDRS = src/httpd.h src/internal.h \
+       src/core/minijson.h src/core/metrics.h src/core/router.h \
+       src/http/chatio.h \
+       src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
+       src/agent/tools.h src/agent/skills.h src/agent/session.h
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 INSTALL_DIR = /usr/local/bin
 
@@ -97,6 +108,7 @@ build-cgis:
 	@sh scripts/build-cgis.sh
 
 $(BUILD_DIR)/%.o: src/%.c $(HDRS) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 -include $(OBJS:.o=.d)
@@ -159,9 +171,9 @@ test: all
 # Standalone: no live server required, so they run in CI without a backend.
 test-unit: all
 	@mkdir -p tests
-	$(CC) $(CFLAGS) -fsanitize=address,undefined -I src tests/test_vite_header.c src/vite.c -o tests/t_vite
+	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_vite_header.c src/cgi/vite.c -o tests/t_vite
 	./tests/t_vite
-	$(CC) -Wall -Wextra -O2 -pthread -I src tests/test_fcgi_stream.c src/fastcgi.c $(GC) -o tests/t_fcgi
+	$(CC) -Wall -Wextra -O2 -pthread $(INCDIRS) tests/test_fcgi_stream.c src/cgi/fastcgi.c $(GC) -o tests/t_fcgi
 	./tests/t_fcgi
 
 # Keep-alive pipelining regression (fix D): start the real server in

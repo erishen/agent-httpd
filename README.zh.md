@@ -47,7 +47,7 @@ MCP / 技能 / 记忆 / ReAct / PSE）。
 - **安全头与指纹统一 (直服/代理同构)**: C 直服响应带 `X-Content-Type-Options: nosniff` / `X-Frame-Options: DENY` / `Referrer-Policy: no-referrer`; `-v` 代理路径的上游 (dev Vite 中间件与 react-ssr-server HTTP 模式) 输出同套安全头, `Server` 指纹统一为 `AgentHTTPD` 且关闭 `X-Powered-By`; 对外错误文案脱敏 (curl 退出码 / `LLM_API_URL` 排查提示等基础设施细节只写服务器日志)
 - **React SSR 全 TS + Tailwind + React Router + SSR/CSR 可切换**: React SSR 源码为 TypeScript (tsc 门禁), 样式用 Tailwind CSS v4 并按需内联进 SSR `<head>`; 客户端路由用 react-router v8 (SSR 深链 + 浏览器无刷新切换); 每个请求可用 `?mode=csr|ssr` 双模式渲染, 产物全部 esbuild `--minify`
 - **HMR 开发模式 (`make dev`)**: C 是唯一公网服务器, Vite 退化为内部服务 (`127.0.0.1:PORT+2`) —— 客户端组件 react-refresh 热替换, 服务端代码改动免重启, Tailwind 类名实时重编译; `/@*`、`/src/*`、`/react/*` 经 C `-v` 反向代理 + WebSocket 隧道接到 Vite, 静态/CGI/chat 由 C 直服 (与生产同一条代码路径)
-- **LLM 流式聊天 (`/react/chat`)**: SSE 流式对话页 + `/react/api/chat` 数据端点; **数据端点已由 C 进程原生处理 (`src/llm.c`)**: 有 `LLM_API_KEY` 时 fork `curl -N` 调 OpenAI 兼容上游 (TLS 交给 curl, 服务器本体仍只链 libc), 逐 delta 重发 SSE; 上游瞬时故障 (连接拒绝/重置、5xx、429) 自动重试——共 3 次尝试, 间隔 1s/2.5s 退避, 期间 SSE 下发 `upstream hiccup, retrying` note, 退避按 100ms 小步检查客户端断开即中止; 重试判定见 `agent_retryable()` (curl exit 7/18/35/52/55/56、HTTP 429/5xx 视为瞬时, 4xx 拒绝与 127 不重试)。无密钥回落内置 C 演示引擎 (逐词节流的罐头回复)。SSE 信封 (note/delta/error/done) 与 node 后端 `chat.ts` 完全一致, 页面零改动; 配置写在项目根 `.env` (模板见 `.env.example`); nginx 侧 `location = /react/api/chat` 反代回 httpd 并 `proxy_buffering off` 直通
+- **LLM 流式聊天 (`/react/chat`)**: SSE 流式对话页 + `/react/api/chat` 数据端点; **数据端点已由 C 进程原生处理 (`src/agent/llm.c`)**: 有 `LLM_API_KEY` 时 fork `curl -N` 调 OpenAI 兼容上游 (TLS 交给 curl, 服务器本体仍只链 libc), 逐 delta 重发 SSE; 上游瞬时故障 (连接拒绝/重置、5xx、429) 自动重试——共 3 次尝试, 间隔 1s/2.5s 退避, 期间 SSE 下发 `upstream hiccup, retrying` note, 退避按 100ms 小步检查客户端断开即中止; 重试判定见 `agent_retryable()` (curl exit 7/18/35/52/55/56、HTTP 429/5xx 视为瞬时, 4xx 拒绝与 127 不重试)。无密钥回落内置 C 演示引擎 (逐词节流的罐头回复)。SSE 信封 (note/delta/error/done) 与 node 后端 `chat.ts` 完全一致, 页面零改动; 配置写在项目根 `.env` (模板见 `.env.example`); nginx 侧 `location = /react/api/chat` 反代回 httpd 并 `proxy_buffering off` 直通
 - **Basic Auth 认证 (-a/-r)**: RFC 7617, htpasswd 文件驱动, secret 支持明文或 crypt(3) 哈希 (Linux 现代 SHA 格式 / macOS DES), fail-closed (非法行跳过、全无效拒绝启动), 401 响应带 WWW-Authenticate 质询, CGI 经 REMOTE_USER 获取认证用户, 全站门禁含 `/react/` 转发
 - **每 IP 限流 (-l)**: 固定窗口计数 + 共享内存计数表, fork/worker 池模式共用同一配额; 检查先于认证 (洪水烧不到 crypt CPU), 超限回 429 + Retry-After 并断连
 
@@ -495,7 +495,7 @@ curl 'http://localhost:18080/react/?name=Alice'   # 经 C → -v → react-ssr-s
 pkill -f react-ssr-server && curl -i http://localhost:18080/react/ | head -1
 ```
 
-## C 原生 LLM 聊天端点 (`src/llm.c`)
+## C 原生 LLM 聊天端点 (`src/agent/llm.c`)
 
 `/react/api/chat` 的数据端点在 C 进程内处理, 不再经过 React FastCGI 后端:
 
@@ -548,7 +548,7 @@ handle_client 只记日志并断连 —— SSE 以 close 定界, 不进 keep-ali
 
 ## C 原生 Agent 栈 (Tool Call / MCP / Skills / Memory / ReAct / PSE)
 
-`src/llm.c` 在 LLM_API_KEY 就绪时把请求交给完整的原生 Agent 栈而不是
+`src/agent/llm.c` 在 LLM_API_KEY 就绪时把请求交给完整的原生 Agent 栈而不是
 单向中继。请求体从 `{message, history?}` 扩展为
 `{message, history?, sessionId?}`:
 
@@ -562,14 +562,14 @@ handle_client 只记日志并断连 —— SSE 以 close 定界, 不进 keep-ali
       │     · 会话事实 + skills 索引注入 system_extra
       │     · 本轮 delta 全量捕获 → 转录 + 事实 原子落盘
       │
-      ├─ PSE_ENABLED=true ──► pse_run (src/pse.c)
+      ├─ PSE_ENABLED=true ──► pse_run (src/agent/pse.c)
       │     Planner(无工具出计划) → Specialist(ReAct 全工具循环)
       │     → Evaluator(PASS/PARTIAL/FAIL, 非 PASS 带反馈重试 ≤3 轮)
       │     · 角色提示词: $PSE_SOULS_DIR/{planner,specialist,evaluator}/SOUL.md
       │       (缺省 <cwd>/souls, 再回退内置默认)
       │     · 整场占 1 个并发槽 (agent_slot_take)
       │
-      └─ 缺省 ──► agent_run → ReAct 主循环 (src/agent.c)
+      └─ 缺省 ──► agent_run → ReAct 主循环 (src/agent/agent.c)
             循环输出 assistant tool_calls → tools_dispatch → 结果回灌
             → 直到模型不再要工具 (AGENT_MAX_ROUNDS 上限, 每轮独立
               fork curl 上游, 并发受 AGENT_MAX_CONCURRENT 管道槽约束)
@@ -579,22 +579,22 @@ handle_client 只记日志并断连 —— SSE 以 close 定界, 不进 keep-ali
 SSE 写回 (note/delta/error/done 信封不变)
 ```
 
-**内置工具** (`src/tools.c`, `tools_init()` 注册): `get_time` (北京时间 UTC+8, 容器无 tzdata 故显式 +8 小时),
+**内置工具** (`src/agent/tools.c`, `tools_init()` 注册): `get_time` (北京时间 UTC+8, 容器无 tzdata 故显式 +8 小时),
 `calc` (递归下降算术解析), `read_file` (web 根内解析 + 穿越防护),
 `fetch_url` (http(s) 抓取首 16KB, 见下「SSRF 加固」), `skill-run` (读取技能全文),
 `remember` / `recall` (会话记忆事实读写, 无 sessionId 落全局池)。
 
-**Skills** (`src/skills.c`): 按目录扫描 `SKILL.md` (frontmatter `name` /
+**Skills** (`src/agent/skills.c`): 按目录扫描 `SKILL.md` (frontmatter `name` /
 `description`), 索引注入每个请求的 system 提示, `skill-run` 按名读全文
 给模型。目录: `HARNESS_SKILLS_DIR` → `./skills` →
 `resolve-skills/skills` → `SKILLS_EXTRA_DIRS` (逗号分隔)。
 
-**Memory** (`src/session.c`): 每会话一个 JSON 文件
+**Memory** (`src/agent/session.c`): 每会话一个 JSON 文件
 `.data/sessions/<id>.json` (`{messages[], facts{}}`), tmp+rename 原子写;
 转录回放构成上下文, `remember`/`recall` 写/读事实库, 系统提示注入
 "会话记忆" 块, 重启不丢。
 
-**MCP** (`src/mcp.c`, 配置 `MCP_SERVERS` 环境变量或
+**MCP** (`src/agent/mcp.c`, 配置 `MCP_SERVERS` 环境变量或
 `.data/mcp-servers.json`, 数组 `{id, command, args, approval}`): stdio
 新行分隔 JSON-RPC; 启动时父进程 spawn 一次做 `initialize` +
 `tools/list`, 每个工具注册为 `<id>:<toolName>`; 每次 `tools/call` 现拉起
@@ -657,7 +657,7 @@ PSE 单轮 Planner→Specialist→Evaluator(PASS)。
 
 ## 性能设计 (事件循环 + 快/慢路径)
 
-默认运行模式是 **master 事件循环 + 慢路径 worker 池** (`src/event.c`), 替代
+默认运行模式是 **master 事件循环 + 慢路径 worker 池** (`src/core/event.c`), 替代
 早期的 `fork-per-connection`:
 
 ```

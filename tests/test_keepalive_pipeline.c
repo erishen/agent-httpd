@@ -1,6 +1,6 @@
 /* Regression test for fix D (keep-alive request pipelining).
  *
- * handle_client() in src/http.c keeps a persistent read buffer across
+ * handle_client() in src/http/http.c keeps a persistent read buffer across
  * keep-alive iterations. If a client pipelines two requests into one TCP
  * segment, the old loop reset the buffer every iteration and DISCARDED the
  * second request that had already been recv()'d -- the client then hung

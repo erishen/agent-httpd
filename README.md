@@ -171,7 +171,7 @@ fast & slow paths / agent stack / security depth) see the
   as production)
 - **LLM streaming chat (`/react/chat`)**: SSE chat page + `/react/api/chat`
   data endpoint; **the data endpoint is handled natively by the C process
-  (`src/llm.c`)**: with `LLM_API_KEY` set it forks `curl -N` against an
+  (`src/agent/llm.c`)**: with `LLM_API_KEY` set it forks `curl -N` against an
   OpenAI-compatible upstream (TLS is curl's problem, the server binary still
   links nothing beyond libc) and re-emits each upstream delta as SSE;
   transient upstream failures (connection refused/reset, 5xx, 429) are
@@ -728,7 +728,7 @@ curl 'http://localhost:18080/react/?name=Alice'   # via C → -v → react-ssr-s
 pkill -f react-ssr-server && curl -i http://localhost:18080/react/ | head -1
 ```
 
-## The native C LLM chat endpoint (`src/llm.c`)
+## The native C LLM chat endpoint (`src/agent/llm.c`)
 
 The `/react/api/chat` data endpoint is handled inside the C process, no
 longer routed through the React FastCGI backend:
@@ -792,7 +792,7 @@ Key points:
 
 ## The native C agent stack (Tool Call / MCP / Skills / Memory / ReAct / PSE)
 
-With `LLM_API_KEY` set, `src/llm.c` hands the request to a full native agent
+With `LLM_API_KEY` set, `src/agent/llm.c` hands the request to a full native agent
 stack instead of a one-way relay. The request body grows from
 `{message, history?}` to `{message, history?, sessionId?}`:
 
@@ -806,14 +806,14 @@ Browser POST /react/api/chat {message, history?, sessionId?}
       │     · session facts + skills index injected into system_extra
       │     · this round's deltas captured in full → transcript + facts, atomic flush
       │
-      ├─ PSE_ENABLED=true ──► pse_run (src/pse.c)
+      ├─ PSE_ENABLED=true ──► pse_run (src/agent/pse.c)
       │     Planner (plan without tools) → Specialist (ReAct loop with all tools)
       │     → Evaluator (PASS/PARTIAL/FAIL; non-PASS retries with feedback ≤3 rounds)
       │     · persona prompts: $PSE_SOULS_DIR/{planner,specialist,evaluator}/SOUL.md
       │       (default <cwd>/souls, then built-in fallbacks)
       │     · the whole run holds one concurrency slot (agent_slot_take)
       │
-      └─ default ──► agent_run → ReAct main loop (src/agent.c)
+      └─ default ──► agent_run → ReAct main loop (src/agent/agent.c)
             loop: assistant tool_calls → tools_dispatch → results fed back
             → until the model stops calling tools (AGENT_MAX_ROUNDS cap;
               each round forks its own curl upstream; concurrency bounded by
@@ -824,7 +824,7 @@ Browser POST /react/api/chat {message, history?, sessionId?}
 SSE written back (note/delta/error/done envelope unchanged)
 ```
 
-**Built-in tools** (`src/tools.c`, registered by `tools_init()`): `get_time`
+**Built-in tools** (`src/agent/tools.c`, registered by `tools_init()`): `get_time`
 (Beijing time, UTC+8 — the image ships no tzdata so the offset is applied
 explicitly), `calc` (recursive-descent arithmetic parser), `read_file`
 (resolved inside the web root + traversal protection), `fetch_url` (grabs up to 16KB over http(s); SSRF-hardened — see the
@@ -832,19 +832,19 @@ security checklist below), `skill-run` (reads a skill's full text),
 `remember` / `recall` (session memory facts; without a sessionId they land
 in the global pool).
 
-**Skills** (`src/skills.c`): scans directories for `SKILL.md` (frontmatter
+**Skills** (`src/agent/skills.c`): scans directories for `SKILL.md` (frontmatter
 `name` / `description`), injects the index into every request's system
 prompt; `skill-run` reads a named skill's full text for the model.
 Directories: `HARNESS_SKILLS_DIR` → `./skills` → `resolve-skills/skills` →
 `SKILLS_EXTRA_DIRS` (comma-separated).
 
-**Memory** (`src/session.c`): one JSON file per session,
+**Memory** (`src/agent/session.c`): one JSON file per session,
 `.data/sessions/<id>.json` (`{messages[], facts{}}`), written atomically via
 tmp+rename; transcript replay builds the context, `remember`/`recall`
 write/read the fact store, the system prompt gets a "session memory" block —
 survives restarts.
 
-**MCP** (`src/mcp.c`, configured via the `MCP_SERVERS` env var or
+**MCP** (`src/agent/mcp.c`, configured via the `MCP_SERVERS` env var or
 `.data/mcp-servers.json`, an array of `{id, command, args, approval}`): stdio
 newline-delimited JSON-RPC; at startup the parent spawns each server once
 for `initialize` + `tools/list`, registering each tool as
@@ -917,7 +917,7 @@ Variables passed to CGI programs:
 ## Performance design (event loop + fast/slow paths)
 
 The default run mode is a **master event loop + slow-path worker pool**
-(`src/event.c`), replacing the earlier fork-per-connection:
+(`src/core/event.c`), replacing the earlier fork-per-connection:
 
 ```
                       agent-httpd master (single process, kqueue/epoll event loop)

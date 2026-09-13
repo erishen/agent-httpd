@@ -53,12 +53,12 @@ FROM node:20-bookworm-slim
 # bash: shell CGI 解释器 (node:slim 已自带);
 # python3/ruby/php-cgi: CGI 动物园的可移植成员; python3 兼做容器 healthcheck;
 # default-jre-headless: java.cgi 包装器运行 Main.class 需要 JVM;
-# curl: src/llm.c 的 LLM 上游通道 (fork curl -N 流式拉取 chat/completions)。
+# curl: src/agent/llm.c 的 LLM 上游通道 (fork curl -N 流式拉取 chat/completions)。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 ruby php-cgi default-jre-headless curl \
     && rm -rf /var/lib/apt/lists/*
 # MCP 依赖预热: agent 的 MCP 清单由 router 同步生成 (npx 启动配方, 版本钉在
-# src/router.c 的 k_known_mcps)。npx 冷启动要现场拉包, 国内网络很容易吃满
+# src/core/router.c 的 k_known_mcps)。npx 冷启动要现场拉包, 国内网络很容易吃满
 # MCP init 预算导致全部握手失败。这里 ① registry 指向国内镜像; ② 把与配方
 # 完全相同的钉定版本预热进 npx 缓存 (HOME=/root, 运行时同 HOME 命中同一份)。
 # MCP server 起来后会在 stdio 上等服务请求, 用 timeout 掐掉, 只为留下缓存;
@@ -70,11 +70,11 @@ RUN for p in server-filesystem server-memory server-sequential-thinking; do \
 WORKDIR /app
 # 容器专用的基础 MCP 配置 (echo 演示 server, python3 自包含零下载), 与
 # 运行时 router 同步出来的 .data/mcp-servers-router.json 合并加载
-# (src/mcp.c 按 id 去重, 先到先得)。宿主机 dev 用 gitignored 的
+# (src/agent/mcp.c 按 id 去重, 先到先得)。宿主机 dev 用 gitignored 的
 # .data/mcp-servers.json, 互不影响。
 COPY deploy/mcp-servers.container.json .data/mcp-servers.json
 COPY scripts/fake-mcp-server.py scripts/
-# 技能索引 (src/skills.c) 扫描 <cwd>/skills —— 本地技能 (demo-lab) 来自仓库
+# 技能索引 (src/agent/skills.c) 扫描 <cwd>/skills —— 本地技能 (demo-lab) 来自仓库
 # 树, 必须随镜像走, 否则容器里只剩 router 同步的技能, "跑 demo-lab" 这类
 # 本地示例在聊天页必然落空。skills/router/ 也会被带上, 但运行时 router
 # 每次启动都会重新物化同名文件覆盖之 (内容以 tsm-hub 为准)。

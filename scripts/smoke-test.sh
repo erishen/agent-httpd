@@ -314,7 +314,7 @@ check "CGI Status header honoured (418)" "418" "$teapot"
 teapot_body=$(curl -s "$BASE/cgi-bin/.status-test.cgi" | grep -c "short and stout")
 check "CGI Status response has body" "1" "$teapot_body"
 
-# Cache policy on the CGI path (src/cgi.c). Script output is produced per
+# Cache policy on the CGI path (src/cgi/cgi.c). Script output is produced per
 # request, so silence must not mean "cache me heuristically": the default is
 # no-store, while a script that states its own directive keeps it - the
 # default is a fallback, never an override.
@@ -624,7 +624,7 @@ if [ -x bin/react-ssr-server ]; then
     rm -f "$SSR_SOCK"
 fi
 
-# Native C LLM chat endpoint (src/llm.c): SSE envelope identical to the
+# Native C LLM chat endpoint (src/agent/llm.c): SSE envelope identical to the
 # node backend's chat.ts. LLM_API_KEY is exported empty above, so the
 # deterministic offline demo engine answers (the C demo reply mentions
 # "C demo engine" — the node one doesn't — which pins the serving side).

@@ -1,6 +1,6 @@
 /* Unit test for vite_build_headers (extracted from http.c). Verifies the
  * dev-proxy header construction never writes past bufsz, strips hop-by-hop
- * headers, and appends Host/Connection. Compiled together with src/vite.c
+ * headers, and appends Host/Connection. Compiled together with src/cgi/vite.c
  * under ASan+UBSan so any out-of-bounds read/write in vite.c is caught. */
 #include <stdio.h>
 #include <string.h>
