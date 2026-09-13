@@ -2,7 +2,7 @@
 """Fake OpenAI-compatible SSE upstream for the agent-httpd chat smoke tests.
 
 Stands in for the real LLM gateway so `make test` can exercise the whole
-fork-curl streaming path (src/llm.c) offline and deterministically. Branches
+fork-curl streaming path (src/agent/llm.c) offline and deterministically. Branches
 on the last system message and last user message in the request body:
 
   你好    -> Chinese deltas + [DONE]          (UTF-8 round-trip)

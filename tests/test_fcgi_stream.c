@@ -4,7 +4,7 @@
  *
  * The client fd is one end of a socketpair; a reader thread drains it
  * concurrently so forward_to_fcgi's send() never blocks on a full socket
- * buffer. Compiled standalone from src/fastcgi.c (no link against main.o);
+ * buffer. Compiled standalone from src/cgi/fastcgi.c (no link against main.o);
  * -dead_strip (macOS) / -gc-sections (Linux) discards the unused
  * fastcgi_handle_connection so no project globals need stubbing. */
 #include <stdio.h>

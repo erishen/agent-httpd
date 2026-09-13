@@ -2,7 +2,7 @@
 """Minimal NEWLINE-delimited JSON-RPC stdio MCP server for the smoke tests.
 
 Implements initialize / initialized / tools/list / tools/call against
-agent-httpd's MCP stdio client (src/mcp.c). One tool:
+agent-httpd's MCP stdio client (src/agent/mcp.c). One tool:
 
    echo:{text}  ->  content: [{ "type": "text", "text": "echo: <text>" }]
 

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Guard the upstream-failure path of the native chat endpoint (src/agent.c).
+# Guard the upstream-failure path of the native chat endpoint (src/agent/agent.c).
 #
-# The server ignores SIGCHLD (src/main.c), so the kernel reaps the curl child
+# The server ignores SIGCHLD (src/core/main.c), so the kernel reaps the curl child
 # the instant it exits and waitpid() returns ECHILD with the status buffer left
 # untouched. Reading that zeroed buffer back as "exited 0" turned every *fast*
 # upstream failure — connection refused, bad host, immediate reset — into a
