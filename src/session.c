@@ -318,9 +318,14 @@ int session_fact_get_file(const char *id, const char *key,
 }
 
 void session_render_extra(const Session *s, sbuf *out) {
-    const char *scope = s->id[0] ? s->id : "global";
+    /* H2: a request with no sessionId would otherwise load the shared global
+     * memory pool (.data/memory.json) and inject every anonymous user's facts
+     * into this request's prompt — a cross-user data leak and prompt-injection
+     * sink. remember/recall already refuse to touch that pool without a
+     * sessionId, so when there is no id we simply inject nothing. */
+    if (!s->id[0]) return;
     sb_str(out, "[session memory ");
-    sb_str(out, scope);
+    sb_str(out, s->id);
     sb_str(out, "]");
     if (s->n_facts) {
         sb_str(out, "\nFacts:");

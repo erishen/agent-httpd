@@ -727,6 +727,11 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [x] 每 IP 限流 (`-l <rps>`, 固定窗口 + 共享内存计数表, fork/worker 池共用配额, 429 + Retry-After)
 - [x] chat 上游瞬时故障重试 (3 次尝试 + 1s/2.5s 退避, 瞬时/永久错误分类判定, 退避期监听客户端断开)
 - [x] 隐私与合规加固 (安全头代理同构、FCGI socket 默认 0700、日志文件 0600、对外错误脱敏)
+- [x] MCP 子进程密钥脱敏: 在 `execvp` 前的子进程里 `unsetenv` 掉 LLM 凭据 (`LLM_API_KEY` / `LLM_API_URL` / `LLM_MODEL`), 因此经 npx 拉取的第三方 MCP server (如 `server-filesystem`) 绝不会继承密钥。(保留 `MCP_FS_ROOT` —— fs server 需要它作沙箱根; CGI 侧在 `cgi.c` 同样脱敏这三项。)
+- [x] 会话记忆严格按会话隔离: `remember` / `recall` 在没有 `sessionId` 时直接拒绝, 聊天提示词也不再注入共享全局池 (`.data/memory.json`)。无会话的请求既不能读也不能写其他用户的 fact (旧的全局回退是跨用户数据泄露 / 提示注入源)。
+- [x] 访问日志剥离 query string: 只记录路径, `?...` 里的 token / 会话 id / PII 永不落盘到 `logs/access.log` (该文件权限 `0600`)。
+- [x] 响应安全头: 在原有 nosniff / X-Frame-Options / Referrer-Policy 之上, 每个响应新增 `Content-Security-Policy` (`default-src 'self'`、`frame-ancestors 'none'`、`base-uri 'self'`、`object-src 'none'`)、`Cross-Origin-Opener-Policy: same-origin`、`Cross-Origin-Resource-Policy: same-origin`、`X-Permitted-Cross-Domain-Policies: none`。(HSTS 应放在终结 TLS 的 nginx 层。)
+- [x] 聊天 CSRF 加固: `/react/api/chat` 仅接受 POST (GET 及其他动词在分发前即被拒); 浏览器 `Origin` 与服务器 `Host` 不一致的跨站请求以 `403` 拒绝。无 `Origin` 的非浏览器客户端 (含自带冒烟/测试脚本) 与同源请求放行; nginx 经 `proxy_set_header Host $host` 保留 Host。
 - [x] `fetch_url` SSRF 加固: 对 IP 字面量、方括号 IPv6、以及**每一个**解析出的地址, 一律拦截回环 / 私网 / 链路本地 / 云元数据 (169.254.169.254); 剥离 `userinfo@` 主机混淆; **DNS 解析失败按失败关闭** (fail-closed); **每一个** HTTP 重定向跳都要重新校验, 因此 `302` 跳到内网地址绝不会被跟随。私网 / 回环地址**始终拦截, 设计上无开关可削弱**。
 - [x] SSE 反代友好: 聊天流输出 `X-Accel-Buffering: no`, 防止前置 nginx (:18081) 缓冲; 另发 15s 一次的 `:` 心跳注释, 防止空闲反代在长生成时掐断连接。
 - [~] 多虚拟主机 —— **暂缓**: 教学场景单 docroot 已够; 真需要时前置 nginx 按 Host 分流到多个 agent-httpd 实例即可, 不必在 C 层重新实现

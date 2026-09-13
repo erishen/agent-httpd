@@ -208,6 +208,13 @@ static int mcpproc_spawn(const McpServerCfg *s, McpProc *p) {
         char *argv[MCP_ARGS_MAX + 1];
         for (int i = 0; i < s->argc; i++) argv[i] = strdup(s->argv[i]);
         argv[s->argc] = NULL;
+        /* H1: third-party MCP servers are fetched/run via npx; they must not
+         * inherit our LLM credentials. Keep MCP_FS_ROOT — the filesystem
+         * server needs it as its sandbox root. (The CGI path scrubs the same
+         * trio in cgi.c.) */
+        unsetenv("LLM_API_KEY");
+        unsetenv("LLM_API_URL");
+        unsetenv("LLM_MODEL");
         execvp(argv[0], argv);
         _exit(127);
     }
