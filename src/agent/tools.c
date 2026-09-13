@@ -629,7 +629,7 @@ static void tool_fetch_url(void *data, const char *args,
             close(out_pipe[1]);
             /* -D - dumps the response headers to stdout so we can read the
              * Location header; we then decide whether to follow, re-checking. */
-            execlp("curl", "curl", "-sS", "--max-time", "10",
+            execlp("curl", "curl", "-sS", "--http1.1", "--max-time", "10",
                    "--proto", "=http,https", "-D", "-",
                    "-A", "agent-httpd-agent/1.0", cur, (char *)NULL);
             _exit(127);

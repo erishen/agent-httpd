@@ -429,7 +429,11 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
         close(in_pipe[1]);
         close(out_pipe[0]);
         close(out_pipe[1]);
-        execlp("curl", "curl", "-sS", "-N", "-f", "--max-time", max_time,
+        /* --http1.1: some CDN paths (e.g. Cloudflare fronts seen from certain
+         * cloud egress IPs) complete the h2 TLS handshake then never deliver
+         * a byte — h1.1 on the same route works. h2 buys nothing for an SSE
+         * relay, so pin the protocol. */
+        execlp("curl", "curl", "-sS", "--http1.1", "-N", "-f", "--max-time", max_time,
                "-w", "\n%{http_code}\n",
                "-X", "POST", "-H", auth,
                "-H", "Content-Type: application/json",

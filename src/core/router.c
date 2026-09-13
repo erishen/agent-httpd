@@ -120,7 +120,7 @@ static char *router_get(const char *endpoint, int *have) {
          * wall. */
         char mt[16];
         snprintf(mt, sizeof mt, "%d", left > 8 ? 8 : (left < 1 ? 1 : left));
-        execlp("curl", "curl", "-sS", "-L", "--max-time", mt,
+        execlp("curl", "curl", "-sS", "--http1.1", "-L", "--max-time", mt,
                "--proto", "=http,https", "-H", auth, url, (char *)NULL);
         _exit(127);
     }
