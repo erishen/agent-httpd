@@ -638,22 +638,34 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         }
         if (llm_is_chat_route(request.path, request.method)) {
             llm_handle_chat(&request, &response, client_fd);
-        } else if (g_react_sock[0] &&
-            (strncmp(request.path, "/react", 6) == 0 &&
-             (request.path[6] == '\0' || request.path[6] == '/'))) {
-            const char *ip = client_addr ? inet_ntoa(client_addr->sin_addr) : "-";
-            int fcgi_body_bytes = 0;
-            int status = forward_to_fcgi(g_react_sock, &request, ip, client_fd,
-                                         &fcgi_body_bytes);
-            if (status < 0) {
-                /* backend unreachable / protocol error before any byte was
-                 * streamed: render our own 502 (forward_to_fcgi streamed
-                 * nothing, so this page is the only response). */
-                set_error_response(&response, 502, "Bad Gateway");
+        } else if (strncmp(request.path, "/react", 6) == 0 &&
+            (request.path[6] == '\0' || request.path[6] == '/')) {
+            if (g_react_sock[0]) {
+                const char *ip = client_addr ? inet_ntoa(client_addr->sin_addr) : "-";
+                int fcgi_body_bytes = 0;
+                int status = forward_to_fcgi(g_react_sock, &request, ip, client_fd,
+                                             &fcgi_body_bytes);
+                if (status < 0) {
+                    /* backend unreachable / protocol error before any byte was
+                     * streamed: render our own 502 (forward_to_fcgi streamed
+                     * nothing, so this page is the only response). */
+                    set_error_response(&response, 502, "Bad Gateway");
+                } else {
+                    log_request(ip, &request, status, fcgi_body_bytes);
+                    close(client_fd);
+                    return;
+                }
             } else {
-                log_request(ip, &request, status, fcgi_body_bytes);
-                close(client_fd);
-                return;
+                /* No SSR backend configured (slim image, no -R flag): the
+                 * SSR-only chat page would be a bare 404. Degrade to the
+                 * static zero-dependency chat UI; the chat API itself is
+                 * handled natively by llm_handle_chat above. */
+                if (strcmp(request.path, "/react/chat") == 0 ||
+                    strcmp(request.path, "/react/") == 0 ||
+                    strcmp(request.path, "/react") == 0) {
+                    snprintf(request.path, sizeof(request.path), "/chat.html");
+                }
+                process_request(&request, &response, client_fd);
             }
         } else {
             process_request(&request, &response, client_fd);

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentHTTPD Chat</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: Arial, Helvetica, sans-serif; background: #F4F2EC;
+    color: #2C2C2A; display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    padding: 14px 20px; background: #EEEDFE; border-bottom: 1px solid #C9C5F0;
+  }
+  header h1 { margin: 0; font-size: 16px; color: #3C3489; }
+  header p { margin: 4px 0 0; font-size: 12px; color: #6A66A0; }
+  #log { flex: 1; overflow-y: auto; padding: 18px 20px; }
+  .msg { max-width: 720px; margin: 0 auto 14px; }
+  .who { font-size: 11px; font-weight: bold; color: #857F78; margin-bottom: 4px; }
+  .bubble {
+    padding: 10px 14px; border-radius: 10px; font-size: 14px;
+    line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  }
+  .user .bubble { background: #E6F1FB; border: 1px solid #B9D4EE; }
+  .bot  .bubble { background: #FFFFFF; border: 1px solid #DDD9CF; }
+  .note { max-width: 720px; margin: 0 auto 10px; font-size: 12px; color: #857F78; font-style: italic; }
+  .err  { max-width: 720px; margin: 0 auto 10px; font-size: 13px; color: #A32D2D; }
+  form {
+    display: flex; gap: 10px; padding: 14px 20px; background: #FAF8F2;
+    border-top: 1px solid #DDD9CF;
+  }
+  #input {
+    flex: 1; padding: 10px 12px; border: 1px solid #C9C4B8; border-radius: 8px;
+    font-size: 14px; font-family: inherit; resize: none; outline: none;
+  }
+  #input:focus { border-color: #534AB7; }
+  #send {
+    padding: 10px 22px; border: 0; border-radius: 8px; background: #534AB7;
+    color: #fff; font-size: 14px; cursor: pointer; font-family: inherit;
+  }
+  #send:disabled { background: #B0ABD9; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AgentHTTPD Chat</h1>
+  <p>static UI &middot; SSE via /react/api/chat &middot; no SSR, no node</p>
+</header>
+<div id="log"></div>
+<form id="f">
+  <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" autofocus></textarea>
+  <button id="send" type="submit">发送</button>
+</form>
+<script>
+(function () {
+  var log = document.getElementById('log');
+  var form = document.getElementById('f');
+  var input = document.getElementById('input');
+  var send = document.getElementById('send');
+  var busy = false;
+
+  function add(cls, who, text) {
+    var d = document.createElement('div');
+    d.className = cls;
+    if (who !== null) {
+      var w = document.createElement('div');
+      w.className = 'who';
+      w.textContent = who;
+      d.appendChild(w);
+    }
+    var b = document.createElement('div');
+    b.className = 'bubble';
+    b.textContent = text;
+    d.appendChild(b);
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    return b;
+  }
+  function addLine(cls, text) {
+    var d = document.createElement('div');
+    d.className = cls;
+    d.textContent = text;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    return d;
+  }
+
+  function sendMsg(text) {
+    busy = true; send.disabled = true;
+    add('msg user', '你', text);
+    var bubble = add('msg bot', 'Agent', '');
+    var note = '';
+    fetch('/react/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    }).then(function (r) {
+      if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+      var reader = r.body.getReader();
+      var dec = new TextDecoder();
+      var buf = '';
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { finish(); return; }
+          buf += dec.decode(chunk.value, { stream: true });
+          var parts = buf.split('\n\n');
+          buf = parts.pop();
+          parts.forEach(function (blk) {
+            blk.split('\n').forEach(function (line) {
+              if (line.indexOf('data:') !== 0) return;
+              var payload = line.slice(5).replace(/^ /, '');
+              if (!payload) return;
+              var ev;
+              try { ev = JSON.parse(payload); } catch (e) { return; }
+              if (ev.t === 'delta' && ev.d) bubble.textContent += ev.d;
+              else if (ev.t === 'note') note += (note ? ' ' : '') + ev.d;
+              else if (ev.t === 'error') { addLine('err', ev.d || '上游错误'); }
+            });
+          });
+          log.scrollTop = log.scrollHeight;
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function (e) {
+      addLine('err', '请求失败: ' + e.message);
+    }).finally(finish);
+
+    function finish() {
+      if (note) addLine('note', note);
+      busy = false; send.disabled = false; input.focus();
+    }
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var t = input.value.trim();
+    if (!t || busy) return;
+    input.value = '';
+    sendMsg(t);
+  });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.dispatchEvent(new Event('submit'));
+    }
+  });
+})();
+</script>
+</body>
+</html>
