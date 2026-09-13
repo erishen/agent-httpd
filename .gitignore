@@ -42,3 +42,6 @@ cgi-bin/probe-*.cgi
 www/fixlist/
 www/range-test-smoke.bin
 www/js/fix-mid.bin
+
+# cloud deploy env (real one, may hold keys)
+deploy/.env.cloud
