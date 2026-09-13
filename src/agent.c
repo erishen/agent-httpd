@@ -32,6 +32,7 @@
 #define AGENT_TOOL_CALLS_MAX 8      /* per round */
 #define AGENT_TOKEN_WAIT_MS 10000   /* busy timeout when all slots taken */
 #define AGENT_LINE_MAX (1 << 16)    /* hard cap on one upstream SSE line */
+#define SSE_HEARTBEAT_SECS 15        /* keep idle proxies (nginx :18081) alive */
 
 /* ---- config ---------------------------------------------------------- */
 
@@ -463,7 +464,12 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
         FD_ZERO(&rfds);
         FD_SET(out_pipe[0], &rfds);
         struct timeval tv;
-        tv.tv_sec = remain;
+        /* Cap each select() at the heartbeat interval (unless the upstream
+         * deadline is nearer) so a long think gap emits a comment instead of
+         * letting a reverse proxy idle us out. */
+        long wait = remain;
+        if (wait > SSE_HEARTBEAT_SECS) wait = SSE_HEARTBEAT_SECS;
+        tv.tv_sec = wait;
         tv.tv_usec = 0;
         int r = select(out_pipe[0] + 1, &rfds, NULL, NULL, &tv);
         if (r < 0) {
@@ -471,6 +477,13 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
             break;
         }
         if (r == 0) {
+            if (wait < remain) {
+                /* heartbeat interval elapsed, not the real deadline: nudge the
+                 * client so proxies (nginx :18081) reset their idle timer. */
+                sse_heartbeat(out);
+                if (!out->ok) break;  /* client already gone */
+                continue;
+            }
             timed_out = 1;
             break;
         }

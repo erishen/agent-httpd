@@ -411,10 +411,31 @@ static int addr_is_blocked(const struct sockaddr *sa, socklen_t salen) {
 
 static int fetch_url_blocked(const char *url) {
     const char *scheme = strstr(url, "://");
-    if (!scheme) return 0;
+    if (!scheme) return 0;                 /* not our scheme; tool_fetch_url
+                                             * rejects it before we get here */
     const char *host = scheme + 3;
-    const char *end = host;
-    while (*end && *end != '/' && *end != ':' && *end != '?' && *end != '#') end++;
+    /* Strip userinfo (RFC 3986 "userinfo@host"): an attacker could hide the
+     * real target behind an '@' so a naive parser connects to the wrong host,
+     * e.g. http://benign@169.254.169.254/ . Stripping first means the
+     * literal-IP / IPv6 fast paths and the DNS lookup below all see the true
+     * host instead of relying on the lookup to fail. */
+    const char *at = host;
+    while (*at && *at != '/' && *at != '?' && *at != '#' && *at != '@') at++;
+    if (*at == '@') host = at + 1;
+
+    /* Locate the end of the authority. A bracketed IPv6 literal contains ':'
+     * characters, so stop at ']' for it; otherwise stop at the first '/',
+     * ':' (port separator, excluded from the lookup), '?' or '#'. Without the
+     * bracket handling, http://[::1]/ was never blocked because the embedded
+     * ':' truncated the host and getaddrinfo then failed open. */
+    const char *end;
+    if (*host == '[') {
+        const char *cb = strchr(host, ']');
+        end = cb ? cb + 1 : host + strlen(host);
+    } else {
+        end = host;
+        while (*end && *end != '/' && *end != ':' && *end != '?' && *end != '#') end++;
+    }
     if (end == host) return 0;
     char hbuf[512];
     size_t hlen = (size_t)(end - host);
@@ -446,12 +467,17 @@ static int fetch_url_blocked(const char *url) {
         }
     }
 
+    /* Hostname: every resolved address is checked. DNS failure is FAIL-CLOSED
+     * — an unresolvable or attacker-controlled name must not be fetched, so a
+     * resolution error blocks the request (a redirect/SSRF probe that points
+     * at a name we cannot resolve is stopped here; the message below covers
+     * both the loopback and the unresolvable cases). */
     struct addrinfo hints;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     struct addrinfo *res = NULL;
-    if (getaddrinfo(hbuf, NULL, &hints, &res) != 0 || !res) return 0;
+    if (getaddrinfo(hbuf, NULL, &hints, &res) != 0 || !res) return 1;
     int blocked = 0;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         if (addr_is_blocked(ai->ai_addr, ai->ai_addrlen)) { blocked = 1; break; }
@@ -459,6 +485,94 @@ static int fetch_url_blocked(const char *url) {
     freeaddrinfo(res);
     return blocked;
 }
+
+/* ---- fetch_url redirect handling (SSRF-safe) ------------------------- */
+
+/* Case-insensitive lookup of header `name` in an HTTP header block; copies the
+ * trimmed value (sans CRLF) into out. Returns 1 on hit. */
+static int http_header_value(const char *hdr, const char *name,
+                             char *out, size_t outsz) {
+    size_t nl = strlen(name);
+    const char *p = hdr;
+    while ((p = strcasestr(p, name)) != NULL) {
+        if ((p == hdr || p[-1] == '\n') && p[nl] == ':') {
+            const char *v = p + nl + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            const char *e = v;
+            while (*e && *e != '\r' && *e != '\n') e++;
+            size_t len = (size_t)(e - v);
+            if (len >= outsz) len = outsz - 1;
+            memcpy(out, v, len);
+            out[len] = '\0';
+            return 1;
+        }
+        p += nl;
+    }
+    return 0;
+}
+
+/* 3-digit status code from an HTTP status line ("HTTP/1.1 301 Moved"). */
+static int http_status_code(const char *hdr) {
+    const char *sp = hdr;
+    while (*sp && *sp != ' ' && *sp != '\t') sp++;
+    if (!*sp) return 0;
+    sp++;
+    if (!isdigit((unsigned char)*sp)) return 0;
+    int code = atoi(sp);
+    return (code >= 100 && code < 600) ? code : 0;
+}
+
+/* scheme://host[:port] of a URL (its origin), for resolving relative
+ * redirects. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+static void url_origin(const char *url, char *out, size_t outsz) {
+    const char *s = strstr(url, "://");
+    if (!s) { snprintf(out, outsz, "%s", "http://"); return; }
+    const char *host = s + 3;
+    const char *end = host;
+    while (*end && *end != '/' && *end != '?' && *end != '#') end++;
+    size_t n = (size_t)(end - url);
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, url, n);
+    out[n] = '\0';
+}
+
+/* Resolve a redirect Location against `base` into an absolute URL in `out`.
+ * Handles absolute, protocol-relative (//host) and origin-relative (/path)
+ * targets; anything else is treated as origin-relative for safety. The result
+ * is re-validated by fetch_url_blocked() on the next hop, so a resolution bug
+ * here can never open a hole — it can only fail closed. snprintf truncates
+ * safely, so the format-truncation diagnostic is intentionally suppressed. */
+static void resolve_redirect(const char *base, const char *loc,
+                             char *out, size_t outsz) __attribute__((noinline));
+static void resolve_redirect(const char *base, const char *loc,
+                             char *out, size_t outsz) {
+    if (strncasecmp(loc, "http://", 7) == 0 ||
+        strncasecmp(loc, "https://", 8) == 0) {
+        snprintf(out, outsz, "%s", loc);
+        return;
+    }
+    if (loc[0] == '/' && loc[1] == '/') {
+        const char *s = strstr(base, "://");
+        const char *scheme = s ? base : "http:";
+        size_t sl = s ? (size_t)(s - base + 3) : 5;
+        snprintf(out, outsz, "%.*s%s", (int)sl, scheme, loc);
+        return;
+    }
+    char origin[1024];
+    url_origin(base, origin, sizeof origin);
+    if (loc[0] == '/') {
+        snprintf(out, outsz, "%s%s", origin, loc);
+    } else {
+        snprintf(out, outsz, "%s/%s", origin, loc);
+    }
+}
+
+#pragma GCC diagnostic pop
+
+#define TOOL_FETCH_MAX_HOPS 5
+#define TOOL_FETCH_READ_MAX (TOOL_FETCH_MAX + 4096)
 
 static void tool_fetch_url(void *data, const char *args,
                           const char *session_id, sbuf *result) {
@@ -475,77 +589,129 @@ static void tool_fetch_url(void *data, const char *args,
         sb_str(result, "error: url must be an absolute http(s) URL");
         return;
     }
-    if (fetch_url_blocked(url)) {
-        sb_str(result, "error: url resolves to a loopback/private network (blocked)");
-        return;
-    }
 
-    int out_pipe[2];
-    if (pipe(out_pipe) < 0) {
-        sb_str(result, "error: pipe failed");
-        return;
-    }
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(out_pipe[0]);
-        close(out_pipe[1]);
-        sb_str(result, "error: fork failed");
-        return;
-    }
-    if (pid == 0) {
-        dup2(out_pipe[1], STDOUT_FILENO);
-        dup2(out_pipe[1], STDERR_FILENO);
-        close(out_pipe[0]);
-        close(out_pipe[1]);
-        execlp("curl", "curl", "-sS", "-L", "--max-time", "10",
-               "--proto", "=http,https",
-               "-A", "agent-httpd-agent/1.0", url, (char *)NULL);
-        _exit(127);
-    }
-    close(out_pipe[1]);
-
-    size_t n = 0;
-    int failed = 0;
-    char chunk[4096];
+    /* Redirect loop: curl is launched WITHOUT -L so we follow 3xx responses
+     * ourselves and re-validate every hop with fetch_url_blocked(). A bare
+     * curl -L would follow a redirect straight into an internal address
+     * (e.g. http://evil/ -> 302 -> http://169.254.169.254/) with no second
+     * SSRF check. */
+    char cur[2048];
+    snprintf(cur, sizeof cur, "%s", url);
+    sbuf buf = {0};
+    int hop = 0;
     for (;;) {
-        ssize_t r = read(out_pipe[0], chunk, sizeof chunk);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            failed = 1;
-            break;
+        if (fetch_url_blocked(cur)) {
+            sb_str(result,
+                   "error: url is blocked — unresolvable or targets a "
+                   "loopback/private network");
+            free(buf.p);
+            return;
         }
-        if (r == 0) break;
-        size_t take = (size_t)r;
-        if (n + take > TOOL_FETCH_MAX) take = (size_t)(TOOL_FETCH_MAX - n);
-        sb_mem(result, chunk, take);
-        n += take;
-        if (n >= TOOL_FETCH_MAX) break; /* cap reached: stop draining */
-    }
-    close(out_pipe[0]);
-    kill(pid, SIGKILL);
-    /* SIGCHLD is SIG_IGN process-wide (main.c): the kernel reaps curl as it
-     * exits and waitpid() comes back ECHILD with `status` untouched. A zeroed
-     * status reads as "exited 0", so a real curl failure code was reported
-     * as success. Only trust the exit code when we actually reaped (same
-     * guard as agent.c / router.c). */
-    int status = 0;
-    pid_t reaped;
-    do {
-        reaped = waitpid(pid, &status, 0);
-    } while (reaped < 0 && errno == EINTR);
-    int code_known = (reaped == pid);
 
-    if (result->oom) {
-        sb_str(result, "error: out of memory");
-        return;
-    }
-    if (n == 0 && (failed || code_known)) {
-        int code = (code_known && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
-        sb_str(result, code == 127
+        int out_pipe[2];
+        if (pipe(out_pipe) < 0) {
+            sb_str(result, "error: pipe failed");
+            free(buf.p);
+            return;
+        }
+        pid_t pid = fork();
+        if (pid < 0) {
+            close(out_pipe[0]);
+            close(out_pipe[1]);
+            sb_str(result, "error: fork failed");
+            free(buf.p);
+            return;
+        }
+        if (pid == 0) {
+            dup2(out_pipe[1], STDOUT_FILENO);
+            dup2(out_pipe[1], STDERR_FILENO);
+            close(out_pipe[0]);
+            close(out_pipe[1]);
+            /* -D - dumps the response headers to stdout so we can read the
+             * Location header; we then decide whether to follow, re-checking. */
+            execlp("curl", "curl", "-sS", "--max-time", "10",
+                   "--proto", "=http,https", "-D", "-",
+                   "-A", "agent-httpd-agent/1.0", cur, (char *)NULL);
+            _exit(127);
+        }
+        close(out_pipe[1]);
+
+        buf.p = NULL; buf.len = 0; buf.oom = 0;
+        char chunk[4096];
+        for (;;) {
+            ssize_t r = read(out_pipe[0], chunk, sizeof chunk);
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if (r == 0) break;
+            size_t take = (size_t)r;
+            if (buf.len + take > TOOL_FETCH_READ_MAX) {
+                take = TOOL_FETCH_READ_MAX - buf.len;
+            }
+            if (take) sb_mem(&buf, chunk, take);
+            if (buf.len >= TOOL_FETCH_READ_MAX || buf.oom) break;
+        }
+        close(out_pipe[0]);
+        kill(pid, SIGKILL);
+        /* SIGCHLD is SIG_IGN process-wide (main.c): the kernel reaps curl as
+         * it exits and waitpid() comes back ECHILD with `status` untouched. A
+         * zeroed status reads as "exited 0", so only trust the exit code when
+         * we actually reaped (same guard as agent.c / router.c). */
+        int status = 0;
+        pid_t reaped;
+        do {
+            reaped = waitpid(pid, &status, 0);
+        } while (reaped < 0 && errno == EINTR);
+        int code_known = (reaped == pid);
+
+        if (buf.oom) {
+            sb_str(result, "error: out of memory");
+            free(buf.p);
+            return;
+        }
+
+        /* Split headers / body at the first blank line. */
+        char *hdr = buf.p ? buf.p : (char *)"";
+        char *body_start = buf.p ? buf.p + buf.len : (char *)"";
+        char *h_end = buf.p ? strstr(buf.p, "\r\n\r\n") : NULL;
+        if (h_end) body_start = h_end + 4;
+        else if (buf.p) {
+            char *h_end2 = strstr(buf.p, "\n\n");
+            if (h_end2) body_start = h_end2 + 2;
+        }
+
+        int code = http_status_code(hdr);
+        char loc[2048];
+        if (code >= 300 && code < 400 && hop < TOOL_FETCH_MAX_HOPS &&
+            http_header_value(hdr, "location", loc, sizeof loc)) {
+            char next[2048];
+            resolve_redirect(cur, loc, next, sizeof next);
+            snprintf(cur, sizeof cur, "%s", next);
+            free(buf.p);
+            hop++;
+            continue;   /* re-validate `next` at the top of the loop */
+        }
+
+        /* Final (non-redirect, or hop cap reached) response: emit the body,
+         * capped at TOOL_FETCH_MAX. */
+        size_t blen = 0;
+        if (buf.p && body_start >= buf.p && body_start <= buf.p + buf.len) {
+            blen = (size_t)(buf.p + buf.len - body_start);
+        }
+        if (blen > 0) {
+            size_t take = blen;
+            if (take > TOOL_FETCH_MAX) take = TOOL_FETCH_MAX;
+            sb_mem(result, body_start, take);
+            if (blen > TOOL_FETCH_MAX) sb_str(result, "\n...[truncated at 16KB]");
+        } else if (code_known && (code == 0 || !WIFEXITED(status) ||
+                   WEXITSTATUS(status) != 0)) {
+            sb_str(result, WEXITSTATUS(status) == 127
                            ? "error: curl(1) not found in PATH"
                            : "error: fetch returned no body (curl exit code in tool output above)");
-    } else if (n >= TOOL_FETCH_MAX) {
-        sb_str(result, "\n...[truncated at 16KB]");
+        }
+        free(buf.p);
+        break;
     }
 }
 
