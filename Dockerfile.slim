@@ -1,0 +1,72 @@
+# agent-httpd 精简版容器 —— 三阶段构建 (无 Node / 无 JVM / 无 Ruby / 无 PHP)
+#
+# 与 Dockerfile (全功能版, ~0.77GB) 的取舍:
+#   砍掉: node 基础镜像 (~190MB) / default-jre-headless / ruby / php-cgi
+#         (apt 层 362MB -> ~60MB) / npx MCP 预热 (87MB) / React SSR 驻留后端
+#         / chown 重复层 (COPY --chown 一步到位)
+#   保留: C 服务器本体 + 全部静态 UI + chat SSE 中继 (fork curl) +
+#         bash/python CGI + go/rust 原生 CGI (自包含二进制) +
+#         python3 echo MCP 演示 + healthcheck/LLM 上游共用的 python3+curl
+#   失去: React SSR demo (/react/* 直连模式) / java / php CGI /
+#         router 同步出的 npx 版 MCP server (无 node, 运行时会 init 失败,
+#         echo 演示不受影响) —— 都只是教学演示, 不影响产品能力
+#
+# 用法:
+#   docker build -f Dockerfile.slim -t agent-httpd:slim .
+#   docker run -p 8080:8080 --env-file .env.cloud agent-httpd:slim
+
+# ---------- 阶段 1: C 服务器 (与全功能版同源同 CFLAGS) ----------
+FROM debian:bookworm-slim AS c-build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev libcrypt-dev make \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY Makefile ./
+COPY src/ src/
+RUN make all
+
+# ---------- 阶段 2: 原生 CGI (只要 go/rust —— build-cgis.sh 对缺失工具链自动跳过) ----------
+FROM debian:bookworm-slim AS cgi-build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends golang-go rustc \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY cgi-langs/ cgi-langs/
+COPY scripts/build-cgis.sh scripts/
+RUN sh scripts/build-cgis.sh
+
+# ---------- 阶段 3: 运行时 (debian-slim + python3 + curl, 约 200MB) ----------
+FROM debian:bookworm-slim
+# python3: CGI 动物园 + fake MCP 演示 + 容器 healthcheck;
+# curl: src/agent/llm.c 的 LLM 上游通道 (fork curl -N 流式)。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --uid 10001 --create-home --home-dir /home/agent agent
+WORKDIR /app
+# 容器专用基础 MCP 配置 (echo 演示, python3 自包含零下载); 无 node,
+# router 同步的 npx 配方在运行时 init 会失败 —— 精简版已知取舍
+COPY deploy/mcp-servers.container.json .data/mcp-servers.json
+COPY scripts/fake-mcp-server.py scripts/
+COPY skills/ skills/
+# 工作目录即 docroot (agent-httpd 以 cwd 为根, 需要 /app/www);
+# COPY --chown 一步到位, 避免 chown -R 产生整树重复层
+COPY --chown=agent:agent www/ www/
+COPY --chown=agent:agent --from=c-build /src/bin/agent-httpd bin/
+# 脚本类 CGI 全量带入 (bash/python 成员可用); 原生类只带自包含的 go/rust;
+# 删除无解释器的成员: java.cgi 需 JVM / php.cgi 需 php-cgi / ruby.cgi 需
+# ruby / react-ssr 需 node —— 都不在本镜像, 留着只会 500
+COPY --chown=agent:agent cgi-bin/ cgi-bin/
+COPY --chown=agent:agent --from=cgi-build /build/cgi-bin/go.cgi cgi-bin/
+COPY --chown=agent:agent --from=cgi-build /build/cgi-bin/rust.cgi cgi-bin/
+RUN chmod +x bin/agent-httpd cgi-bin/*.cgi \
+    && rm -f cgi-bin/java.cgi cgi-bin/php.cgi cgi-bin/ruby.cgi cgi-bin/react-ssr.cgi \
+    && mkdir -p /var/log/agent-httpd /run/agent-httpd \
+    && chown agent:agent /var/log/agent-httpd /run/agent-httpd
+COPY --chown=agent:agent deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
+RUN chmod +x /usr/local/bin/docker-entrypoint
+
+ENV PORT=8080 WORKERS=8 RATE_LIMIT=0
+EXPOSE 8080
+USER agent
+ENTRYPOINT ["docker-entrypoint"]
