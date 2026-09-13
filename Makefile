@@ -264,7 +264,12 @@ bench: all
 example-run: example
 	./examples/embedded
 
+# Node host drives the embedded example over HTTP (lifecycle + probes).
+# Requires the managed/system node on PATH; see examples/node-host/host.js.
+node-example: example
+	node examples/node-host/host.js
+
 clean:
 	rm -rf $(BUILD_DIR) bin examples/embedded
 
-.PHONY: all lib example example-run build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream
+.PHONY: all lib example example-run node-example build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream
