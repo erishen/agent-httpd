@@ -33,7 +33,8 @@ LDFLAGS = $(LDFLAGS_EXTRA)
 TARGET = bin/agent-httpd
 # Object/dependency files live in build/ so src/ holds sources only.
 BUILD_DIR = build
-SRCS = src/main.c src/http.c src/static.c src/cgi.c \
+SRCS = src/main.c src/http.c src/http_parse.c src/http_resp.c src/http_log.c \
+       src/http_route.c src/static.c src/cgi.c \
        src/auth.c src/ratelimit.c src/worker.c src/util.c src/fastcgi.c \
        src/llm.c src/minijson.c src/chatio.c src/tools.c src/agent.c \
        src/skills.c src/session.c src/mcp.c src/pse.c src/router.c src/event.c \
