@@ -319,11 +319,42 @@ static const char *llm_env_or(const char *name, const char *dflt) {
 int llm_is_chat_route(const char *path, const char *method) {
     if (strncmp(path, "/react/api/chat", 16) != 0) return 0;
     if (path[16] != '\0' && path[16] != '?') return 0;
-    return (strcmp(method, "POST") == 0 || strcmp(method, "GET") == 0);
+    /* M4: POST-only. A GET (or any other verb) reaches this endpoint via a
+     * cross-site <img>/<form>/<link> and is a CSRF vector for a state-changing
+     * call; reject it at the route level so it is never dispatched. */
+    return strcmp(method, "POST") == 0;
+}
+
+/* M4: CSRF / cross-origin guard. The chat endpoint triggers an LLM call and
+ * may write session memory, so a cross-site browser request is abuse. A
+ * same-origin browser request carries an Origin equal to this server's Host
+ * (nginx preserves Host via `proxy_set_header Host $host`); a cross-site
+ * request carries a foreign Origin; requests with no Origin (non-browser
+ * clients, our own smoke/test harness) are allowed. */
+static int chat_origin_ok(const HttpRequest *request) {
+    const char *origin = request->origin;
+    if (!origin || !origin[0]) return 1; /* no Origin: same-origin / non-browser */
+    const char *o = strstr(origin, "://");
+    const char *oh = o ? o + 3 : origin; /* host[:port] (Origin has no path) */
+    return strcmp(oh, request->host) == 0;
 }
 
 int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
                     int client_fd) {
+    /* M4: reject cross-origin / non-POST before any generation or memory
+     * write. Return a normal (non-SSE) response so the caller serializes it
+     * instead of the streaming path. */
+    if (strcmp(request->method, "POST") != 0) {
+        response->status_code = 405;
+        strcpy(response->status_text, "Method Not Allowed");
+        return 0;
+    }
+    if (!chat_origin_ok(request)) {
+        response->status_code = 403;
+        strcpy(response->status_text, "Forbidden");
+        return 0;
+    }
+
     ChatOut out = { client_fd, 1, 0, 0, {0} };
     size_t head_len = strlen(CHAT_SSE_HEAD);
     if (net_write_all(client_fd, CHAT_SSE_HEAD, head_len) == 0) {

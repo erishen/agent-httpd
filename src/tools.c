@@ -748,6 +748,14 @@ static void tool_skill_run(void *data, const char *args,
 static void tool_remember(void *data, const char *args,
                           const char *session_id, sbuf *result) {
     (void)data;
+    /* H2: memory is session-scoped. Without a sessionId the fallback store
+     * is a single global pool shared by every anonymous request, which
+     * leaks one user's facts into another's context (and is a prompt-
+     * injection sink). Refuse rather than write to the global pool. */
+    if (!session_id || !session_id[0]) {
+        sb_str(result, "error: memory requires a session; pass a sessionId in the request (memory is not global)");
+        return;
+    }
     char key[SESSION_KEY_MAX + 1], val[SESSION_VAL_MAX + 1];
     if (tool_str_arg(args, "key", key, sizeof key) != 0 &&
         tool_str_arg(args, "name", key, sizeof key) != 0) {
@@ -772,6 +780,11 @@ static void tool_remember(void *data, const char *args,
 static void tool_recall(void *data, const char *args,
                         const char *session_id, sbuf *result) {
     (void)data;
+    /* H2: see tool_remember — never read from the shared global pool. */
+    if (!session_id || !session_id[0]) {
+        sb_str(result, "error: memory requires a session; pass a sessionId in the request (memory is not global)");
+        return;
+    }
     char key[SESSION_KEY_MAX + 1];
     if (tool_str_arg(args, "key", key, sizeof key) != 0 &&
         tool_str_arg(args, "name", key, sizeof key) != 0) {

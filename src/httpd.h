@@ -68,6 +68,7 @@ typedef struct {
     char host[256];
     char user_agent[512];
     char referer[512];
+    char origin[256]; /* browser Origin header (CSRF / cross-origin guard) */
     char accept[512];
     char accept_encoding[256];
     char connection[32];

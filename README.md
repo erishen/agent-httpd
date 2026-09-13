@@ -992,6 +992,11 @@ that Next can't swap in.
 - [x] Per-IP rate limiting (`-l <rps>`, fixed window + shared-memory table, one quota across fork/pool modes, 429 + Retry-After)
 - [x] Chat upstream transient-failure retries (3 attempts + 1s/2.5s backoff, transient/permanent classification, backoff watches for client disconnects)
 - [x] Privacy & compliance hardening (proxied-path security header parity, FCGI socket default 0700, log files 0600, outbound error scrubbing)
+- [x] MCP subprocess secret scrubbing: the LLM credentials (`LLM_API_KEY` / `LLM_API_URL` / `LLM_MODEL`) are `unsetenv`'d in the child before `execvp`, so third-party npx-fetched MCP servers (e.g. `server-filesystem`) never inherit them. (`MCP_FS_ROOT` is kept — the fs server needs it as its sandbox root; the CGI path scrubs the same trio in `cgi.c`.)
+- [x] Session memory is strictly session-scoped: `remember` / `recall` refuse to run without a `sessionId`, and the chat prompt no longer injects the shared global pool (`.data/memory.json`). A request with no session can neither read nor write another user's facts (the old global fallback was a cross-user data-leak / prompt-injection sink).
+- [x] Access log strips the query string: URLs are logged path-only, so tokens / session ids / PII carried in `?...` are never persisted to `logs/access.log` (which is `0600`).
+- [x] Response security headers: every response now carries a `Content-Security-Policy` (`default-src 'self'`, `frame-ancestors 'none'`, `base-uri 'self'`, `object-src 'none'`), `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and `X-Permitted-Cross-Domain-Policies: none`, on top of the existing nosniff / X-Frame-Options / Referrer-Policy. (HSTS belongs at the TLS-terminating nginx.)
+- [x] Chat CSRF hardening: `/react/api/chat` is POST-only (GET and other verbs are rejected before dispatch), and a browser `Origin` that does not match the server `Host` is rejected with `403`. Non-browser clients (no `Origin`) and same-origin requests are allowed; nginx preserves `Host` via `proxy_set_header Host $host`.
 - [x] SSRF hardening on `fetch_url`: blocks loopback / private / link-local /
   cloud-metadata (169.254.169.254) targets by IP literal, bracketed IPv6, and
   **every** resolved address; strips `userinfo@` host obfuscation; fails

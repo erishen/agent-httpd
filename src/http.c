@@ -70,9 +70,18 @@ void log_request(const char *client_ip, const HttpRequest *request, int status_c
     char ua_buf[sizeof(request->user_agent)];
     log_field(request->referer, ref_buf, sizeof(ref_buf));
     log_field(request->user_agent, ua_buf, sizeof(ua_buf));
+    /* Log only the path, never the query string: URLs commonly carry tokens,
+     * session ids or PII in ?... that must not be persisted to the access
+     * log (which is otherwise 0600). */
+    char path_buf[MAX_PATH_SIZE];
+    const char *q = strchr(request->path, '?');
+    size_t pcut = q ? (size_t)(q - request->path) : strlen(request->path);
+    if (pcut >= sizeof path_buf) pcut = sizeof path_buf - 1;
+    memcpy(path_buf, request->path, pcut);
+    path_buf[pcut] = '\0';
     fprintf(g_log_fp, "%s - - [%s] \"%s %s %s\" %d %d \"%s\" \"%s\"\n",
             client_ip, time_str,
-            request->method, request->path,
+            request->method, path_buf,
             request->protocol[0] ? request->protocol : "-",
             status_code, bytes,
             ref_buf[0] ? ref_buf : "-",
@@ -110,6 +119,9 @@ static void parse_header_line(const char *line, HttpRequest *request) {
     } else if (strncasecmp(line, "Referer:", 8) == 0) {
         set_str(request->referer, sizeof(request->referer), line + 8);
         trim_whitespace(request->referer);
+    } else if (strncasecmp(line, "Origin:", 7) == 0) {
+        set_str(request->origin, sizeof(request->origin), line + 7);
+        trim_whitespace(request->origin);
     } else if (strncasecmp(line, "Accept:", 7) == 0) {
         set_str(request->accept, sizeof(request->accept), line + 7);
         trim_whitespace(request->accept);
@@ -334,6 +346,22 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
     p += snprintf(p, end - p + 1, "X-Content-Type-Options: nosniff\r\n");
     p += snprintf(p, end - p + 1, "X-Frame-Options: DENY\r\n");
     p += snprintf(p, end - p + 1, "Referrer-Policy: no-referrer\r\n");
+    /* Content-Security-Policy: lock to same-origin, block framing, plugins
+     * and inline base URIs. A Vite-built single-page app loads its own
+     * bundle.js and issues same-origin fetches, so 'self' is sufficient;
+     * if the app ever needs inline scripts/eval, relax script-src here.
+     * frame-ancestors 'none' is the modern replacement for X-Frame-Options. */
+    p += snprintf(p, end - p + 1,
+        "Content-Security-Policy: default-src 'self'; "
+        "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
+        "object-src 'none'\r\n");
+    /* Process-isolation + cross-origin resource guards (spectre-class
+     * side channels, accidental cross-origin loads). */
+    p += snprintf(p, end - p + 1, "Cross-Origin-Opener-Policy: same-origin\r\n");
+    p += snprintf(p, end - p + 1, "Cross-Origin-Resource-Policy: same-origin\r\n");
+    p += snprintf(p, end - p + 1, "X-Permitted-Cross-Domain-Policies: none\r\n");
     if (keep_alive) {
         p += snprintf(p, end - p + 1, "Connection: keep-alive\r\n");
     } else {
