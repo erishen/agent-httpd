@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Counter · AgentHTTPD React demo</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #0f1420; --surface: #1c2536; --edge: #334155;
+    --accent: #38bdf8; --accent-hi: #7dd3fc; --accent-ink: #082f49;
+    --slate-200: #e2e8f0; --slate-300: #cbd5e1; --slate-400: #94a3b8; --slate-500: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--ink); color: var(--slate-200);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px; }
+  /* shared top nav — mirrors the React demo layout */
+  .nav {
+    display: flex; align-items: center; gap: 4px;
+    padding: 12px 20px; margin-bottom: 20px;
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 16px;
+    box-shadow: 0 20px 40px rgba(0,0,0,.35);
+  }
+  .brand { margin-right: auto; font-weight: 700; letter-spacing: -.01em;
+    color: var(--slate-200); text-decoration: none; }
+  .brand:hover { color: var(--accent); }
+  .nav a.tab {
+    color: var(--slate-400); text-decoration: none; font-size: 14px; font-weight: 500;
+    padding: 6px 12px; border-radius: 6px; transition: background .15s, color .15s;
+  }
+  .nav a.tab:hover { background: var(--ink); color: var(--slate-300); }
+  .nav a.tab.active { color: var(--slate-200); }
+  .card {
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 16px;
+    padding: 24px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,.35);
+  }
+  .pill {
+    display: inline-block; margin-bottom: 12px;
+    background: #fbbf24; color: #451a03; border-radius: 9999px; padding: 2px 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  }
+  h1 { margin: 0 0 8px; font-size: 24px; }
+  p { font-size: 14px; line-height: 1.6; color: var(--slate-400); }
+  code {
+    background: var(--ink); border-radius: 4px; padding: 2px 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px; color: #fbbf24;
+  }
+  code.sky { color: #7dd3fc; }
+  #count {
+    margin: 24px 0;
+    font-size: 72px; font-weight: 800; line-height: 1;
+    background: linear-gradient(135deg, #38bdf8, #a78bfa);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .btns { display: flex; align-items: center; justify-content: center; gap: 12px; }
+  button {
+    font: inherit; font-weight: 700; cursor: pointer;
+    border-radius: 8px; padding: 10px 20px;
+    border: 1px solid var(--edge); background: var(--ink); color: var(--slate-200);
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { border: none; background: var(--accent); color: var(--accent-ink); padding: 10px 24px; }
+  button.primary:hover { background: var(--accent-hi); color: var(--accent-ink); }
+  .foot { margin-top: 24px; font-size: 12px; color: var(--slate-500); }
+  .foot a { color: var(--accent); text-decoration: none; }
+  .foot a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav">
+    <a class="brand" href="/react">AgentHTTPD</a>
+    <a class="tab" href="/react">Home</a>
+    <a class="tab" href="/react/about">About</a>
+    <a class="tab active" href="/react/counter">Counter</a>
+    <a class="tab" href="/react/chat">Chat</a>
+  </nav>
+
+  <section class="card">
+    <span class="pill">Live</span>
+    <h1>Client-side counter</h1>
+    <p>The React version proves hydration by rendering <code>0</code> on the
+      server and attaching listeners client-side. This static fallback keeps
+      the same demo: the buttons are wired with plain vanilla JS.</p>
+    <div id="count">0</div>
+    <div class="btns">
+      <button id="dec">&minus;1</button>
+      <button id="inc" class="primary">+1</button>
+      <button id="reset">Reset</button>
+    </div>
+    <p class="foot">Visited via <code class="sky">/react/counter</code> &middot;
+      use <a href="/react">Home</a> to see the SSR page. &middot; Static
+      fallback (slim image: no resident SSR backend).</p>
+  </section>
+</div>
+<script>
+(function () {
+  var n = 0;
+  var el = document.getElementById('count');
+  function render() { el.textContent = String(n); }
+  document.getElementById('inc').addEventListener('click', function () { n += 1; render(); });
+  document.getElementById('dec').addEventListener('click', function () { n -= 1; render(); });
+  document.getElementById('reset').addEventListener('click', function () { n = 0; render(); });
+})();
+</script>
+</body>
+</html>

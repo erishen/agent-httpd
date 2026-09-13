@@ -659,11 +659,32 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
                 /* No SSR backend configured (slim image, no -R flag): the
                  * SSR-only chat page would be a bare 404. Degrade to the
                  * static zero-dependency chat UI; the chat API itself is
-                 * handled natively by llm_handle_chat above. */
+                 * handled natively by llm_handle_chat above. Other deep
+                 * links (/react/about, /react/counter, ...) degrade to a
+                 * static page of the same name under www/react/ — 404 if
+                 * no such page was shipped. */
                 if (strcmp(request.path, "/react/chat") == 0 ||
                     strcmp(request.path, "/react/") == 0 ||
                     strcmp(request.path, "/react") == 0) {
                     snprintf(request.path, sizeof(request.path), "/chat.html");
+                } else if (strncmp(request.path, "/react/", 7) == 0) {
+                    /* one deep-link segment (about, counter, ...): degrade to
+                     * a static page of the same name under www/react/ */
+                    const char *rest = request.path + 7;
+                    size_t rl = strlen(rest);
+                    char leaf[256];
+                    if (rl > 0 && rest[rl - 1] == '/') {
+                        rl--; /* /react/about/ works too */
+                    }
+                    if (rl < sizeof(leaf) && 7 + rl + 5 < sizeof(request.path)) {
+                        memcpy(leaf, rest, rl);
+                        leaf[rl] = '\0';
+                        if (strchr(leaf, '/') == NULL && /* one segment only */
+                            strrchr(leaf, '.') == NULL) { /* already a file name */
+                            snprintf(request.path, sizeof(request.path),
+                                     "/react/%s.html", leaf);
+                        }
+                    }
                 }
                 process_request(&request, &response, client_fd);
             }
