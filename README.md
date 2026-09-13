@@ -302,6 +302,15 @@ Architecture (three services):
 | `react` | agent-httpd | resident React SSR FastCGI backend (UNIX socket, no exposed port) |
 | `nginx` | nginx:1.27-alpine | front proxy: `/` proxy_pass to httpd; `/react/` fastcgi_pass to react |
 
+The runtime image runs everything as the non-root user `agent` (uid 10001):
+server, CGI/MCP child processes and the React backend. Writable locations
+(`/app` — docroot + session store, the log directory, the FastCGI socket
+directory and the npx cache home) are chowned at build time; everything
+else stays root-owned. The compose socket volume is named `agent-sock` —
+a fresh name was chosen so the volume's ownership matches the new user
+(the old `react-sock` volume predates the switch and is root-owned; it can
+be removed with `docker volume rm`).
+
 > Tip: after rebuilding the httpd container, nginx may still cache the old
 > upstream IP (502) — `docker compose restart nginx` fixes it; alternatively
 > `docker compose down` then `up`.
@@ -378,8 +387,10 @@ make test   # smoke tests: static/HEAD/POST/traversal/redirects/listings/error p
 make bench  # throughput comparison: keep-alive vs per-connection (default 5000 req / 16 conc,
             #   override with BENCH_REQ/BENCH_CONC/PORT; with -l enabled, 429s land in the
             #   429s column instead of failing; latency percentiles count 200s only)
-make test-unit      # standalone regressions, no server needed: dev-proxy header builder under
-                    #   ASan+UBSan, and the FastCGI stream relay (spawns a throwaway backend)
+make test-unit      # standalone regressions, no server needed: dev-proxy header builder,
+                    #   Basic Auth (b64/credential parsing, hash-only htpasswd policy),
+                    #   minijson (sbuf/escapes/tolerant reader) under ASan+UBSan, and the
+                    #   FastCGI stream relay (spawns a throwaway backend)
 make test-keepalive # keep-alive pipelining on one connection (starts the real server in
                     #   fork-per-connection mode on a free port; slower, needs loopback)
 make test-linux     # Linux/GCC build guard: builds the Dockerfile's c-build stage. glibc is the

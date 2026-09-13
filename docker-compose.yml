@@ -13,7 +13,7 @@
 #   截断 (客户端包被切断 -> 模块解析失败 -> 页面静默不水合): `make test-stream`。
 #   docker compose logs -f httpd
 #
-# socket 目录只用一个卷 (react-sock): react 在里面建 react.sock, httpd 在里面建
+# socket 目录只用一个卷 (agent-sock): react 在里面建 react.sock, httpd 在里面建
 # fcgi.sock, nginx 只读挂进来连 react.sock。刻意不再声明第二个 fcgi-sock 卷 ——
 # 两个卷挂同一个挂载点时 Docker 只让后声明的生效, 前者永远不会被创建 (旧配置就是
 # 这样, 且注释声称它把 socket 暴露给了 nginx, 而 nginx.conf 从不 fastcgi_pass 它)。
@@ -59,7 +59,7 @@ services:
         required: false
     volumes:
       # 单个 socket 目录卷: -F 在这里建 fcgi.sock, -R 在这里连 react.sock
-      - react-sock:/run/agent-httpd
+      - agent-sock:/run/agent-httpd
     ports:
       - "18080:8080"
     healthcheck:
@@ -95,7 +95,7 @@ services:
       - path: .env
         required: false
     volumes:
-      - react-sock:/run/agent-httpd
+      - agent-sock:/run/agent-httpd
     restart: unless-stopped
 
   nginx:
@@ -107,10 +107,14 @@ services:
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       # react.sock 共享给 nginx, fastcgi_pass 直连驻留 React 后端
-      - react-sock:/run/agent-httpd:ro
+      - agent-sock:/run/agent-httpd:ro
     ports:
       - "18081:80"
     restart: unless-stopped
 
 volumes:
-  react-sock:
+  # 改名说明: 旧卷 react-sock 在镜像还是 root 运行时创建, 卷目录属主是 root,
+  # 换成非 root 账号后新进程在里面建不了 socket。卷里只有 ephemeral socket,
+  # 换新名让 docker 重新创建 (首次挂载时 copy-up 会继承镜像里该目录的属主),
+  # 旧卷可 `docker volume rm agent-httpd_react-sock` 清掉。
+  agent-sock:
