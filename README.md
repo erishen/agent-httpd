@@ -923,7 +923,20 @@ outbound error text are guarded too:
   hatch (see Basic Auth).
 - **Dev Vite proxy guarded (L3)**: `-v` stays opt-in (off by default) and now
   prints a loud startup warning that the proxy serves raw dev sources - such
-  an instance must never be exposed to a public network.
+  instances must never be exposed publicly.
+- **Dot-prefixed paths refused**: static and CGI requests whose path has a
+  `.`-leading component answer 404 (no existence disclosure), and directory
+  listings hide hidden entries - a stray `.env`, editor state or VCS
+  metadata dropped into the docroot is neither reachable nor enumerable.
+- **MCP filesystem root is the model's file sandbox**: everything under
+  `MCP_FS_ROOT` is readable (and writable) by the model via chat tools.
+  The server warns at startup when that root contains a `.env` or the
+  `.data` session store; point it at the narrowest directory you tolerate
+  exposing to the model.
+- **Fetched web content is untrusted input**: `fetch_url` is SSRF-hardened
+  at the transport level, but the page text it returns enters the agent
+  loop, so a malicious page can try to steer the model (prompt injection).
+  Keep file-tool roots narrow and never hand the agent credentials.
 
 ## CGI environment variables
 

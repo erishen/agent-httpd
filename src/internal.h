@@ -66,6 +66,7 @@ int get_cgi_timeout(void);
 int get_cgi_body_tmp_threshold(void);
 void trim_whitespace(char *s);
 void url_decode(char *dst, const char *src);
+int path_has_dot_component(const char *path);
 void html_escape(const char *src, char *dst, size_t dst_size);
 const char *get_content_type(const char *path);
 

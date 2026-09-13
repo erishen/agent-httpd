@@ -35,6 +35,7 @@ tests/t_json
 # again; a run cut short (or one whose deletes hit the sandbox's bulk-delete
 # guard, e.g. after www/fixlist's 2000 entries) leaves them behind.
 cgi-bin/.*-test.cgi
+cgi-bin/probe-*.cgi
 www/fixlist/
 www/range-test-smoke.bin
 www/js/fix-mid.bin

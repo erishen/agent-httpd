@@ -212,7 +212,9 @@ int handle_directory(const char *real_path, const char *request_path, HttpRespon
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (p > end) break; /* 列表缓冲已满:停止继续收集 */
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+        if (entry->d_name[0] == '.') {
+            /* hidden entries: never enumerated (matches the static-path
+             * dotfile refusal - what listings hide, requests can't fetch) */
             continue;
         }
         snprintf(entry_path, sizeof(entry_path), "%s/%s", real_path, entry->d_name);
@@ -374,6 +376,16 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
 
     if (strncmp(decoded_path, "/", 1) != 0) {
         decoded_path[0] = '/';
+    }
+
+    /* Dot-prefixed path components are refused outright (404, not 403 -
+     * existence is not disclosed): editor state, .env, VCS metadata or any
+     * other dotfile that ends up inside the docroot must not be reachable
+     * over HTTP. */
+    if (path_has_dot_component(decoded_path)) {
+        response->status_code = 404;
+        strcpy(response->status_text, "Not Found");
+        return -1;
     }
 
     if (!resolve_within(g_web_root_real, decoded_path, real_path, sizeof(real_path))) {

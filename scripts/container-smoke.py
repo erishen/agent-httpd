@@ -95,6 +95,17 @@ check(
 )
 check("dotfile in cgi-bin not served", True, req("/cgi-bin/.hidden.cgi")[0] != 200)
 
+# Real dotfile probes (the check above only proves a missing path 404s):
+# drop an actual dotfile into the docroot and assert it is neither served
+# nor enumerated by a directory listing.
+with open("/app/www/test/.smoke-dotfile", "w") as f:
+    f.write("dot-secret")
+try:
+    check("dotfile in docroot refused (404)", True, req("/test/.smoke-dotfile")[0] == 404)
+    check("dotfile hidden from directory listing", True, b".smoke-dotfile" not in req("/test/")[2])
+finally:
+    os.remove("/app/www/test/.smoke-dotfile")
+
 print("\n=== B. methods ===")
 check("GET CGI", 200, req("/cgi-bin/hello.cgi")[0])
 check(
@@ -226,7 +237,7 @@ else:
 print("\n=== F. CGI protocol details ===")
 tmp = []
 try:
-    big = os.path.join(CBIN, ".probe-big.cgi")
+    big = os.path.join(CBIN, "probe-big.cgi")
     with open(big, "w") as f:
         f.write(
             "#!/bin/sh\necho 'Content-Type: text/plain'\necho\n"
@@ -237,10 +248,10 @@ try:
     check(
         "CGI output 700000 complete (no 64KB truncation)",
         700000,
-        len(req("/cgi-bin/.probe-big.cgi")[2]),
+        len(req("/cgi-bin/probe-big.cgi")[2]),
     )
 
-    stc = os.path.join(CBIN, ".probe-status.cgi")
+    stc = os.path.join(CBIN, "probe-status.cgi")
     with open(stc, "w") as f:
         f.write(
             "#!/bin/sh\necho 'Status: 418 I am a teapot'\n"
@@ -248,11 +259,11 @@ try:
         )
     os.chmod(stc, 0o755)
     tmp.append(stc)
-    st, _, b = req("/cgi-bin/.probe-status.cgi")
+    st, _, b = req("/cgi-bin/probe-status.cgi")
     check("CGI Status header honoured (418)", 418, st)
     check("418 response has a body", True, len(b) > 0)
 
-    loc = os.path.join(CBIN, ".probe-loc.cgi")
+    loc = os.path.join(CBIN, "probe-loc.cgi")
     with open(loc, "w") as f:
         f.write(
             "#!/bin/sh\necho 'Location: %s/test/'\n"
@@ -260,7 +271,7 @@ try:
         )
     os.chmod(loc, 0o755)
     tmp.append(loc)
-    st, h, b = req("/cgi-bin/.probe-loc.cgi")
+    st, h, b = req("/cgi-bin/probe-loc.cgi")
     check("CGI Location -> 302", 302, st)
     check("Location value preserved", "%s/test/" % BASE, h.get("location"))
     check("redirect still carries the body", True, len(b) > 0)
@@ -273,7 +284,7 @@ try:
     # status-only check above cannot catch a dropped body: assert the CGI
     # actually received the bytes. Read stdin into a variable first — `wc -c`
     # drains stdin, so counting before `cat` would echo nothing.
-    echo_cgi = os.path.join(CBIN, ".probe-echo.cgi")
+    echo_cgi = os.path.join(CBIN, "probe-echo.cgi")
     with open(echo_cgi, "w") as f:
         f.write(
             "#!/bin/sh\n"
@@ -287,7 +298,7 @@ try:
     tmp.append(echo_cgi)
     payload = b"name=Alice&x=1"
     _, _, echoed = req(
-        "/cgi-bin/.probe-echo.cgi",
+        "/cgi-bin/probe-echo.cgi",
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         body=payload,

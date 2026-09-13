@@ -33,6 +33,15 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
         query_string++;
     }
 
+    /* Dot-prefixed components refused, same policy as static files: a
+     * ".hidden.cgi" dropped into cgi-bin must not be executable via HTTP
+     * (404, not 403 - no existence disclosure). */
+    if (path_has_dot_component(decoded_path)) {
+        response->status_code = 404;
+        strcpy(response->status_text, "Not Found");
+        return -1;
+    }
+
     if (!resolve_within(g_cgi_bin_real, decoded_path + strlen("/cgi-bin"), resolved_path, sizeof(resolved_path))) {
         response->status_code = 404;
         strcpy(response->status_text, "Not Found");

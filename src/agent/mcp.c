@@ -792,6 +792,31 @@ have_tool:;
 }
 
 int mcp_init(void) {
+    /* MCP_FS_ROOT is the filesystem MCP server's sandbox root: everything
+     * inside it is readable (and writable) by the model through chat
+     * tools. Warn when that root sweeps in credential or state material so
+     * misconfiguration is visible at startup, not after a chat reads it. */
+    const char *fs_root = getenv("MCP_FS_ROOT");
+    if (fs_root && fs_root[0]) {
+        char probe[MAX_PATH_SIZE];
+        snprintf(probe, sizeof probe, "%s/.env", fs_root);
+        if (access(probe, F_OK) == 0) {
+            fprintf(stderr,
+                    "mcp: MCP_FS_ROOT '%s' contains a .env file - the "
+                    "filesystem MCP server can read it via chat tools. "
+                    "Point MCP_FS_ROOT at the narrowest directory you "
+                    "tolerate exposing to the model.\n", fs_root);
+        }
+        snprintf(probe, sizeof probe, "%s/.data", fs_root);
+        if (access(probe, F_OK) == 0) {
+            fprintf(stderr,
+                    "mcp: MCP_FS_ROOT '%s' contains the .data session "
+                    "store - the filesystem MCP server can read every "
+                    "saved transcript via chat tools. Narrow MCP_FS_ROOT "
+                    "if that is not intended.\n", fs_root);
+        }
+    }
+
     /* SIGHUP resync re-reads the authoritative config files, so the server
      * table is rebuilt from scratch each time (children spawned before the
      * reload keep their own COW copy and stay consistent). */
