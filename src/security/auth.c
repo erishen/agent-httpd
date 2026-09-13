@@ -1,10 +1,12 @@
 /* ---- Basic Auth (RFC 7617) ----
- * htpasswd file: lines of "user:secret". secret is either plaintext or a
- * crypt(3) hash (DES/MD5/SHA-* auto-detected: a hash is anything starting
- * with "$<id>$" or a 13-char DES string). Plaintext secrets must contain
- * ':' or start with '{' to stay unambiguous (e.g. "{SHA}..." or
- * "{PLAIN}"). Mismatching lines are skipped - a malformed file can never
- * become "allow all". Empty g_auth_file disables auth entirely. */
+ * htpasswd file: lines of "user:secret". Only strong crypt(3) hashes are
+ * accepted: $5$ (SHA-256), $6$ (SHA-512) or bcrypt ($2a$/$2b$/$2y$).
+ * Plaintext secrets and weak schemes (DES 13-char, $1$ MD5, $apr1$) are
+ * rejected at load time and never match - a weak file can never become
+ * "allow all". AGENTHTTPD_ALLOW_WEAK_AUTH=1 is the explicit local-dev
+ * escape hatch that restores the old tolerant behavior (and warns loudly).
+ * Malformed lines are always skipped; empty g_auth_file disables auth
+ * entirely. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +80,17 @@ static int ct_eq(const char *a, const char *b) {
     return diff == 0;
 }
 
+/* Strong hash formats only: crypt(3) SHA-2 ($5$/$6$) or bcrypt. Everything
+ * else (plaintext, 13-char DES, $1$ MD5, $apr1$) is weak and only accepted
+ * under the AGENTHTTPD_ALLOW_WEAK_AUTH dev escape hatch. */
+static int is_strong_hash(const char *s) {
+    return strncmp(s, "$5$", 3) == 0 ||
+           strncmp(s, "$6$", 3) == 0 ||
+           strncmp(s, "$2a$", 4) == 0 ||
+           strncmp(s, "$2b$", 4) == 0 ||
+           strncmp(s, "$2y$", 4) == 0;
+}
+
 static int secret_matches(const char *supplied, const char *stored) {
     int stored_is_hash = (stored[0] == '$') ||
                          (strlen(stored) == 13 && strspn(stored, "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") == 13);
@@ -97,6 +110,16 @@ static int secret_matches(const char *supplied, const char *stored) {
 int load_htpasswd(const char *path) {
     FILE *f = fopen(path, "r");
     char line[512];
+    /* Weak secrets (plaintext / DES / MD5-crypt) are stored only under the
+     * explicit dev escape hatch; without it they are skipped with a warning,
+     * forcing the file onto strong crypt hashes. Skipped entries never match,
+     * so a weak file errs toward "deny", never "allow". */
+    int weak_allowed = getenv("AGENTHTTPD_ALLOW_WEAK_AUTH") != NULL;
+    if (weak_allowed) {
+        fprintf(stderr, "htpasswd: AGENTHTTPD_ALLOW_WEAK_AUTH is set - "
+                "plaintext/DES/MD5 secrets are accepted. DEV USE ONLY, "
+                "never in production.\n");
+    }
     if (!f) {
         fprintf(stderr, "cannot open htpasswd file: %s\n", path);
         return -1;
@@ -115,6 +138,16 @@ int load_htpasswd(const char *path) {
             continue;
         }
         *colon = '\0';
+        if (!is_strong_hash(colon + 1) && !weak_allowed) {
+            fprintf(stderr,
+                    "htpasswd: '%s' in %s has a plaintext or weak secret - "
+                    "only crypt(3) $5$/$6$ (SHA-2) or bcrypt ($2a$/$2b$/$2y$) "
+                    "hashes are accepted (e.g. `openssl passwd -6` or "
+                    "`htpasswd -B`); entry skipped. Local-dev escape hatch: "
+                    "AGENTHTTPD_ALLOW_WEAK_AUTH=1\n",
+                    line, path);
+            continue;
+        }
         strcpy(g_htpasswd[g_htpasswd_count].user, line);
         strcpy(g_htpasswd[g_htpasswd_count].secret, colon + 1);
         g_htpasswd_count++;

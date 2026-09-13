@@ -407,18 +407,23 @@ HMR 与代理行为均由 `make test` 的守卫用例覆盖 (vite 未安装时�
 (静态、CGI、`/react/` 转发均在门禁之内):
 
 ```bash
-# htpasswd 文件: 每行 "user:secret"
-printf 'alice:password123\n' > /tmp/htpasswd
+# htpasswd 文件: 每行 "user:secret", 只接受强哈希。
+# 用 `openssl passwd -6` (SHA-512) 或 `htpasswd -B` (bcrypt) 生成。
+printf 'alice:%s\n' "$(openssl passwd -6 'password123')" > /tmp/htpasswd
 ./bin/agent-httpd -p 18080 -a /tmp/htpasswd -r "Private"
 
 curl -u alice:password123 http://localhost:18080/
 ```
 
-- **secret 支持两种形式**: 明文, 或 `crypt(3)` 哈希 (以 `$` 开头的
-  `$id$salt$hash` 系列或 13 字符 DES 格式, 自动识别)。用系统 `htpasswd`/`openssl passwd` 生成的哈希可直接使用。
-- **平台差异**: Linux 链接 `-lcrypt` (glibc, 支持 `$5$`/`$6$` 等现代格式);
-  macOS 的 `crypt(3)` 在 libc 中, 仅支持 DES —— 现代格式哈希会校验失败
-  (fail-closed 拒绝, 不会误放行)。教学/本机场景建议直接用明文或 DES。
+- **只接受强哈希**: `$5$` (SHA-256)、`$6$` (SHA-512) 与 bcrypt
+  (`$2a$`/`$2b$`/`$2y$`)。明文口令、13 字符 DES、`$1$`/`$apr1$` MD5 哈希在
+  加载时即被拒绝 —— 该条目被跳过并告警, 永远不可能匹配。
+- **开发逃生门**: 导出 `AGENTHTTPD_ALLOW_WEAK_AUTH=1` 可恢复旧的宽容行为
+  (明文/DES 可用, 启动时大声警告)。仅限本地开发, 生产环境绝不使用。
+- **平台差异**: Linux 链接 `-lcrypt` (glibc/libxcrypt 支持 `$5$`/`$6$`);
+  macOS 的 `crypt(3)` 在 libc 中, 仅支持 DES —— 强哈希在本机会校验失败
+  (fail-closed 拒绝, 不会误放行)。macOS 上请用上面的逃生门, 或在容器里
+  验证认证。
 - **fail-closed 设计**: htpasswd 中格式非法的行被跳过并告警, 全部无效则启动
   失败 —— 配置错误永远倒向"拒绝"而非"放行"; 凭据缺失/格式错/未知用户一律 401。
 - **CGI 集成**: 认证通过后, CGI 程序经标准变量 `REMOTE_USER` 拿到登录用户名。
@@ -638,6 +643,13 @@ PSE 单轮 Planner→Specialist→Evaluator(PASS)。
   dev SSR 500 同样只回 "details in server log"。
 - **会话数据边界**: `.data/sessions/*.json` 记录在服务器本地 (内存/事实库),
   不随响应外泄; `read_file` 工具限制在 web 根内 + 穿越防护。
+- **无版本指纹 (L1)**: 错误页、目录列表页脚与 CGI `SERVER_SOFTWARE` 统一为
+  无版本的 `AgentHTTPD`, 与 `Server:` 头一致 —— 任何地方都不再泄露版本号。
+- **htpasswd 强制强哈希 (L2)**: 明文、13 字符 DES 与 MD5-crypt 口令加载即拒;
+  只接受 `$5$`/`$6$`/bcrypt。`AGENTHTTPD_ALLOW_WEAK_AUTH=1` 是显式的开发
+  逃生门 (见 Basic Auth 认证一节)。
+- **dev Vite 代理加护栏 (L3)**: `-v` 保持可选 (默认关闭), 启动时大声警告
+  该代理会吐出原始开发源码 —— 带 `-v` 的实例绝不能暴露到公网。
 
 ## CGI 环境变量
 

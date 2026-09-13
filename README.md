@@ -627,20 +627,26 @@ charset="UTF-8"` challenge, site-wide (static, CGI, and `/react/` forwarding
 are all behind the gate):
 
 ```bash
-# htpasswd file: one "user:secret" per line
-printf 'alice:password123\n' > /tmp/htpasswd
+# htpasswd file: one "user:secret" per line, strong hashes only.
+# Generate with `openssl passwd -6` (SHA-512) or `htpasswd -B` (bcrypt).
+printf 'alice:%s\n' "$(openssl passwd -6 'password123')" > /tmp/htpasswd
 ./bin/agent-httpd -p 18080 -a /tmp/htpasswd -r "Private"
 
 curl -u alice:password123 http://localhost:18080/
 ```
 
-- **Secrets in two forms**: plaintext, or `crypt(3)` hashes (the `$`-prefixed
-  `$id$salt$hash` family or 13-character DES, auto-detected). Hashes from
-  system `htpasswd` / `openssl passwd` drop right in.
-- **Platform differences**: Linux links `-lcrypt` (glibc, supports `$5$`/`$6$`
-  etc.); macOS's `crypt(3)` lives in libc and only supports DES — modern
-  hashes fail validation (fail-closed rejection, never a false pass). For
-  teaching/local use, stick to plaintext or DES.
+- **Strong hashes only**: `$5$` (SHA-256), `$6$` (SHA-512) and bcrypt
+  (`$2a$`/`$2b$`/`$2y$`) are accepted. Plaintext secrets, 13-character DES
+  and `$1$`/`$apr1$` MD5 hashes are rejected at load time - the entry is
+  skipped with a warning, so it can never match.
+- **Dev escape hatch**: exporting `AGENTHTTPD_ALLOW_WEAK_AUTH=1` restores the
+  tolerant behavior (plaintext/DES accepted with a loud startup warning).
+  Local development only - never in production.
+- **Platform differences**: Linux links `-lcrypt` (glibc/libxcrypt supports
+  `$5$`/`$6$`); macOS's `crypt(3)` lives in libc and is DES-only, so strong
+  hashes fail validation locally (fail-closed rejection, never a false
+  pass). On macOS use the escape hatch above, or exercise auth in the
+  container.
 - **Fail-closed design**: malformed htpasswd lines are skipped with a warning;
   if none are valid, startup fails — misconfiguration always errs toward
   "deny", not "allow"; missing credentials, malformed input, and unknown users
@@ -897,6 +903,16 @@ outbound error text are guarded too:
 - **Session data boundaries**: `.data/sessions/*.json` stays on the server
   (memory/fact store) and never leaks through responses; the `read_file` tool
   is confined to the web root + traversal protection.
+- **No version fingerprint (L1)**: error pages, directory-listing footers and
+  CGI `SERVER_SOFTWARE` now carry the same versionless `AgentHTTPD` as the
+  `Server:` header - no release details leak anywhere.
+- **htpasswd forced onto strong hashes (L2)**: plaintext, 13-character DES
+  and MD5-crypt secrets are rejected at load time; only `$5$`/`$6$`/bcrypt
+  are accepted. `AGENTHTTPD_ALLOW_WEAK_AUTH=1` is the explicit dev escape
+  hatch (see Basic Auth).
+- **Dev Vite proxy guarded (L3)**: `-v` stays opt-in (off by default) and now
+  prints a loud startup warning that the proxy serves raw dev sources - such
+  an instance must never be exposed to a public network.
 
 ## CGI environment variables
 
