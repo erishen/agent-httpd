@@ -663,10 +663,13 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
                  * links (/react/about, /react/counter, ...) degrade to a
                  * static page of the same name under www/react/ — 404 if
                  * no such page was shipped. */
-                if (strcmp(request.path, "/react/chat") == 0 ||
-                    strcmp(request.path, "/react/") == 0 ||
-                    strcmp(request.path, "/react") == 0) {
+                if (strcmp(request.path, "/react/chat") == 0) {
                     snprintf(request.path, sizeof(request.path), "/chat.html");
+                } else if (strcmp(request.path, "/react") == 0 ||
+                           strcmp(request.path, "/react/") == 0) {
+                    /* Home route: static mirror of the SSR home page */
+                    snprintf(request.path, sizeof(request.path),
+                             "/react/home.html");
                 } else if (strncmp(request.path, "/react/", 7) == 0) {
                     /* one deep-link segment (about, counter, ...): degrade to
                      * a static page of the same name under www/react/ */

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home · AgentHTTPD React demo</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #0f1420; --surface: #1c2536; --edge: #334155;
+    --accent: #38bdf8; --accent-hi: #7dd3fc; --accent-ink: #082f49;
+    --slate-200: #e2e8f0; --slate-300: #cbd5e1; --slate-400: #94a3b8; --slate-500: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--ink); color: var(--slate-200);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  }
+  .wrap { max-width: 768px; margin: 0 auto; padding: 40px 20px; }
+  /* shared top nav — mirrors the React demo layout */
+  .nav {
+    display: flex; align-items: center; gap: 4px;
+    padding: 12px 20px; margin-bottom: 28px;
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 16px;
+    box-shadow: 0 20px 40px rgba(0,0,0,.35);
+  }
+  .brand { margin-right: auto; font-weight: 700; letter-spacing: -.01em;
+    color: var(--slate-200); text-decoration: none; }
+  .brand:hover { color: var(--accent); }
+  .brand .code { color: #fbbf24; font-family: ui-monospace, Menlo, monospace; }
+  .brand .grad {
+    background: linear-gradient(90deg, #38bdf8, #a78bfa);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .nav a.tab {
+    color: var(--slate-400); text-decoration: none; font-size: 14px; font-weight: 500;
+    padding: 6px 12px; border-radius: 6px; transition: background .15s, color .15s;
+  }
+  .nav a.tab:hover { background: var(--ink); color: var(--slate-300); }
+  .nav a.tab.active { background: rgba(56,189,248,.15); color: var(--accent); }
+  /* hero */
+  .hero { text-align: center; margin-bottom: 24px; }
+  .hero .kicker {
+    margin: 0 0 12px; font-size: 12px; font-weight: 700; letter-spacing: .35em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  .hero h1 {
+    margin: 0; font-size: 36px; font-weight: 800; line-height: 1.15;
+    background: linear-gradient(90deg, #38bdf8, #a78bfa, #e879f9);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p { margin: 8px 0 0; color: var(--slate-400); font-size: 15px; }
+  .hero p b { color: var(--slate-300); font-weight: 500; }
+  /* cards */
+  .card {
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 16px;
+    padding: 24px; margin: 24px 0; box-shadow: 0 20px 40px rgba(0,0,0,.35);
+  }
+  .pill {
+    display: inline-block; margin-bottom: 12px;
+    background: #34d399; color: #022c22; border-radius: 9999px; padding: 2px 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .pill.hydrated { background: #fbbf24; color: #451a03; }
+  h2 { margin: 0 0 10px; font-size: 20px; font-weight: 600; }
+  h3 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+  p { font-size: 14px; line-height: 1.6; color: var(--slate-400); margin: 0 0 8px; }
+  code {
+    background: var(--ink); border-radius: 4px; padding: 2px 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px; color: #fbbf24;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+  th, td { padding: 6px 0; font-size: 14px; text-align: left; }
+  tbody th { font-weight: 400; color: var(--slate-500); text-align: right; padding-right: 16px; }
+  tbody td { color: var(--slate-200); font-family: ui-monospace, Menlo, monospace; }
+  tr { border-bottom: 1px solid rgba(51,65,85,.4); }
+  tr:last-child { border-bottom: none; }
+  thead tr { border-bottom: 1px solid var(--edge); }
+  thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--slate-500); font-weight: 500; }
+  td.key { font-family: ui-monospace, Menlo, monospace; color: #7dd3fc; padding-right: 16px; }
+  /* form */
+  label { display: block; font-size: 14px; color: var(--slate-400); margin: 8px 0 4px; }
+  input {
+    width: 100%; border-radius: 8px; border: 1px solid var(--edge); background: var(--ink);
+    padding: 8px 12px; color: var(--slate-200); font: inherit; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,189,248,.3); }
+  button {
+    margin-top: 16px; font: inherit; font-weight: 700; cursor: pointer;
+    border: none; border-radius: 8px; padding: 10px 20px;
+    background: var(--accent); color: var(--accent-ink);
+    transition: background .15s;
+  }
+  button:hover { background: var(--accent-hi); }
+  .foot { text-align: center; font-size: 12px; color: var(--slate-500); padding-bottom: 24px; }
+  .foot a { color: var(--accent); text-decoration: none; }
+  .foot a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav">
+    <a class="brand" href="/react"><span class="code">agent-httpd</span> &times; <span class="grad">React</span></a>
+    <a class="tab active" href="/react">Home</a>
+    <a class="tab" href="/react/about">About</a>
+    <a class="tab" href="/react/counter">Counter</a>
+    <a class="tab" href="/react/chat">Chat</a>
+  </nav>
+
+  <section class="hero">
+    <p class="kicker">Server-side React</p>
+    <h1>React Router &times; AgentHTTPD</h1>
+    <p>A client-routed React app, server-rendered by a C web server, then
+      <b>hydrated in the browser</b>.</p>
+  </section>
+
+  <section class="card">
+    <span id="mode-pill" class="pill">SSR</span>
+    <h2>Rendered on the server</h2>
+    <p>The full build produces this page with a React component tree executed
+      as a CGI program behind <code>agent-httpd</code> using
+      <code>react-dom/server</code> + <code>StaticRouter</code>, then hydrated
+      with <code>BrowserRouter</code>. <span id="method-note">GET</span>
+      parameters echoed below.</p>
+    <table>
+      <tbody>
+        <tr><th>Request method</th><td id="v-method">GET</td></tr>
+        <tr><th>Derived greeting</th><td id="v-greet">Hello, server-side visitor</td></tr>
+        <tr><th>Clock</th><td id="v-clock">&mdash;</td></tr>
+        <tr><th>Router</th><td>react-router v8 &middot; Browser / Static</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h3>Received GET parameters</h3>
+    <p id="params-empty">No parameters. Try <code>?name=Alice</code> or submit
+      the form below.</p>
+    <table id="params-table" style="display:none">
+      <thead><tr><th>Key</th><th>Value</th></tr></thead>
+      <tbody id="params-body"></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h3>Try it</h3>
+    <p>Type in the field and the greeting above updates live. Submitting sends
+      the form to the real CGI renderer (<code>/cgi-bin/react-ssr.cgi</code>),
+      which server-renders the same page with your values.</p>
+    <form method="get" action="/cgi-bin/react-ssr.cgi">
+      <label for="f-name">Name
+        <input id="f-name" type="text" name="name" placeholder="Alice">
+      </label>
+      <label for="f-msg">Message
+        <input id="f-msg" type="text" name="message" placeholder="Hello from React">
+      </label>
+      <button type="submit">Submit via GET</button>
+    </form>
+  </section>
+
+  <p class="foot">Static fallback page &middot; the full build renders this
+    route with <a href="/cgi-bin/react-ssr.cgi">react-ssr.cgi</a> &middot;
+    slim image: no resident SSR backend.</p>
+</div>
+<script>
+(function () {
+  // echo query params (the SSR version echoes GET/POST params server-side)
+  var qs = new URLSearchParams(location.search);
+  var body = document.getElementById('params-body');
+  var keys = [];
+  qs.forEach(function (v, k) { keys.push([k, v]); });
+  if (keys.length) {
+    keys.sort(function (a, b) { return a[0] < b[0] ? -1 : 1; });
+    keys.forEach(function (kv) {
+      var tr = document.createElement('tr');
+      var k = document.createElement('td'); k.className = 'key'; k.textContent = kv[0];
+      var v = document.createElement('td'); v.textContent = kv[1];
+      tr.appendChild(k); tr.appendChild(v); body.appendChild(tr);
+    });
+    document.getElementById('params-table').style.display = '';
+    document.getElementById('params-empty').style.display = 'none';
+  }
+  // live greeting (hydration stand-in)
+  var greet = 'Hello, ' + ((qs.get('name') || '').trim() || 'server-side visitor');
+  document.getElementById('v-greet').textContent = greet;
+  var name = document.getElementById('f-name');
+  name.addEventListener('input', function () {
+    document.getElementById('v-greet').textContent =
+      'Hello, ' + (name.value.trim() || 'server-side visitor');
+  });
+  // clock
+  document.getElementById('v-clock').textContent =
+    new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'medium' });
+})();
+</script>
+</body>
+</html>
