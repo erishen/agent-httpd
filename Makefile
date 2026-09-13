@@ -33,7 +33,7 @@ GC = $(if $(filter $(UNAME_S),Linux),$(GC_LINUX),$(GC_DARWIN))
 # including .c lives in.
 INCDIRS = -I src -I src/core -I src/http -I src/cgi -I src/security -I src/agent
 CFLAGS = -Wall -Wextra -Werror -O2 $(INCDIRS) $(CFLAGS_EXTRA)
-LDFLAGS = $(LDFLAGS_EXTRA)
+LDFLAGS = $(LDFLAGS_EXTRA) -pthread
 TARGET = bin/agent-httpd
 # Object/dependency files live in build/ so src/ holds sources only.
 BUILD_DIR = build
@@ -175,6 +175,10 @@ test-unit: all
 	./tests/t_vite
 	$(CC) -Wall -Wextra -O2 -pthread $(INCDIRS) tests/test_fcgi_stream.c src/cgi/fastcgi.c $(GC) -o tests/t_fcgi
 	./tests/t_fcgi
+	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_auth.c src/security/auth.c -o tests/t_auth
+	./tests/t_auth
+	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_minijson.c src/core/minijson.c -o tests/t_json
+	./tests/t_json
 
 # Keep-alive pipelining regression (fix D): start the real server in
 # fork-per-connection mode, pipeline two GETs on one connection, assert both

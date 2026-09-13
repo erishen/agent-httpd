@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <getopt.h>
 #include <sys/socket.h>
@@ -35,6 +36,22 @@ char g_react_sock[MAX_PATH_SIZE];
 
 char g_log_path[MAX_PATH_SIZE];
 static const char *log_path_arg = NULL; /* -L override, NULL = default */
+
+/* Re-run session pruning once a day. The startup pass alone is not enough:
+ * the server is designed to stay up for weeks (docker restart:
+ * unless-stopped), and old transcripts under .data/sessions would age
+ * unbounded. Runs in a detached master-process thread; forked workers
+ * never inherit it (fork copies only the calling thread), so it cannot
+ * race request handling. */
+#define SESSION_PRUNE_INTERVAL_SEC (24 * 60 * 60)
+static void *session_prune_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        sleep(SESSION_PRUNE_INTERVAL_SEC);
+        session_prune_old(30.0);
+    }
+    return NULL;
+}
 
 void print_usage(const char *program) {
     printf("Usage: %s [options]\n", program);
@@ -183,8 +200,13 @@ int main(int argc, char *argv[]) {
     /* Agent chat token semaphore likewise: created here so every worker /
      * forked handler inherits the pipe fds. */
     agent_init();
-    /* Startup hygiene: drop session transcripts older than 30 days. */
+    /* Startup hygiene: drop session transcripts older than 30 days, then
+     * keep doing it daily for the lifetime of the process. */
     session_prune_old(30.0);
+    pthread_t prune_tid;
+    if (pthread_create(&prune_tid, NULL, session_prune_thread, NULL) == 0) {
+        pthread_detach(prune_tid);
+    }
     /* Optional llm-router catalog sync: materializes the router's skills
      * under skills/router/ and its MCP spawns into
      * .data/mcp-servers-router.json, so skills_init/mcp_init below pick

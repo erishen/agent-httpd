@@ -52,7 +52,9 @@ void b64_decode(const char *in, char *out, size_t out_size) {
         initialized = 1;
     }
     size_t o = 0;
-    int acc = 0, bits = 0;
+    unsigned acc = 0; /* unsigned: shifting a signed int by 6 is UB once
+                       * accumulated bits exceed INT_MAX (UBSan catches it) */
+    int bits = 0;
     for (; *in && *in != '=' && o + 1 < out_size; in++) {
         int8_t v = T[(unsigned char)*in];
         if (v < 0) break;

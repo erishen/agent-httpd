@@ -28,6 +28,8 @@ cgi-bin/.!*
 tests/t_vite
 tests/t_fcgi
 tests/t_ka
+tests/t_auth
+tests/t_json
 
 # smoke-test scratch. The suite writes these into the docroot and removes them
 # again; a run cut short (or one whose deletes hit the sandbox's bulk-delete

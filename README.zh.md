@@ -161,6 +161,8 @@ docker compose logs -f httpd # 跟看日志
 | `react` | agent-httpd | 驻留 React SSR FastCGI 后端 (UNIX socket, 不暴露端口) |
 | `nginx` | nginx:1.27-alpine | 前置反代: `/` proxy_pass 到 httpd; `/react/` fastcgi_pass 直连 react |
 
+运行时镜像以非 root 账号 `agent` (uid 10001) 跑一切业务进程: 服务器本体、CGI/MCP 子进程与 React 后端。需要写的位置 (`/app` —— docroot + 会话存储、访问日志目录、FastCGI socket 目录、npx 缓存 HOME) 在构建期 chown, 其余保持 root 属主只读。compose 的 socket 卷已改名 `agent-sock`: 旧卷 `react-sock` 创建于 root 时代、属主是 root, 换新名让 docker 按新用户的属主重建卷 (旧卷可用 `docker volume rm` 清掉)。
+
 > 提示: 重建 httpd 容器后 nginx 可能仍缓存旧的 upstream IP (502), `docker compose restart nginx` 即可; 也可以先 `docker compose down` 再 `up`。
 
 同一个 SSR 页面有两条链路可对比:
@@ -195,7 +197,9 @@ make test   # 冒烟测试: 静态/HEAD/POST/穿越防护/重定向/目录列表
 make bench  # 吞吐对比: keep-alive vs 每请求一连接 (默认 5000 请求/16 并发,
             #   可用 BENCH_REQ/BENCH_CONC/PORT 覆盖; 服务器开了 -l 时
             #   429 会计入 429s 列而不是报错, 延迟分位数只统计 200)
-make test-unit      # 免服务端单测: dev 代理 header 构造 (ASan+UBSan) + FastCGI >64KB 流式中继
+make test-unit      # 免服务端单测: dev 代理 header 构造、Basic Auth (b64/凭据解析、
+                    #   hash-only htpasswd 策略)、minijson (sbuf/转义/容忍式读器)
+                    #   (均 ASan+UBSan) + FastCGI >64KB 流式中继
                     #   (起一个一次性 UNIX socket 后端)
 make test-keepalive # 单连接 Keep-Alive 流水线 (真起服务器, fork-per-connection 模式,
                     #   端口随机; 较慢, 依赖 loopback)

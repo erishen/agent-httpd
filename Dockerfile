@@ -57,13 +57,17 @@ FROM node:20-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 ruby php-cgi default-jre-headless curl \
     && rm -rf /var/lib/apt/lists/*
+# 非 root 运行 (最小权限): 服务器/CGI/MCP 子进程全部以该账号跑。
+# 演示功能需要写的位置: /app (docroot + .data 会话存储, fs MCP 的演示根
+# MCP_FS_ROOT=/app)、访问日志目录、FastCGI socket 目录、npx 缓存 (HOME)。
+RUN useradd --system --uid 10001 --create-home --home-dir /home/agent agent
 # MCP 依赖预热: agent 的 MCP 清单由 router 同步生成 (npx 启动配方, 版本钉在
 # src/core/router.c 的 k_known_mcps)。npx 冷启动要现场拉包, 国内网络很容易吃满
 # MCP init 预算导致全部握手失败。这里 ① registry 指向国内镜像; ② 把与配方
-# 完全相同的钉定版本预热进 npx 缓存 (HOME=/root, 运行时同 HOME 命中同一份)。
+# 完全相同的钉定版本预热进 npx 缓存 (HOME 与运行时用户一致, 运行时命中同一份)。
 # MCP server 起来后会在 stdio 上等服务请求, 用 timeout 掐掉, 只为留下缓存;
 # 预热失败不阻断构建 (运行时 npx 仍会自行下载, 只是慢)。
-ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com HOME=/home/agent
 RUN for p in server-filesystem server-memory server-sequential-thinking; do \
         timeout 60 npx -y "@modelcontextprotocol/$p@2026.8.31" --help >/dev/null 2>&1 || true; \
     done
@@ -101,11 +105,14 @@ COPY --from=cgi-build /build/cgi-bin/go.cgi /build/cgi-bin/rust.cgi \
 # 破坏仓库布局 (java/classes 会变成 cgi-langs/classes)
 COPY --from=cgi-build /build/cgi-langs cgi-langs/
 RUN chmod +x bin/agent-httpd bin/react-ssr-server cgi-bin/*.cgi \
-    && mkdir -p /var/log/agent-httpd /run/agent-httpd
+    && mkdir -p /var/log/agent-httpd /run/agent-httpd \
+    && chown -R agent:agent /app /var/log/agent-httpd /run/agent-httpd /home/agent
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod +x /usr/local/bin/docker-entrypoint
 
 ENV PORT=8080 WORKERS=8 RATE_LIMIT=0
 EXPOSE 8080
+# 非 root 账号跑业务进程 (8080 非特权端口, socket/日志/数据目录已 chown)
+USER agent
 # exec 进 agent-httpd 成为 PID 1: docker stop 的 SIGTERM 直达其优雅排水逻辑
 ENTRYPOINT ["docker-entrypoint"]
