@@ -44,7 +44,8 @@ void print_usage(const char *program) {
     printf("  -R <sock-path>  Relay /react/* requests to a resident FastCGI backend\n");
     printf("  -T <seconds>    Set request and CGI timeout (default: %d)\n", REQUEST_TIMEOUT_SECONDS_DEFAULT);
     printf("  -a <htpasswd>   Require Basic Auth against an htpasswd file\n");
-    printf("                  (plaintext or crypt(3) hashes; see README)\n");
+    printf("                  (strong crypt(3) hashes only: $5$/$6$/bcrypt;\n");
+    printf("                  weak forms need AGENTHTTPD_ALLOW_WEAK_AUTH=1)\n");
     printf("  -r <realm>      Basic Auth realm (default: %s)\n", DEFAULT_AUTH_REALM);
     printf("  -w <n>          Prefork worker pool mode with n workers\n");
     printf("                  (default: fork-per-connection)\n");
@@ -53,9 +54,10 @@ void print_usage(const char *program) {
     printf("  -L <path>       Access log file path (default: %s)\n", LOG_FILE);
     printf("  -n              Disable directory listings (dir without index\n");
     printf("                  file answers 404; default: enabled)\n");
-    printf("  -v <port>       Dev mode: proxy /@*, /src/* and /react/* SSR\n");
+    printf("  -v <port>       Dev ONLY: proxy /@*, /src/* and /react/* SSR\n");
     printf("                  pages to a Vite dev server on 127.0.0.1:<port>\n");
-    printf("                  (HMR WebSocket upgrades are tunnelled)\n");
+    printf("                  (HMR WebSocket upgrades are tunnelled; serves raw\n");
+    printf("                  dev sources - never expose this instance publicly)\n");
     printf("  -h              Show this help message\n");
 }
 
@@ -209,6 +211,14 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (g_vite_upstream_port > 0) {
+        fprintf(stderr,
+                "WARNING: dev Vite proxy is ENABLED (upstream 127.0.0.1:%d).\n"
+                "It serves raw development sources and framework internals.\n"
+                "This mode is for local development only - never expose this\n"
+                "instance to a public network while -v is active.\n",
+                g_vite_upstream_port);
+    }
     printf("AgentHTTPD server started on port %d\n", port);
     printf("Web root: %s\n", g_web_root_real);
     printf("CGI bin: %s\n", g_cgi_bin_real);

@@ -8,7 +8,10 @@
 #define MAX_RESPONSE_SIZE 65536
 #define MAX_PATH_SIZE 1024
 #define MAX_STREAMED_SIZE 65536
-#define SERVER_VERSION "AgentHTTPD/1.1"
+/* Product name only - no version. Used for the Server: header, error pages,
+ * directory-listing footers and CGI SERVER_SOFTWARE, so the fingerprint is
+ * consistent and reveals no release details (L1 hardening). */
+#define SERVER_VERSION "AgentHTTPD"
 #define DEFAULT_PORT 18080
 #define CGI_BODY_TMP_THRESHOLD_DEFAULT 524288
 #define CGI_TIMEOUT_SECONDS_DEFAULT 30
