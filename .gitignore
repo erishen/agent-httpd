@@ -45,3 +45,5 @@ www/js/fix-mid.bin
 
 # cloud deploy env (real one, may hold keys)
 deploy/.env.cloud
+# 含密钥的备份(如 gemini 端点尝试)
+deploy/.env.cloud.*
