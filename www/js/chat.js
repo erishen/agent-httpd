@@ -1,5 +1,27 @@
 (function () {
   "use strict";
+
+  // ---- visible error surface (never fail silently to a blank page) ---------
+  // If anything below throws at init or during a stream, print it into the
+  // transcript instead of leaving the user staring at an empty <div id="log">.
+  function showFatal(msg) {
+    var pre = document.createElement("pre");
+    pre.style.color = "#f87171";
+    pre.style.padding = "16px";
+    pre.style.whiteSpace = "pre-wrap";
+    pre.textContent = "⚠ 页面脚本出错（请把这段发给我）：\n" + msg;
+    var logEl = document.getElementById("log");
+    if (logEl) logEl.appendChild(pre);
+    else if (document.body) document.body.insertAdjacentElement("afterbegin", pre);
+  }
+  window.addEventListener("error", function (e) {
+    showFatal((e.message || "error") + (e.filename ? " @ " + e.filename + ":" + e.lineno : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    showFatal("unhandled promise rejection: " + (r && r.message ? r.message : String(r)));
+  });
+
   // ---- design mirrors of React Chat.tsx ------------------------------------
   var ACT_STYLES = {
     tool:   { tag: "TOOL",  cls: "c-tool"   },
