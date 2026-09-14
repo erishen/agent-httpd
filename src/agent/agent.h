@@ -41,6 +41,7 @@
 #define UP_ERR_NONE 0
 #define UP_ERR_LOCAL -1    /* pipe/fork/OOM inside agent_round (already emitted) */
 #define UP_ERR_TIMEOUT -2  /* LLM_TIMEOUT expired while reading the stream */
+#define UP_ERR_EMPTY -3    /* clean HTTP 200 but zero content and zero tool calls */
 /* up_err >= UP_ERR_HTTP_BASE carries the upstream HTTP status as
  * up_err - UP_ERR_HTTP_BASE (captured via curl -w). Separates a HARD 4xx
  * reject (waste of a retry) from a 5xx/429 gateway failure (transient —
@@ -76,6 +77,7 @@ typedef struct {
 typedef struct {
     RoundCall calls[AGENT_TOOL_CALLS_MAX];
     int n_calls;
+    int saw_content; /* round streamed at least one content delta */
 } RoundState;
 
 /* Create the token pipe; call once in the PARENT before any worker/child
