@@ -325,6 +325,14 @@ int llm_is_chat_route(const char *path, const char *method) {
     return strcmp(method, "POST") == 0;
 }
 
+int llm_is_pse_route(const char *path, const char *method) {
+    if (strncmp(path, "/react/api/pse", 15) != 0) return 0;
+    if (path[15] != '\0' && path[15] != '?') return 0;
+    /* Same CSRF guard as the chat route: a state-changing LLM call must be
+     * POST and same-origin (chat_origin_ok re-checks in the handler). */
+    return strcmp(method, "POST") == 0;
+}
+
 /* M4: CSRF / cross-origin guard. The chat endpoint triggers an LLM call and
  * may write session memory, so a cross-site browser request is abuse. A
  * same-origin browser request carries an Origin equal to this server's Host
@@ -420,7 +428,11 @@ int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
                 session_render_extra(&sess, &extra);
                 const char *extra_s = extra.p ? extra.p : "";
                 out.cap_on = cr->session_id[0] ? 1 : 0;
-                if (pse_enabled()) {
+                /* /react/api/pse always runs the PSE orchestrator; the plain
+                 * chat route runs PSE only when PSE_ENABLED=true, else the
+                 * single-agent ReAct loop. */
+                int is_pse_route = (strncmp(request->path, "/react/api/pse", 15) == 0);
+                if (is_pse_route || pse_enabled()) {
                     pse_run(&out, cr, extra_s);
                 } else {
                     agent_run(&out, cr, extra_s);
