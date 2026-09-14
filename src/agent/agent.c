@@ -567,11 +567,17 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
         if (timed_out) {
             if (up_err) *up_err = UP_ERR_TIMEOUT;
             rc = -1;
-        } else if (!done_seen && (code != 0 || http_status < 0)) {
+        } else if (!done_seen && (code != 0 || http_status < 0 ||
+                                  http_status >= 400)) {
             /* code != 0: curl reported a failure. http_status < 0: the -w
              * footer never arrived, so no HTTP status was ever produced —
              * the transport failed even if the exit status got lost above
-             * (curl 7 refused / 6 bad host). Both are round failures. */
+             * (curl 7 refused / 6 bad host). http_status >= 400: curl -f
+             * swallowed the error body, and the exit code can be lost to
+             * ECHILD (SIGCHLD is SIG_IGN process-wide) — without this arm
+             * a 429 degenerated into rc=0 with zero deltas and was
+             * mis-reported as an "empty HTTP 200 response". Both are round
+             * failures; the -w footer decides retry semantics. */
             if (up_err) {
                 /* curl -f maps every HTTP>=400 to exit 22; the -w footer
                  * carries the REAL status, which decides retry semantics. */
@@ -711,13 +717,29 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
              * back within seconds, so an instant retry always loses. Sleep in
              * 100ms steps so a client disconnect (out->ok == 0) aborts the
              * wait instead of stalling the worker for nothing. */
-            int backoff_ms = (attempt == 1) ? AGENT_BACKOFF_MS_1 : AGENT_BACKOFF_MS_2;
+            int backoff_ms;
+            if (up_err == UP_ERR_HTTP_BASE + 429) {
+                /* Rate limiting is a *window*, not a blip: the free tier
+                 * observed on agnes throttles a request that lands within
+                 * the same minute as the previous one, so the default
+                 * 1s/2.5s backoff burned all attempts inside the window
+                 * and 3 failures were guaranteed. Back off across it. */
+                backoff_ms = (attempt == 1) ? 15000 : 40000;
+            } else {
+                backoff_ms = (attempt == 1) ? AGENT_BACKOFF_MS_1 : AGENT_BACKOFF_MS_2;
+            }
             METRICS_INC(chat_upstream_retries_total);
             if (out->ok) {
                 char note[96];
-                snprintf(note, sizeof note,
-                         "upstream hiccup, retrying in %.1fs (attempt %d/%d)",
-                         backoff_ms / 1000.0, attempt + 1, AGENT_UPSTREAM_ATTEMPTS);
+                if (up_err == UP_ERR_HTTP_BASE + 429) {
+                    snprintf(note, sizeof note,
+                             "rate limited by upstream, retrying in %.0fs (attempt %d/%d)",
+                             backoff_ms / 1000.0, attempt + 1, AGENT_UPSTREAM_ATTEMPTS);
+                } else {
+                    snprintf(note, sizeof note,
+                             "upstream hiccup, retrying in %.1fs (attempt %d/%d)",
+                             backoff_ms / 1000.0, attempt + 1, AGENT_UPSTREAM_ATTEMPTS);
+                }
                 sse_event(out, "note", note);
             }
             for (int s = 0; s < backoff_ms && out->ok; s += 100) {
