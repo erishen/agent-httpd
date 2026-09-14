@@ -261,8 +261,19 @@ static void handle_upstream_line(ChatOut *out, char *line, RoundState *rs,
             return;
         }
     }
-    if (strncmp(line, "data:", 5) != 0) return;
-    const char *payload = jws(line + 5);
+    const char *payload = NULL;
+    if (strncmp(line, "data:", 5) == 0) {
+        payload = jws(line + 5);
+    } else {
+        /* Some gateways emit errors as a bare JSON line with no SSE
+         * "data:" prefix (observed on agnes rate limiting:
+         * {"error":{"message":"You've reached the API rate limit..."}}).
+         * Dropping the line silently turned the failure into an empty
+         * "done" with zero deltas — surface it through the same error
+         * path as data-framed errors. */
+        payload = strchr(line, '{');
+        if (payload == NULL || jfind_value(payload, "error") == NULL) return;
+    }
     if (strcmp(payload, "[DONE]") == 0) {
         *done_seen = 1;
         return;
