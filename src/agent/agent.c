@@ -547,6 +547,7 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
     free(line.p);
     close(out_pipe[0]);
     if (!eof) kill(pid, SIGKILL);
+    rs->saw_content = content_started;
     /* SIGCHLD is SIG_IGN process-wide (main.c), so the kernel reaps curl the
      * moment it exits and this waitpid() comes back ECHILD with `status`
      * untouched. A zeroed status reads as "exited 0", which turned a fast
@@ -609,6 +610,10 @@ void agent_emit_upstream_error(ChatOut *out, int up_err) {
         return;
     }
     switch (up_err) {
+    case UP_ERR_EMPTY:
+        snprintf(msg, sizeof msg,
+                 "upstream returned an empty response (HTTP 200, no content); retry in a moment");
+        break;
     case UP_ERR_TIMEOUT:
         snprintf(msg, sizeof msg, "upstream timeout");
         break;
@@ -638,6 +643,7 @@ void agent_emit_upstream_error(ChatOut *out, int up_err) {
  * failures were already surfaced inside agent_round. */
 static int agent_retryable(int up_err) {
     if (up_err == UP_ERR_TIMEOUT) return 1;
+    if (up_err == UP_ERR_EMPTY) return 1; /* gateway glitch; a retry re-asks */
     if (up_err >= UP_ERR_HTTP_BASE) {
         int st = up_err - UP_ERR_HTTP_BASE;
         return st == 429 || st >= 500;
@@ -686,6 +692,16 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
             rc = agent_round(out, &msgs,
                              gateway_mode ? NULL : tools_schema_json(),
                              NULL, capture, &rs, &finish, &up_err);
+            /* A gateway can answer HTTP 200 with a clean EOF and zero
+             * payload bytes (observed on agnes: empty SSE body, no error
+             * object). The round then "succeeds" while producing nothing —
+             * an answer made of silence that used to end as a bare done.
+             * Classify an empty round as a retryable upstream fault. */
+            if (rc == 0 && rs.n_calls == 0 && !rs.saw_content &&
+                finish == NULL) {
+                up_err = UP_ERR_EMPTY;
+                rc = -1;
+            }
             if (rc == 0 || !agent_retryable(up_err) ||
                 attempt == AGENT_UPSTREAM_ATTEMPTS)
                 break;
