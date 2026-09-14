@@ -295,9 +295,24 @@
     var node = appendAssistant();
     autoscroll();
     setBusy(true);
-    engineNote.textContent = "agent at work…";
     abortCtl = new AbortController();
     var finished = false, aborted = false, sawError = false;
+
+    /* Wait ticker: the upstream (agnes) is intermittently slow — the server
+     * holds the SSE open with heartbeat comments (invisible to the parser)
+     * and retries timeouts up to LLM_TIMEOUT×3, so a "stuck" bubble can be
+     * legitimate waiting. Surface elapsed time and silence so slow reads as
+     * slow, not dead. Notes/deltas mark activity; the ticker summarizes. */
+    var t0 = Date.now(), lastAct = Date.now(), lastNote = null;
+    var waitTimer = setInterval(function () {
+      var total = Math.round((Date.now() - t0) / 1000);
+      var quiet = Math.round((Date.now() - lastAct) / 1000);
+      var what = lastNote ? String(lastNote) : "等待上游首个回复";
+      if (what.length > 46) what = what.slice(0, 46) + "…";
+      engineNote.textContent = "agent at work… " + total + "s · " + what +
+        (quiet > 3 ? "（已 " + quiet + "s 无新内容；上游偶发较慢，可 Stop 中止）" : "");
+    }, 1000);
+    engineNote.textContent = "agent at work… 0s · 等待上游首个回复";
 
     fetch("/react/api/chat", {
       method: "POST",
@@ -323,10 +338,12 @@
             var ev;
             try { ev = JSON.parse(dataLine.slice(5).trim()); } catch (e) { continue; }
             if (ev.t === "delta" && typeof ev.d === "string") {
+              lastAct = Date.now(); lastNote = null;
               patchLast(function (m) { m.content += ev.d; });
               node.bubble.innerHTML = mdRender(messages[messages.length - 1].content) + '<span class="cursor">▍</span>';
               autoscroll();
             } else if (ev.t === "note" && typeof ev.d === "string") {
+              lastAct = Date.now(); lastNote = ev.d;
               engineNote.textContent = ev.d;
               var act = classifyNote(ev.d);
               patchLast(function (m) { m.acts.push(act); });
@@ -356,6 +373,7 @@
         });
       }
     }).then(function () {
+      clearInterval(waitTimer);
       if (!finished && !aborted && !sawError) {
         patchLast(function (m) {
           if (m.content) m.content += " ⚠ stream interrupted";
