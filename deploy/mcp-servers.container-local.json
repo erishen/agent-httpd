@@ -1,0 +1,5 @@
+[
+  {"id": "echo", "transport": "stdio", "command": "python3", "args": "/app/scripts/fake-mcp-server.py", "approval": false},
+  {"id": "portfolio-check", "transport": "stdio", "command": "node", "args": "/workspace/work/harness/resolve-skills/skills/weekly-investment/scripts/portfolio-check.mjs", "approval": false},
+  {"id": "pse-review", "transport": "stdio", "command": "node", "args": "/workspace/work/harness/resolve-skills/skills/weekly-investment/scripts/pse-review.mjs", "approval": false}
+]

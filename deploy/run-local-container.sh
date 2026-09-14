@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
-# Bring up the local agent-httpd container exactly as configured, including:
-#   - deploy/.env.local            (LLM_* -> local tsm-hub over host.docker.internal)
-#   - resolve-skills souls         (PSE role prompts, read-only)
-#   - scripts/mcp-tcp-client.py    (stdio->TCP MCP client used inside the container)
-#   - deploy/mcp-servers.local.json (echo + portfolio-check + pse-review MCP servers)
+# Bring up the local agent-httpd container with the weekly-investment MCP bridges
+# running INSIDE the container — no host-side relay, no launchd, nothing to keep
+# alive on the host:
 #
-# The two host relays must be up first (deploy/start-host-relays.sh, or the
-# launchd agents from deploy/install-relay-launchd.sh) or the MCP handshake for
-# portfolio-check / pse-review fails and those tools are not registered.
+#   deploy/.env.local                        LLM_* -> local tsm-hub
+#   resolve-skills souls                     PSE role prompts (read-only)
+#   deploy/mcp-servers.container-local.json  echo + portfolio-check + pse-review
+#   scripts/tcp-forward.py + LLM_FORWARD_PORTS
+#                                            container-side forwards so the
+#                                            bridge's hard-coded 127.0.0.1:9070
+#                                            reaches the host gateway
+#   asset-lens / autogen-pse (bind mounts)   the Python projects the bridges drive
+#   named volumes                            Linux .venv + uv package cache kept
+#                                            out of the macOS tree and reused
+#                                            across container rebuilds
+#
+# Both bridges drive their project with `uv run`, and asset-lens uses
+# `uv run --no-sync`, so each project needs a one-off `uv sync` first — run
+# deploy/init-mcp-venvs.sh after the container is up.
 #
 # Run ON THE HOST.
 set -euo pipefail
@@ -19,20 +29,48 @@ WORKSPACE="$(cd "$REPO/../../.." && pwd)"   # .../individular-invest
 IMAGE="${AGENT_HTTPD_IMAGE:-agent-httpd:local-arm64}"
 NAME="${AGENT_HTTPD_NAME:-agent-httpd-local}"
 PORT="${AGENT_HTTPD_PORT:-12080}"
-SOULS="$WORKSPACE/work/harness/resolve-skills/souls"
+AGENT_UID=10001
+WS=/workspace
 
-# Make sure the host relays are listening (starts them if not).
-bash "$HERE/start-host-relays.sh" || true
+SOULS="$WORKSPACE/work/harness/resolve-skills/souls"
+SKILLS="$WORKSPACE/work/harness/resolve-skills/skills/weekly-investment/scripts"
+ASSET_LENS="$WORKSPACE/invest-kit/apps/asset-lens"
+AUTOGEN_PSE="$WORKSPACE/frameworks/autogen-pse"
+STUDIO_SANDBOX="$WORKSPACE/work/harness/resolve-studio/sandbox"
+
+VOL_VENV_ASSET=agent-httpd-venv-asset-lens
+VOL_VENV_PSE=agent-httpd-venv-autogen-pse
+VOL_UV_CACHE=agent-httpd-uv-cache
+
+# Named volumes default to root:root, but the container runs as uid 10001 — give
+# the venv/cache volumes an owner once, otherwise `uv sync` cannot write them.
+for v in "$VOL_VENV_ASSET" "$VOL_VENV_PSE" "$VOL_UV_CACHE"; do
+  docker volume create "$v" >/dev/null
+  docker run --rm -u 0:0 -v "$v":/v --entrypoint sh "$IMAGE" \
+    -c "chown -R $AGENT_UID:$AGENT_UID /v" >/dev/null
+done
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "${PORT}:8080" \
   --env-file "$HERE/.env.local" \
+  -e ASSET_LENS_DIR="$WS/invest-kit/apps/asset-lens" \
+  -e AUTOGEN_PSE_DIR="$WS/frameworks/autogen-pse" \
+  -e RESOLVE_STUDIO_DIR="$WS/work/harness/resolve-studio" \
+  -e LLM_FORWARD_PORTS="9070 11434" \
   -v "$SOULS":/app/souls:ro \
-  -v "$REPO/scripts/mcp-tcp-client.py":/app/scripts/mcp-tcp-client.py:ro \
-  -v "$HERE/mcp-servers.local.json":/app/.data/mcp-servers.json:ro \
+  -v "$SKILLS":"$WS"/work/harness/resolve-skills/skills/weekly-investment/scripts:ro \
+  -v "$ASSET_LENS":"$WS"/invest-kit/apps/asset-lens \
+  -v "$AUTOGEN_PSE":"$WS"/frameworks/autogen-pse \
+  -v "$VOL_VENV_ASSET":"$WS"/invest-kit/apps/asset-lens/.venv \
+  -v "$VOL_VENV_PSE":"$WS"/frameworks/autogen-pse/.venv \
+  -v "$VOL_UV_CACHE":/home/agent/.cache/uv \
+  -v "$STUDIO_SANDBOX":"$WS"/work/harness/resolve-studio/sandbox \
+  -v "$HERE/mcp-servers.container-local.json":/app/.data/mcp-servers.json:ro \
+  -v "$REPO/scripts/tcp-forward.py":/app/scripts/tcp-forward.py:ro \
   --restart unless-stopped "$IMAGE" >/dev/null
 
 echo "started $NAME on http://localhost:$PORT/react/chat"
+echo "next: bash $HERE/init-mcp-venvs.sh   (one-off uv sync for both bridges)"
 sleep 3
 echo "--- MCP registration ---"
 docker logs "$NAME" 2>&1 | grep -E "\[mcp\] (tool|.*resident|.*handshake)" | tail -8 || true

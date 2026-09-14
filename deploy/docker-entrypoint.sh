@@ -53,5 +53,22 @@ if [ "${LOG_ROTATE_SECONDS:-86400}" != "0" ]; then
 ) &
 fi
 
+# LLM 网关本地转发侧车:
+# weekly-investment 的 pse-review 桥从 autogen-pse/.env 读
+# ROUTER_BASE_URL=http://127.0.0.1:9070/v1 (宿主上的 tsm-hub / llm-router 网关),
+# 这个值由桥自行解析, 无法用环境变量覆盖。容器内 127.0.0.1 指向容器自身,
+# 桥就永远连不上网关 → 起转发把容器内 127.0.0.1:<port> 引到宿主同端口。
+# LLM_FORWARD_PORTS 为空格分隔的端口列表 (如 "9070 11434", 后者给 ollama)。
+# 侧车随容器生命周期存活, 且 fork 于 exec 之前 (同上面的日志轮转),
+# **不需要任何宿主侧的常驻进程**。未设则不转发。
+for _p in ${LLM_FORWARD_PORTS:-}; do
+(
+    exec python3 /app/scripts/tcp-forward.py \
+        --listen-port "$_p" \
+        --target-host "${LLM_FORWARD_TARGET_HOST:-host.docker.internal}" \
+        --target-port "$_p"
+) &
+done
+
 echo "[httpd] exec bin/agent-httpd $ARGS (docroot: /app/www)"
 exec bin/agent-httpd $ARGS
