@@ -410,8 +410,16 @@ int event_loop(int server_fd, int fcgi_fd) {
 
     ev_register(server_fd);
     if (fcgi_fd >= 0) ev_register(fcgi_fd);
-    int token_fd = pool_token_fd();
-    if (token_fd >= 0) ev_register(token_fd);
+    /* The pool's token pipe must NOT be registered here, tempting as the
+     * "wake me when a worker frees up" semantics are: it is a counting
+     * semaphore pre-filled with one token per worker, so on an idle pool it
+     * is *permanently* readable, and readiness is level-triggered — the
+     * loop would spin at 100% CPU draining nothing (the handler only
+     * consumes tokens when a slow connection is actually dispatched).
+     * Slow-queue draining needs no notification anyway: go_slow() drains
+     * synchronously when parking, and the loop top drains every iteration,
+     * so dispatch latency after a token appears is bounded by the 100ms
+     * epoll/kevent timeout below — imperceptible for CGI/SSE workloads. */
 
     while (g_server_running) {
         drain_slow_queue();
@@ -468,8 +476,6 @@ int event_loop(int server_fd, int fcgi_fd) {
                 accept_http(server_fd);
             } else if (fcgi_fd >= 0 && fd == fcgi_fd) {
                 accept_fcgi(server_fd, fcgi_fd);
-            } else if (token_fd >= 0 && fd == token_fd) {
-                drain_slow_queue();
             } else {
                 Conn *c = conn_by_fd(fd);
                 if (c && c->state == S_READ_HEADER) conn_readable(c);
