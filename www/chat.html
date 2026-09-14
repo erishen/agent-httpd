@@ -43,6 +43,15 @@
     border-radius: 9999px; padding: 2px 12px;
     font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
   }
+  /* mode segmented control (Agent / PSE) */
+  .seg { display: inline-flex; border: 1px solid var(--edge); border-radius: 9999px; overflow: hidden; }
+  .seg-btn {
+    border: 0; background: transparent; color: var(--slate-400); cursor: pointer;
+    padding: 3px 12px; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .04em; transition: background .15s, color .15s;
+  }
+  .seg-btn.active { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  .seg-btn:not(.active):hover { color: var(--accent); }
   #engine-note { font-size: 12px; color: var(--slate-500); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .bar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px; }
   #session-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--slate-500); }
@@ -160,6 +169,10 @@
   <section class="card">
     <div class="bar">
       <span class="pill">SSE stream</span>
+      <span class="seg" id="mode-seg">
+        <button type="button" class="seg-btn active" data-mode="agent" title="Single-agent ReAct loop">Agent</button>
+        <button type="button" class="seg-btn" data-mode="pse" title="PSE orchestrator: Planner → Specialist → Evaluator">PSE</button>
+      </span>
       <span id="engine-note">POST /react/api/chat → text/event-stream</span>
       <span class="bar-right">
         <span id="session-id" title=""></span>
@@ -182,11 +195,13 @@
       <button class="stop-btn" id="stop" style="display:none">Stop</button>
     </div>
     <footer>
-      The stream rides the agent stack: <span class="k c-tool">tool</span> ·
-      <span class="k c-mcp">mcp</span> · <span class="k c-skill">skill</span> ·
-      <span class="k c-memory">memory</span> · <span class="k c-pse">pse</span>
-      steps arrive as <code>note</code> events and render as chips; this page stays in sync with
-      <code>src/agent.c</code> and <code>src/pse.c</code>. <a href="/react">Home</a>
+      Toggle <strong>Agent</strong> (single ReAct loop) vs <strong>PSE</strong> (Planner →
+      Specialist → Evaluator) above; the PSE route runs <code>/react/api/pse</code> and renders each
+      role as a <span class="k c-pse">pse</span> chip. Steps arrive as <code>note</code> events:
+      <span class="k c-tool">tool</span> · <span class="k c-mcp">mcp</span> ·
+      <span class="k c-skill">skill</span> · <span class="k c-memory">memory</span> ·
+      <span class="k c-pse">pse</span>. In sync with <code>src/agent.c</code> and
+      <code>src/pse.c</code>. <a href="/react">Home</a>
     </footer>
   </section>
 </div>

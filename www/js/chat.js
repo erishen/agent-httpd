@@ -167,6 +167,10 @@
   var legend = document.getElementById("legend");
   var engineNote = document.getElementById("engine-note");
   var sessionIdEl = document.getElementById("session-id");
+  var modeSeg = document.getElementById("mode-seg");
+  var mode = "agent";   // "agent" = single ReAct loop, "pse" = PSE orchestrator
+  function endpointFor(m) { return m === "pse" ? "/react/api/pse" : "/react/api/chat"; }
+  function noteFor(m) { return "POST " + endpointFor(m) + " → text/event-stream"; }
   var abortCtl = null;
   var stick = true;
   sessionIdEl.textContent = "session: " + sessionId.slice(0, 8);
@@ -207,7 +211,10 @@
         var b = el("button", "chip " + ACT_STYLES[e.kind].cls);
         b.type = "button"; b.title = e.prompt;
         b.appendChild(el("span", "label", e.label));
-        b.addEventListener("click", function () { input.value = e.prompt; input.focus(); syncSend(); });
+        b.addEventListener("click", function () {
+          if (e.kind === "pse") setMode("pse");
+          input.value = e.prompt; input.focus(); syncSend();
+        });
         row.appendChild(b);
       });
       box.appendChild(row);
@@ -269,7 +276,10 @@
             var b = el("button", "chip " + ACT_STYLES[sug.kind].cls);
             b.type = "button"; b.title = sug.prompt;
             b.appendChild(el("span", "label", sug.label));
-            b.addEventListener("click", function () { input.value = sug.prompt; input.focus(); syncSend(); });
+            b.addEventListener("click", function () {
+              if (sug.kind === "pse") setMode("pse");
+              input.value = sug.prompt; input.focus(); syncSend();
+            });
             fu.appendChild(b);
           })(pool[k]);
         }
@@ -336,7 +346,7 @@
     }, 1000);
     engineNote.textContent = "agent at work… 0s · 等待上游首个回复";
 
-    fetch("/react/api/chat", {
+    fetch(endpointFor(mode), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text, history: history, sessionId: sessionId }),
@@ -404,7 +414,7 @@
       }
       patchLast(function (m) { m.pending = false; });
       finishAssistant(node);
-      engineNote.textContent = "POST /react/api/chat → text/event-stream";
+      engineNote.textContent = noteFor(mode);
       setBusy(false);
       abortCtl = null;
       autoscroll();
@@ -421,8 +431,26 @@
     messages = [];
     log.innerHTML = "";
     refreshChrome();
-    engineNote.textContent = "POST /react/api/chat → text/event-stream";
+    engineNote.textContent = noteFor(mode);
   });
+
+  function setMode(m) {
+    if (m !== "agent" && m !== "pse") return;
+    mode = m;
+    if (modeSeg) {
+      Array.prototype.forEach.call(modeSeg.querySelectorAll(".seg-btn"), function (b) {
+        b.classList.toggle("active", b.getAttribute("data-mode") === m);
+      });
+    }
+    engineNote.textContent = noteFor(mode);
+  }
+
+  if (modeSeg) {
+    modeSeg.addEventListener("click", function (e) {
+      var btn = e.target.closest(".seg-btn");
+      if (btn) setMode(btn.getAttribute("data-mode"));
+    });
+  }
 
   sendBtn.addEventListener("click", send);
   stopBtn.addEventListener("click", function () { if (abortCtl) abortCtl.abort(); });

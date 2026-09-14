@@ -636,7 +636,9 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
             proxy_to_vite(client_fd, buffer, (size_t)header_end_len, &request);
             return;
         }
-        if (llm_is_chat_route(request.path, request.method)) {
+        if (llm_is_pse_route(request.path, request.method)) {
+            llm_handle_chat(&request, &response, client_fd);
+        } else if (llm_is_chat_route(request.path, request.method)) {
             llm_handle_chat(&request, &response, client_fd);
         } else if (strncmp(request.path, "/react", 6) == 0 &&
             (request.path[6] == '\0' || request.path[6] == '/')) {

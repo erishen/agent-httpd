@@ -20,6 +20,11 @@ int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
  * POST or GET. Checked in handle_client before the /react FastCGI relay. */
 int llm_is_chat_route(const char *path, const char *method);
 
+/* Route predicate: /react/api/pse (exactly, optional query string) with
+ * POST only. Mirrors llm_is_chat_route but dispatches to the PSE
+ * (Planner/Specialist/Evaluator) orchestrator regardless of PSE_ENABLED. */
+int llm_is_pse_route(const char *path, const char *method);
+
 /* Load LLM_* / AGENT_* from .env into the environment (once; existing env
  * wins). Normally lazy on first chat request; startup consumers like the
  * llm-router sync call it explicitly. */
