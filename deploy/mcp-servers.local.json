@@ -1,0 +1,5 @@
+[
+  {"id": "echo", "transport": "stdio", "command": "python3", "args": "/app/scripts/fake-mcp-server.py", "approval": false},
+  {"id": "portfolio-check", "transport": "stdio", "command": "python3", "args": "/app/scripts/mcp-tcp-client.py host.docker.internal 45001", "approval": false},
+  {"id": "pse-review", "transport": "stdio", "command": "python3", "args": "/app/scripts/mcp-tcp-client.py host.docker.internal 45002", "approval": false}
+]
