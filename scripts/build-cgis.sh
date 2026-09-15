@@ -13,7 +13,10 @@ mkdir -p cgi-bin
 build_go() {
     if command -v go >/dev/null 2>&1; then
         echo "go: building cgi-bin/go.cgi"
-        (cd cgi-langs/go && go build -o ../../cgi-bin/go.cgi main.go)
+        # -trimpath: cgi-bin/go.cgi is a tracked artifact, so the build machine's
+        # absolute paths must not end up in it (they would publish the author's
+        # $HOME layout). Same reason for the rust remap below.
+        (cd cgi-langs/go && go build -trimpath -buildvcs=false -o ../../cgi-bin/go.cgi main.go)
     else
         echo "go: skipped (not installed)"
     fi
@@ -22,7 +25,14 @@ build_go() {
 build_rust() {
     if command -v rustc >/dev/null 2>&1; then
         echo "rust: building cgi-bin/rust.cgi"
-        rustc --edition 2021 -O cgi-langs/rust/main.rs -o cgi-bin/rust.cgi
+        # cgi-bin/rust.cgi is a tracked artifact. rustc embeds the toolchain's
+        # std source paths (panic locations) and the linker records the rlib
+        # archive path, so the shipped binary would otherwise carry the author's
+        # $HOME. Remap the prefix and drop the linked-in debug info.
+        rustc --edition 2021 -O \
+            --remap-path-prefix="$HOME=~" \
+            -C strip=debuginfo \
+            cgi-langs/rust/main.rs -o cgi-bin/rust.cgi
     else
         echo "rust: skipped (not installed)"
     fi

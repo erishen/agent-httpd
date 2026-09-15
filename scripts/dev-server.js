@@ -303,7 +303,7 @@ function spawnEnv() {
   // Last-resort fallback for a manually unpacked uv (nothing named `uv` on
   // PATH): probe the conventional ~/Software/uv-<triple> location by name
   // instead of hard-coding one machine's absolute path — a committed
-  // /Users/<name>/... would leak the developer's account and break for
+  // $HOME/<account>/... would leak the developer's account and break for
   // everyone else. UV_DIR above is the supported override.
   if (!uvDir) {
     const softwareDir = path.join(os.homedir(), "Software");
