@@ -231,7 +231,7 @@ void log_request(const char *client_ip, const HttpRequest *request, int status_c
 int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
                     const char *remote_addr, int client_fd, int *body_bytes);
 
-/* Dev-proxy (-v) header construction, extracted to src/vite.c for unit tests.
+/* Dev-proxy (-v) header construction, extracted to src/cgi/vite.c for unit tests.
  * line_has_embedded_crlf is also used by proxy_to_vite for request-line checks. */
 int line_has_embedded_crlf(const char *line, size_t ll);
 size_t vite_build_headers(char *buf, size_t bufsz, const char *raw,

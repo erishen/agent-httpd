@@ -7,7 +7,7 @@
 // and the two engines behind it (LLM upstream when LLM_API_KEY is set,
 // local paced simulation otherwise).
 //
-// Agent stack: the C backend (src/agent.c, src/pse.c) drives tools, MCP,
+// Agent stack: the C backend (src/agent/agent.c, src/agent/pse.c) drives tools, MCP,
 // skills and session memory — it reports every non-text step as a "note"
 // event (e.g. 'tool calc(...)', 'PSE cycle 1/3 - Planner', 'round 2/8').
 // This page classifies each note into an activity chip and lays them out
@@ -21,7 +21,7 @@ import Markdown from "../lib/md";
 type Activity = { kind: ActKind; label: string };
 
 // Kinds map 1:1 to the note strings the backends emit — keep in sync with
-// src/agent.c / src/pse.c / server/chat.ts.
+// src/agent/agent.c / src/agent/pse.c / server/chat.ts.
 type ActKind = "tool" | "mcp" | "skill" | "memory" | "pse" | "round" | "info";
 
 type ActStyle = {
@@ -101,7 +101,7 @@ const EXAMPLES: { kind: ActKind; label: string; prompt: string }[] = [
   { kind: "mcp", label: "分步推理论证", prompt: "借助 think MCP 的 sequentialthinking 工具，一步步推理一下 llm-router 的 skill 同步设计有什么优点和隐患。" },
   // — skill — local, router & project skills
   { kind: "skill", label: "跑 demo-lab", prompt: "运行 demo-lab 技能，看看它演示了哪些能力。" },
-  { kind: "skill", label: "代码评审", prompt: "用 code-review 技能对 src/router.c 做一次代码评审，指出可能的问题。" },
+  { kind: "skill", label: "代码评审", prompt: "用 code-review 技能对 src/core/router.c 做一次代码评审，指出可能的问题。" },
   { kind: "skill", label: "周度投资诊断", prompt: "运行 weekly-investment 技能，生成本周的持仓诊断与配置建议摘要。" },
   { kind: "skill", label: "生成项目 README", prompt: "用 generate-readme 技能，根据 src/ 目录的结构为 agent-httpd 生成一份简洁的 README 草稿。" },
   { kind: "skill", label: "安全扫描", prompt: "运行 security-scan 技能，扫描 src/ 目录下的常见安全隐患并给出整改建议。" },
@@ -560,8 +560,8 @@ function Chat() {
         <span className="text-violet-400">mcp</span> · <span className="text-emerald-400">skill</span> ·{" "}
         <span className="text-amber-300">memory</span> · <span className="text-fuchsia-400">pse</span>{" "}
         steps arrive as <code className="text-slate-300">note</code> events and render as chips; this page stays
-        in sync with <code className="text-sky-300">src/agent.c</code> and{" "}
-        <code className="text-sky-300">src/pse.c</code>. The demo engine (no{" "}
+        in sync with <code className="text-sky-300">src/agent/agent.c</code> and{" "}
+        <code className="text-sky-300">src/agent/pse.c</code>. The demo engine (no{" "}
         <code className="text-amber-300">LLM_API_KEY</code>) only emits the "demo engine" note — set the key to
         see real tool/MCP/skill/PSE traces. <Link to="/react" className="text-accent hover:underline">Home</Link>
       </p>

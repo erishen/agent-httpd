@@ -4,10 +4,10 @@
  * ({message, history?}), the offline demo engine and the LLM_*
  * .env
  * configuration (see also AGENT_* tuning in agent.h). The heavy lifting lives in sibling modules:
- *   - src/agent.c  ReAct loop + tool_calls streaming + fork-curl upstream
- *   - src/tools.c  built-in tool registry
- *   - src/chatio.c SSE transport primitives
- *   - src/minijson.c  sbuf + tolerant JSON reader
+ *   - src/agent/agent.c  ReAct loop + tool_calls streaming + fork-curl upstream
+ *   - src/agent/tools.c  built-in tool registry
+ *   - src/http/chatio.c SSE transport primitives
+ *   - src/core/minijson.c  sbuf + tolerant JSON reader
  * mirroring the old react-ssr/server/chat.ts contract (which remains the
  * make-dev/HMR implementation):
  *
@@ -203,7 +203,7 @@ static void canned_reply(const char *message, char *buf, size_t bufsz) {
             "agent-httpd is a ~3,000-line teaching HTTP server in C: keep-alive, a prefork worker "
             "pool with SCM_RIGHTS fd passing, FastCGI client+server, ETag/304, sendfile with "
             "Range/206, per-IP rate limiting and graceful drain. This chat page now rides the "
-            "server's native SSE handler in src/llm.c — the model call is forked curl, the "
+            "server's native SSE handler in src/agent/llm.c — the model call is forked curl, the "
             "envelope is written by C.");
         return;
     }

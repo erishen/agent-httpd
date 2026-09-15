@@ -167,7 +167,7 @@ async function streamFromLlm(message: string, history: ChatMessage[], sink: Chat
 /* ---- engine 2: local simulation (no credentials needed) ---------------- */
 
 /* Illustrative agent-stack notes for the offline demo: the real capabilities
- * live in the C backend (src/agent.c, src/pse.c), whose channel for
+ * live in the C backend (src/agent/agent.c, src/agent/pse.c), whose channel for
  * non-text steps is the same "note" event. Here we emit matching note
  * strings for capability keywords so the page renders its activity chips
  * (TOOL / MCP / SKILL / MEM / PSE) without needing an upstream. Keep the

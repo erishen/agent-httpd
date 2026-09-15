@@ -3,7 +3,7 @@
  * dev-mode Vite proxy target (is_vite_proxy_route), whether its header block
  * is a WebSocket upgrade (is_websocket_upgrade), and how a non-streaming
  * request maps to static file / CGI / health / metrics (process_request).
- * The keep-alive connection loop that drives these lives in src/http.c. */
+ * The keep-alive connection loop that drives these lives in src/http/http.c. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,7 +88,7 @@ int process_request(HttpRequest *request, HttpResponse *response, int client_fd)
     }
 
     /* Operations endpoint: Prometheus text format snapshot of the shared
-     * counter table (see src/metrics.c). Same gate position as /health —
+     * counter table (see src/core/metrics.c). Same gate position as /health —
      * behind rate-limit/auth, ride-alive on the fast path. */
     if (strncmp(request->path, "/metrics", 8) == 0 &&
         (request->path[8] == '\0' || request->path[8] == '?')) {

@@ -2,7 +2,7 @@
  * Every setter is the project-wide set_str, so over-long header values are
  * truncated-and-NUL-terminated rather than left unterminated. This module is
  * header-only for the request side — response serialization lives in
- * src/http_resp.c, the keep-alive connection loop in src/http.c. */
+ * src/http/http_resp.c, the keep-alive connection loop in src/http/http.c. */
 
 #include <stdio.h>
 #include <stdlib.h>

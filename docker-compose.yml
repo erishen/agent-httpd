@@ -53,7 +53,7 @@ services:
       LLM_API_URL: *container_llm_api_url
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # C 聊天端点 (/react/api/chat, src/llm.c) 在 httpd 进程内调 LLM 上游,
+    # C 聊天端点 (/react/api/chat, src/agent/llm.c) 在 httpd 进程内调 LLM 上游,
     # LLM_* 配置同样从项目根 .env 注入 (文件不存在也能启动, 回落演示引擎);
     # 上面的 LLM_API_URL 覆盖只改地址, KEY / MODEL 仍走 .env
     env_file:

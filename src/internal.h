@@ -54,7 +54,7 @@ void signal_handler(int sig);
  * and the worker exits after releasing its slot. */
 extern volatile sig_atomic_t g_shutdown_requested;
 
-/* Master event loop (src/event.c): serves fast requests in-process and
+/* Master event loop (src/core/event.c): serves fast requests in-process and
  * hands slow ones to the prefork pool. Runs until g_server_running is
  * cleared. Returns 0 on clean exit. */
 /* IPv4 and IPv6 listeners; pass -1 for the one that could not be created. */
