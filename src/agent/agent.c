@@ -291,6 +291,9 @@ static void handle_upstream_line(ChatOut *out, char *line, RoundState *rs,
         if (em && jread_string(&em, msg, sizeof msg) == NULL) {
             strcpy(msg, "upstream sent an error event");
         }
+        /* Remember it: the round ends with no content and no tool calls, so
+         * without this marker it would look like an empty (retryable) round. */
+        rs->saw_error = 1;
         sse_event(out, "error", msg);
         return;
     }
@@ -595,7 +598,11 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
 /* User-facing message for a failed round; the caller reports it once all
  * retry attempts are exhausted (or immediately for the hard classes). */
 void agent_emit_upstream_error(ChatOut *out, int up_err) {
-    if (up_err == UP_ERR_LOCAL || up_err == UP_ERR_NONE || !out->ok) return;
+    /* UP_ERR_UPSTREAM was already emitted inline by handle_upstream_line the
+     * moment the error object was parsed - emitting again would duplicate
+     * the message the client has already been told. */
+    if (up_err == UP_ERR_LOCAL || up_err == UP_ERR_NONE ||
+        up_err == UP_ERR_UPSTREAM || !out->ok) return;
     char msg[192];
     if (up_err >= UP_ERR_HTTP_BASE) {
         int st = up_err - UP_ERR_HTTP_BASE;
@@ -705,7 +712,12 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
              * Classify an empty round as a retryable upstream fault. */
             if (rc == 0 && rs.n_calls == 0 && !rs.saw_content &&
                 finish == NULL) {
-                up_err = UP_ERR_EMPTY;
+                /* A round carrying a JSON error object is NOT empty: the
+                 * upstream gave a definite answer (quota exhausted, bad
+                 * request...). handle_upstream_line already emitted it, so
+                 * mark it final - retrying would replay the same rejection
+                 * and show three identical errors on the wire. */
+                up_err = rs.saw_error ? UP_ERR_UPSTREAM : UP_ERR_EMPTY;
                 rc = -1;
             }
             if (rc == 0 || !agent_retryable(up_err) ||

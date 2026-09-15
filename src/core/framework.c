@@ -441,22 +441,14 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
             int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
             if (client_fd < 0) {
                 if (errno != EINTR) perror("accept");
-            } else if (workers > 0) {
-                /* pool mode: block until a worker frees up (read 1 token),
-                 * then hand the fd over; parent closes its copy after send */
-                char tok = 0;
-                if (pool_claim_slot(&tok)) {
-                    if (pool_dispatch_fd(client_fd) < 0) {
-                        perror("fd dispatch");
-                        pool_return_token(tok); /* slot back */
-                        close(client_fd);
-                    } else {
-                        close(client_fd);
-                    }
-                } else {
-                    close(client_fd); /* shutting down mid-dispatch */
-                }
             } else {
+                /* workers > 0 never reaches this loop: pool_mode dispatches
+                 * through event_loop() above, which owns the slow-path queue
+                 * and hands fds to the prefork pool. This select() loop only
+                 * serves the fork-per-connection model. (Do not reinstate a
+                 * pool branch here: token_r is O_NONBLOCK, so the blocking
+                 * pool_claim_slot() contract would have to be honoured via
+                 * poll() — see worker.c.) */
                 fflush(stdout); /* don't clone the parent's buffered banner */
                 pid_t pid = fork();
                 if (pid == 0) {

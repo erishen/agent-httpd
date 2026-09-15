@@ -258,19 +258,19 @@ check "dir redirect with query string" "301" "$q_redir"
 
 # CGI emitting >512KB (over the tmp-threshold) must arrive complete via the
 # streaming temp-file path, byte-for-byte.
-bigcgi="$PWD/cgi-bin/.big-test.cgi"
+bigcgi="$PWD/cgi-bin/zz-big-test.cgi"
 printf '#!/bin/bash\necho "Content-Type: text/plain"\necho ""\nhead -c 600000 /dev/zero | tr "\\0" "x"\n' > "$bigcgi"
 chmod +x "$bigcgi"
-big_size=$(curl -s "$BASE/cgi-bin/.big-test.cgi" | wc -c | tr -d ' ')
+big_size=$(curl -s "$BASE/cgi-bin/zz-big-test.cgi" | wc -c | tr -d ' ')
 check "CGI output 600000 streamed complete" "600000" "$big_size"
 
 # Slow CGI: handler must kill it and answer 504 instead of hanging forever
 # (CGI timeout is pre-set to 3s via CGI_TIMEOUT_SECONDS above).
-slowcgi="$PWD/cgi-bin/.slow-test.cgi"
+slowcgi="$PWD/cgi-bin/zz-slow-test.cgi"
 printf '#!/bin/bash\necho "Content-Type: text/plain"\necho ""\necho tick\nsleep 30\n' > "$slowcgi"
 chmod +x "$slowcgi"
 slow_start=$(date +%s)
-slow_status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$BASE/cgi-bin/.slow-test.cgi")
+slow_status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$BASE/cgi-bin/zz-slow-test.cgi")
 slow_elapsed=$(( $(date +%s) - slow_start ))
 check "slow CGI killed with 504" "504" "$slow_status"
 slow_fast=0
@@ -279,10 +279,10 @@ check "slow CGI did not hang (took ${slow_elapsed}s)" "1" "$slow_fast"
 
 # Large CGI output (~700KB, under the tmp threshold) must not be truncated
 # at the old 64KB buffer ceiling.
-midcgi="$PWD/cgi-bin/.mid-test.cgi"
+midcgi="$PWD/cgi-bin/zz-mid-test.cgi"
 printf '#!/bin/bash\necho "Content-Type: text/plain"\necho ""\nhead -c 700000 /dev/zero | tr "\\0" "y"\n' > "$midcgi"
 chmod +x "$midcgi"
-mid_size=$(curl -s "$BASE/cgi-bin/.mid-test.cgi" | wc -c | tr -d ' ')
+mid_size=$(curl -s "$BASE/cgi-bin/zz-mid-test.cgi" | wc -c | tr -d ' ')
 check "CGI output 700000 complete (no 64KB truncation)" "700000" "$mid_size"
 
 # form.cgi must escape HTML metacharacters in user input (XSS guard).
@@ -295,36 +295,36 @@ check "form.cgi shows escaped script tag" "1" "$xss_esc"
 
 # CGI redirect via Location header (RFC 3875): 302 + Location passthrough,
 # and the script's body is still forwarded.
-redircgi="$PWD/cgi-bin/.redir-test.cgi"
+redircgi="$PWD/cgi-bin/zz-redir-test.cgi"
 printf '#!/bin/bash\necho "Location: /test/"\necho "Content-Type: text/plain"\necho ""\necho moved\n' > "$redircgi"
 chmod +x "$redircgi"
-redir_code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/cgi-bin/.redir-test.cgi")
+redir_code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/cgi-bin/zz-redir-test.cgi")
 check "CGI Location -> 302" "302" "$redir_code"
-redir_loc=$(curl -s -o /dev/null -w "%{redirect_url}" "$BASE/cgi-bin/.redir-test.cgi")
+redir_loc=$(curl -s -o /dev/null -w "%{redirect_url}" "$BASE/cgi-bin/zz-redir-test.cgi")
 check "CGI Location header value" "$BASE/test/" "$redir_loc"
-redir_body=$(curl -s "$BASE/cgi-bin/.redir-test.cgi" | grep -c "moved")
+redir_body=$(curl -s "$BASE/cgi-bin/zz-redir-test.cgi" | grep -c "moved")
 check "CGI redirect still carries body" "1" "$redir_body"
 
 # CGI Status header overrides the response status line (RFC 3875).
-statuscgi="$PWD/cgi-bin/.status-test.cgi"
+statuscgi="$PWD/cgi-bin/zz-status-test.cgi"
 printf '#!/bin/bash\necho "Status: 418 I am a teapot"\necho "Content-Type: text/plain"\necho ""\necho short and stout\n' > "$statuscgi"
 chmod +x "$statuscgi"
-teapot=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/cgi-bin/.status-test.cgi")
+teapot=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/cgi-bin/zz-status-test.cgi")
 check "CGI Status header honoured (418)" "418" "$teapot"
-teapot_body=$(curl -s "$BASE/cgi-bin/.status-test.cgi" | grep -c "short and stout")
+teapot_body=$(curl -s "$BASE/cgi-bin/zz-status-test.cgi" | grep -c "short and stout")
 check "CGI Status response has body" "1" "$teapot_body"
 
 # Cache policy on the CGI path (src/cgi/cgi.c). Script output is produced per
 # request, so silence must not mean "cache me heuristically": the default is
 # no-store, while a script that states its own directive keeps it - the
 # default is a fallback, never an override.
-chkcgi="$PWD/cgi-bin/.cachectl-test.cgi"
+chkcgi="$PWD/cgi-bin/zz-cachectl-test.cgi"
 printf '#!/bin/bash\necho "Content-Type: text/plain"\necho "Cache-Control: max-age=60"\necho ""\necho script policy\n' > "$chkcgi"
 chmod +x "$chkcgi"
 check "CGI default cache policy is no-store" "1" \
     "$(curl -s -D - -o /dev/null "$BASE/cgi-bin/hello.cgi" | grep -ci '^cache-control: no-store')"
 check "CGI explicit Cache-Control is honoured, not overridden" "1" \
-    "$(curl -s -D - -o /dev/null "$BASE/cgi-bin/.cachectl-test.cgi" | grep -ci '^cache-control: max-age=60')"
+    "$(curl -s -D - -o /dev/null "$BASE/cgi-bin/zz-cachectl-test.cgi" | grep -ci '^cache-control: max-age=60')"
 rm -f "$chkcgi"
 
 # Clear-Site-Data is opt-in: without PURGE_CLIENT_CACHE nothing may ask a
@@ -427,12 +427,17 @@ lang_get_marker() {
 # Basic Auth (-a htpasswd): dedicated instance on a separate port. Entries:
 # alice:password123 (plaintext), bob:cd29FLxV1BmJQ (DES crypt hash of
 # "s3cret-pw", portable across macOS/Linux).
+# AGENTHTTPD_ALLOW_WEAK_AUTH=1 is required here: auth.c hard-rejects plaintext
+# and DES/MD5 entries by default, and macOS crypt(3) cannot produce the strong
+# $6$ (SHA-512) form the default policy wants — the container/CI path covers
+# the strong-hash case separately. Without the escape hatch every entry is
+# skipped, load_htpasswd() returns -1 and the instance never starts.
 AUTH_PORT=3110
 AUTH_BASE="http://localhost:$AUTH_PORT"
 HTPASSWD="/tmp/agent-httpd-htpasswd-test"
 printf 'alice:password123\nbob:cd29FLxV1BmJQ\n' > "$HTPASSWD"
 sleep 0.4
-"$SERVER" -p "$AUTH_PORT" -a "$HTPASSWD" -r "AuthTest" > /tmp/agent-httpd-auth.log 2>&1 &
+AGENTHTTPD_ALLOW_WEAK_AUTH=1 "$SERVER" -p "$AUTH_PORT" -a "$HTPASSWD" -r "AuthTest" > /tmp/agent-httpd-auth.log 2>&1 &
 AUTH_PID=$!
 auth_ready=0
 i=0

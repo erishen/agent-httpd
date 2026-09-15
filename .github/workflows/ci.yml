@@ -1,0 +1,64 @@
+# Build + test gate for agent-httpd.
+#
+# Two jobs, both required:
+#
+#   linux-build  — pays for the "works on my Mac" trap. Apple clang stays
+#                  silent on -Wstringop-truncation / -Wformat-truncation /
+#                  -Wuse-after-free, and only glibc puts -lm / -lcrypt
+#                  outside libc. The Dockerfile's `c-build` stage is the
+#                  canonical Linux/GCC build, so this reuses it.
+#                  (`make test-linux` needs Docker, which ubuntu runners have.)
+#
+#   macos-unit   — the compile gate under -Wall -Wextra -Werror plus the
+#                  standalone suites that need no live server: ASan/UBSan
+#                  unit tests and the keep-alive pipelining regression.
+#
+# NOT wired up here on purpose: `make test` (scripts/smoke-test.sh). It
+# spawns a real server over HTTP/CGI/FastCGI and exercises the multi-language
+# CGI zoo (cgi-bin/*.cgi), so it needs go/ruby/rust/java/php + python3 on the
+# host. Run it locally before pushing; CI covers the parts that are portable.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-build:
+    name: Linux / GCC build (Dockerfile c-build stage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: docker version --format 'server {{.Server.Version}}'
+
+      - name: make test-linux
+        run: make test-linux
+
+  macos-unit:
+    name: macOS / clang build + unit tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          cc --version | head -1
+          make --version | head -1
+
+      - name: make all (-Wall -Wextra -Werror)
+        run: make all
+
+      - name: make test-unit (ASan + UBSan)
+        run: make test-unit
+
+      - name: make test-keepalive (pipelining regression)
+        run: make test-keepalive
