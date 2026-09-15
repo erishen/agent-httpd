@@ -93,7 +93,10 @@ const EXAMPLES: { kind: ActKind; label: string; prompt: string }[] = [
   { kind: "tool", label: "算抽签概率", prompt: "一年 365 天里随机抽 3 天且彼此都不重复，这个概率是多少？请用计算工具帮我算一下。" },
   // — mcp — external servers wired through the router catalog
   { kind: "mcp", label: "回声工具", prompt: "调用 echo MCP 服务的 pong 工具，给我回一句 hello。" },
-  { kind: "mcp", label: "列项目目录", prompt: "通过 fs MCP 的 list_directory 工具，列出项目根目录 /home/user/projects 下的文件和子目录。" },
+  // NOTE: keep this path generic. The fs MCP root is whatever MCP_FS_ROOT
+  // points at, so a machine-specific absolute path here would both mislead
+  // readers and bake a local username into the shipped bundle.
+  { kind: "mcp", label: "列项目目录", prompt: "通过 fs MCP 的 list_directory 工具，列出网站根目录（docroot）下的文件和子目录。" },
   { kind: "mcp", label: "存一条事实", prompt: "用 memory MCP 把『agent-httpd 是一个用 C 写的小型教学用 HTTP 服务器』这条事实写入知识库。" },
   { kind: "mcp", label: "分步推理论证", prompt: "借助 think MCP 的 sequentialthinking 工具，一步步推理一下 llm-router 的 skill 同步设计有什么优点和隐患。" },
   // — skill — local, router & project skills
@@ -104,7 +107,7 @@ const EXAMPLES: { kind: ActKind; label: string; prompt: string }[] = [
   { kind: "skill", label: "安全扫描", prompt: "运行 security-scan 技能，扫描 src/ 目录下的常见安全隐患并给出整改建议。" },
   // — memory — session-scoped facts
   { kind: "memory", label: "记偏好再回忆", prompt: "先记住『我最喜欢的颜色是蓝色』，然后马上问我喜欢什么颜色，验证它真的记住了。" },
-  { kind: "memory", label: "记住我的名字", prompt: "请记住我的名字叫 erishen，之后再问我一次我叫什么，确认你真的记得。" },
+  { kind: "memory", label: "记住我的名字", prompt: "请记住我的名字叫 Alice，之后再问我一次我叫什么，确认你真的记得。" },
   { kind: "memory", label: "忘掉一条事实", prompt: "如果记忆里有关于『最喜欢的颜色』的记录，请把它忘掉，并告诉我你还剩下哪些记忆。" },
   // — pse — planner / specialist / evaluator orchestration
   { kind: "pse", label: "规划再执行", prompt: "用 PSE 编排器先规划、再执行一个小任务：把 /tmp 目录下所有 .log 文件按大小列出来。" },

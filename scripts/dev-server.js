@@ -25,6 +25,7 @@ const VITE_PORT = PORT + 2; // internal Vite service, 127.0.0.1 only
 
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const http = require("http");
 const { createRequire } = require("module");
 const { spawn, spawnSync } = require("child_process");
@@ -291,8 +292,25 @@ function spawnEnv() {
       uvDir = path.dirname(found.stdout.trim().split("\n").pop());
     }
   }
-  if (!uvDir && fs.existsSync("/home/user/software/uv-aarch64-apple-darwin")) {
-    uvDir = "/home/user/software/uv-aarch64-apple-darwin";
+  // Last-resort fallback for a manually unpacked uv (nothing named `uv` on
+  // PATH): probe the conventional ~/Software/uv-<triple> location by name
+  // instead of hard-coding one machine's absolute path — a committed
+  // /Users/<name>/... would leak the developer's account and break for
+  // everyone else. UV_DIR above is the supported override.
+  if (!uvDir) {
+    const softwareDir = path.join(os.homedir(), "Software");
+    try {
+      const hit = fs
+        .readdirSync(softwareDir)
+        .filter((n) => /^uv[-.]/.test(n))
+        .sort()
+        .pop();
+      if (hit && fs.existsSync(path.join(softwareDir, hit, "uv"))) {
+        uvDir = path.join(softwareDir, hit);
+      }
+    } catch {
+      /* no ~/Software — nothing to probe */
+    }
   }
   if (uvDir) spawnEnv.PATH = (process.env.PATH ? process.env.PATH + ":" : "") + uvDir;
   const envPath = path.join(ROOT_DIR, ".env");

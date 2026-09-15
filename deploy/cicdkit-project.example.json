@@ -1,0 +1,29 @@
+{
+  "name": "agent-httpd",
+  "description": "agent-httpd 单容器上云（ssh 免仓库直传）：本地交叉构建 linux/amd64 镜像 -> docker save -> scp -> 远端 docker load -> docker run -p 8080:8080 --restart unless-stopped。ssh 连接信息（CICD_SSH_HOST/USER/PORT/KEY_PATH）一律放 cicdkit 的 .env；探针地址由 CICD_SSH_HOST + 8080 自动推导（GET /health）。切换阿里云/腾讯云只需改 .env 里的 CICD_SSH_HOST。用法：复制本文件为 deploy/cicdkit-project.json（已被 .gitignore），把 <ABSOLUTE_PATH_TO_THIS_REPO> 换成仓库的绝对路径 —— cicdkit 要求服务器可访问的绝对路径，相对路径会被当成别处的目录而静默构建错上下文。",
+  "repository": "",
+  "branch": "main",
+  "build": {
+    "context": "<ABSOLUTE_PATH_TO_THIS_REPO>",
+    "dockerfile": "<ABSOLUTE_PATH_TO_THIS_REPO>/Dockerfile",
+    "image_repo": "agent-httpd",
+    "tag_strategy": "timestamp",
+    "push": false,
+    "registry": { "server": "", "username": "", "password": "" },
+    "build_args": {},
+    "platforms": ["linux/amd64"]
+  },
+  "deploy": {
+    "method": "ssh",
+    "ssh_container": "agent-httpd",
+    "ssh_run_args": "-p 8080:8080 --restart unless-stopped",
+    "ssh_transfer": true,
+    "ssh_probe_port": 8080
+  },
+  "probe": {
+    "enabled": true,
+    "method": "GET",
+    "expected_status": 200,
+    "timeout": "5s"
+  }
+}
