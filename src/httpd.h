@@ -3,6 +3,7 @@
 
 #include <sys/types.h> /* off_t */
 #include <netinet/in.h> /* struct sockaddr_in in shared prototypes */
+#include <sys/socket.h> /* socklen_t + struct sockaddr */
 
 #define MAX_REQUEST_SIZE 65536
 #define MAX_RESPONSE_SIZE 65536
@@ -147,20 +148,25 @@ int check_basic_auth(const char *header_value);
  * g_rate_limit_rps == 0 disables. rate_limit_init() must run once in the
  * PARENT before workers are forked; rate_limit_allow(ip) is process-safe.
  *
- * The limiter key is a 32-bit IPv4 address in NETWORK byte order (the same
- * value as struct sockaddr_in.sin_addr.s_addr), so a direct connection and an
- * X-Forwarded-For hop compare identically.
+ * The limiter key is a 32-bit value: the IPv4 address in NETWORK byte order
+ * (struct sockaddr_in.sin_addr.s_addr) for v4 peers, or a stable FNV-1a hash
+ * of the 128-bit address for IPv6 peers, so a direct connection and an
+ * X-Forwarded-For hop compare identically and IPv6 clients land in consistent
+ * buckets instead of all in bucket 0.
  *
  * Behind a trusted reverse proxy the real client IP lives in the
- * X-Forwarded-For header. rate_limit_client_ip() resolves it only when the
+ * X-Forwarded-For header. rate_limit_key_from_peer() resolves it only when the
  * direct peer is in the trusted set configured via
- * rate_limit_set_trusted_proxies(); otherwise it falls back to the peer IP.
- * This keeps a spoofed X-Forwarded-For from an untrusted source powerless. */
+ * rate_limit_set_trusted_proxies(); otherwise it falls back to the peer key.
+ * This keeps a spoofed X-Forwarded-For from an untrusted source powerless.
+ * The trusted-proxy list is IPv4-only: an IPv6 peer is never treated as a
+ * trusted proxy, so X-Forwarded-For arriving over v6 is always ignored. */
 extern int g_rate_limit_rps;
 void rate_limit_init(void);
-/* Configure the trusted-proxy CIDR/IP list (comma-separated, e.g.
+/* Configure the trusted-proxy CIDR/IP list (comma-separated IPv4, e.g.
  * "127.0.0.1,10.0.0.0/8,172.16.0.0/12"). Call once before fork. Empty/unset
- * means "trust nobody" -> X-Forwarded-For is never used. */
+ * means "trust nobody" -> X-Forwarded-For is never used. IPv4 only: entries
+ * are parsed with inet_aton, so an IPv6 proxy address matches nothing. */
 void rate_limit_set_trusted_proxies(const char *csv);
 /* True when peer_ip (network order) sits inside a trusted proxy subnet. */
 int rate_limit_is_trusted(unsigned int peer_ip);
@@ -169,7 +175,8 @@ int rate_limit_is_trusted(unsigned int peer_ip);
 unsigned int rate_limit_parse_xff(const char *xff);
 /* Resolve the IP to limit on: X-Forwarded-For's first hop when the peer is
  * trusted, else the peer itself. Always network order. */
-unsigned int rate_limit_client_ip(const HttpRequest *req, unsigned int peer_ip);
+unsigned int rate_limit_key_from_peer(const struct sockaddr *sa, socklen_t len,
+                                      const HttpRequest *req);
 int rate_limit_allow(unsigned int ip);
 
 /* Shared request pipeline: method check + CGI/static dispatch.
@@ -199,7 +206,8 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
 
 /* Serve one accepted client connection to completion (keep-alive loop).
  * Closes client_fd before returning. */
-void handle_client(int client_fd, struct sockaddr_in *client_addr);
+void handle_client(int client_fd, const struct sockaddr *client_addr,
+                   socklen_t client_addr_len);
 
 void set_error_response(HttpResponse *response, int status_code, const char *status_text);
 

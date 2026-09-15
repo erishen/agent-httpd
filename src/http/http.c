@@ -97,6 +97,58 @@ int create_server_socket(int port) {
     return server_fd;
 }
 
+/* IPv6 twin of create_server_socket(). Bound to :: with IPV6_V6ONLY so it
+ * accepts only IPv6 (the v4 listener owns IPv4); the explicit v6only avoids
+ * the platform-dependent dual-stack default where :: also swallows v4 and the
+ * v4 bind then fails with EADDRINUSE. Returns -1 when the host has no IPv6
+ * stack so the caller can keep serving IPv4 only. */
+int create_server_socket6(int port) {
+    int server_fd;
+    struct sockaddr_in6 server_addr;
+    int opt = 1;
+
+    server_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("socket6");
+        return -1;
+    }
+
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt6");
+        close(server_fd);
+        return -1;
+    }
+#ifdef __linux__
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt6(SO_REUSEPORT)");
+    }
+#endif
+    if (setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt6(IPV6_V6ONLY)");
+        close(server_fd);
+        return -1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin6_family = AF_INET6;
+    server_addr.sin6_addr = in6addr_any;
+    server_addr.sin6_port = htons(port);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("bind6");
+        close(server_fd);
+        return -1;
+    }
+
+    if (listen(server_fd, 128) < 0) {
+        perror("listen6");
+        close(server_fd);
+        return -1;
+    }
+
+    return server_fd;
+}
+
 /* Dev mode: forward one request to the internal Vite server (g_vite_upstream
  * _port) and stream its response back to the client. Used for client module
  * transforms and dev SSR pages — everything the C server cannot render
@@ -238,10 +290,12 @@ static void ws_tunnel(int client_fd, const char *raw, size_t hdr_len) {
     close(client_fd);
 }
 
-void handle_client(int client_fd, struct sockaddr_in *client_addr) {
+void handle_client(int client_fd, const struct sockaddr *client_addr,
+                   socklen_t client_addr_len) {
     char buffer[MAX_REQUEST_SIZE];
     char response_buffer[MAX_RESPONSE_SIZE];
-    const char *client_ip = client_addr ? inet_ntoa(client_addr->sin_addr) : "-";
+    char client_ip[INET6_ADDRSTRLEN];
+    sockaddr_to_str(client_addr, client_ip, sizeof(client_ip));
     int req_to = get_request_timeout();
 
     /* Every handle_client invocation is by definition off the fast path
@@ -361,8 +415,8 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         /* headers arrived, but the overall request window is already spent */
         set_error_response(&response, 408, "Request Timeout");
     } else if (g_rate_limit_rps > 0 &&
-               !rate_limit_allow(rate_limit_client_ip(&request,
-                   client_addr ? client_addr->sin_addr.s_addr : 0))) {
+               !rate_limit_allow(rate_limit_key_from_peer(client_addr,
+                   client_addr_len, &request))) {
         /* Checked before auth on purpose: a flood must not reach dispatch or
          * burn crypt() CPU. 429 + Retry-After, then close (queued requests
          * from the same abuser would otherwise smuggle past the counter). */
@@ -656,7 +710,7 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         } else if (strncmp(request.path, "/react", 6) == 0 &&
             (request.path[6] == '\0' || request.path[6] == '/')) {
             if (g_react_sock[0]) {
-                const char *ip = client_addr ? inet_ntoa(client_addr->sin_addr) : "-";
+                const char *ip = client_ip;
                 int fcgi_body_bytes = 0;
                 int status = forward_to_fcgi(g_react_sock, &request, ip, client_fd,
                                              &fcgi_body_bytes);

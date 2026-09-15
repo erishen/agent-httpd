@@ -6,9 +6,12 @@
  * no longer clobber each other's accounting (the old "steal-the-bucket"
  * behaviour let a later arrival wipe the previous occupant's counter).
  *
- * The bucket key is a 32-bit IPv4 address in NETWORK byte order, matching
- * struct sockaddr_in.sin_addr.s_addr, so a direct peer and an
- * X-Forwarded-For hop hash identically.
+ * The bucket key is a 32-bit value. For IPv4 it is the address in NETWORK
+ * byte order, matching struct sockaddr_in.sin_addr.s_addr, so a direct peer
+ * and an X-Forwarded-For hop compare identically. For IPv6 it is a stable
+ * FNV-1a hash of the 128-bit address, so each client maps to one consistent
+ * bucket instead of every v6 client collapsing into bucket 0.
+ * rate_limit_key_from_peer() derives this key from a generic sockaddr.
  *
  * When the direct peer is a TRUSTED proxy (configured via
  * rate_limit_set_trusted_proxies from RATE_LIMIT_TRUSTED_PROXIES), the first
@@ -138,12 +141,36 @@ unsigned int rate_limit_parse_xff(const char *xff) {
     return a.s_addr; /* network order, matches the bucket key */
 }
 
-unsigned int rate_limit_client_ip(const HttpRequest *req, unsigned int peer_ip) {
-    if (req && req->x_forwarded_for[0] && rate_limit_is_trusted(peer_ip)) {
+/* Derive the 32-bit bucket key for a peer address: the IPv4 address as-is, or
+ * an FNV-1a hash of the 128-bit IPv6 address. When the peer is a TRUSTED proxy
+ * (rate_limit_is_trusted) supplying X-Forwarded-For, the first hop replaces the
+ * key (IPv4 only today: trusted proxies sit in front of IPv4 clients). Returns
+ * 0 for an unknown/absent family. */
+static unsigned int sockaddr_key(const struct sockaddr *sa, socklen_t len) {
+    (void)len;
+    if (!sa) return 0;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        return sin->sin_addr.s_addr;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        const unsigned char *b = sin6->sin6_addr.s6_addr;
+        unsigned int h = 0x811c9dc5u; /* FNV-1a 32-bit offset basis */
+        for (int i = 0; i < 16; i++) { h ^= b[i]; h *= 0x01000193u; }
+        return h ? h : 1u; /* never return 0: 0 means "no key" to callers */
+    }
+    return 0;
+}
+
+unsigned int rate_limit_key_from_peer(const struct sockaddr *sa, socklen_t len,
+                                      const HttpRequest *req) {
+    unsigned int peer = sockaddr_key(sa, len);
+    if (peer && req && req->x_forwarded_for[0] && rate_limit_is_trusted(peer)) {
         unsigned int x = rate_limit_parse_xff(req->x_forwarded_for);
         if (x) return x;
     }
-    return peer_ip;
+    return peer;
 }
 
 void rate_limit_init(void) {

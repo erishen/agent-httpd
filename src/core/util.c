@@ -5,8 +5,31 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "internal.h"
+
+/* Format a peer sockaddr (IPv4 or IPv6) into a printable string, writing at
+ * most n bytes into buf. Used for CGI REMOTE_ADDR, the access-log client_ip,
+ * and the per-connection ip_str in the master event loop. Returns buf. */
+const char *sockaddr_to_str(const struct sockaddr *sa, char *buf, size_t n) {
+    if (!buf || n == 0) return buf;
+    /* "-" (the Apache CLF placeholder) for an absent/unknown peer keeps the
+     * access log and CGI REMOTE_ADDR well-formed. */
+    if (!sa) { snprintf(buf, n, "-"); return buf; }
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        inet_ntop(AF_INET, &sin->sin_addr, buf, n);
+    } else if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        inet_ntop(AF_INET6, &sin6->sin6_addr, buf, n);
+    } else {
+        snprintf(buf, n, "-");
+    }
+    return buf;
+}
 
 /* Guard rails, overridable via environment for tests (see httpd.h).
  * main() applies -T and the env overrides; the getters below fall back

@@ -258,6 +258,35 @@ static void *session_prune_thread(void *arg) {
     return NULL;
 }
 
+/* Fork-per-connection: accept one connection on `listen_fd` and hand it to a
+ * fresh child. The child closes both listeners (and the FastCGI listener) so
+ * they are not inherited into the per-connection process, then serves the
+ * connection to completion. `listen_fd` is server_fd (IPv4) or server_fd6. */
+static void accept_fork_handler(int listen_fd, int server_fd, int server_fd6,
+                                int fcgi_fd) {
+    struct sockaddr_storage client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
+    if (client_fd < 0) {
+        if (errno != EINTR) perror("accept");
+        return;
+    }
+    fflush(stdout); /* don't clone the parent's buffered banner */
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(server_fd);
+        if (server_fd6 >= 0) close(server_fd6);
+        if (fcgi_fd >= 0) close(fcgi_fd);
+        handle_client(client_fd, (const struct sockaddr *)&client_addr, client_len);
+        exit(0);
+    } else if (pid > 0) {
+        close(client_fd);
+    } else {
+        perror("fork");
+        close(client_fd);
+    }
+}
+
 int agenthttpd_run(const agenthttpd_config *cfg) {
     agenthttpd_config c;
     memset(&c, 0, sizeof(c));
@@ -355,11 +384,17 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
         if (g_log_fp) fclose(g_log_fp);
         return 1;
     }
+    /* IPv6 is best-effort: a host without a usable v6 stack just serves v4. */
+    int server_fd6 = create_server_socket6(c.port);
+    if (server_fd6 < 0) {
+        fprintf(stderr, "IPv6 listener unavailable: serving IPv4 only\n");
+    }
     int fcgi_fd = -1;
     if (c.fcgi_socket) {
         fcgi_fd = create_fastcgi_listener(c.fcgi_socket);
         if (fcgi_fd < 0) {
             close(server_fd);
+            if (server_fd6 >= 0) close(server_fd6);
             if (g_log_fp) fclose(g_log_fp);
             return 1;
         }
@@ -374,6 +409,8 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
                 g_vite_upstream_port);
     }
     printf("AgentHTTPD server started on port %d\n", c.port);
+    printf("Listening: IPv4 0.0.0.0:%d%s\n", c.port,
+           server_fd6 >= 0 ? " + IPv6 [::]" : " (IPv6 unavailable)");
     printf("Web root: %s\n", g_web_root_real);
     printf("CGI bin: %s\n", g_cgi_bin_real);
     printf("Log file: %s\n", g_log_path);
@@ -396,7 +433,7 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     if (pool_mode) {
         /* Fast requests are served in the master's event loop; CGI / chat /
          * /react-relay / body-carrying requests go to the worker pool. */
-        event_loop(server_fd, fcgi_fd);
+        event_loop(server_fd, server_fd6, fcgi_fd);
     } else {
     while (g_server_running) {
         struct timeval tv;
@@ -430,6 +467,10 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
 
         FD_ZERO(&rfds);
         FD_SET(server_fd, &rfds);
+        if (server_fd6 >= 0) {
+            FD_SET(server_fd6, &rfds);
+            if (server_fd6 >= nfds) nfds = server_fd6 + 1;
+        }
         if (fcgi_fd >= 0) {
             FD_SET(fcgi_fd, &rfds);
             if (fcgi_fd >= nfds) nfds = fcgi_fd + 1;
@@ -442,34 +483,17 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
             perror("select");
             continue;
         }
+        /* workers > 0 never reaches this loop: pool_mode dispatches through
+         * event_loop() above, which owns the slow-path queue and hands fds to
+         * the prefork pool. This select() loop only serves the
+         * fork-per-connection model. (Do not reinstate a pool branch here:
+         * token_r is O_NONBLOCK, so the blocking pool_claim_slot() contract
+         * would have to be honoured via poll() — see worker.c.) */
         if (FD_ISSET(server_fd, &rfds)) {
-            struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
-            if (client_fd < 0) {
-                if (errno != EINTR) perror("accept");
-            } else {
-                /* workers > 0 never reaches this loop: pool_mode dispatches
-                 * through event_loop() above, which owns the slow-path queue
-                 * and hands fds to the prefork pool. This select() loop only
-                 * serves the fork-per-connection model. (Do not reinstate a
-                 * pool branch here: token_r is O_NONBLOCK, so the blocking
-                 * pool_claim_slot() contract would have to be honoured via
-                 * poll() — see worker.c.) */
-                fflush(stdout); /* don't clone the parent's buffered banner */
-                pid_t pid = fork();
-                if (pid == 0) {
-                    close(server_fd);
-                    if (fcgi_fd >= 0) close(fcgi_fd);
-                    handle_client(client_fd, &client_addr);
-                    exit(0);
-                } else if (pid > 0) {
-                    close(client_fd);
-                } else {
-                    perror("fork");
-                    close(client_fd);
-                }
-            }
+            accept_fork_handler(server_fd, server_fd, server_fd6, fcgi_fd);
+        }
+        if (server_fd6 >= 0 && FD_ISSET(server_fd6, &rfds)) {
+            accept_fork_handler(server_fd6, server_fd, server_fd6, fcgi_fd);
         }
         if (fcgi_fd >= 0 && FD_ISSET(fcgi_fd, &rfds)) {
             struct sockaddr_un client_sa;
@@ -484,6 +508,7 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
             if (pid == 0) {
                 close(fcgi_fd);
                 close(server_fd);
+                if (server_fd6 >= 0) close(server_fd6);
                 fastcgi_handle_connection(client_fd);
                 exit(0);
             } else if (pid > 0) {
@@ -499,6 +524,7 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     printf("\nShutting down server...\n");
     pool_shutdown();
     close(server_fd);
+    if (server_fd6 >= 0) close(server_fd6);
     if (fcgi_fd >= 0) {
         close(fcgi_fd);
         if (c.fcgi_socket) unlink(c.fcgi_socket);

@@ -119,13 +119,13 @@ static void worker_loop(int dispatch_sock, int my_token_w) {
             _exit(0);
         }
 
-        struct sockaddr_in peer;
+        struct sockaddr_storage peer;
         socklen_t plen = sizeof(peer);
-        struct sockaddr_in *paddr = NULL;
+        const struct sockaddr *paddr = NULL;
         if (getpeername(fd, (struct sockaddr *)&peer, &plen) == 0) {
-            paddr = &peer;
+            paddr = (const struct sockaddr *)&peer;
         }
-        handle_client(fd, paddr); /* closes fd; returns after close */
+        handle_client(fd, paddr, plen); /* closes fd; returns after close */
 
         /* release the slot back to the pool */
         char tok = 1;
