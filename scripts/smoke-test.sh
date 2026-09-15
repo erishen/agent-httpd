@@ -41,6 +41,11 @@ restore_mcp() {
     if [ -f "$MCP_BAK" ]; then
         mv "$MCP_BAK" .data/mcp-servers.json
     fi
+    # Transient CGI fixtures written further down (zz-{big,slow,mid,redir,
+    # status,cachectl}-test.cgi) must not survive the run: they are ordinary
+    # files now, so anything left behind shows up in `git status` after every
+    # `make test`. Glob rather than list them, so a new fixture is covered.
+    rm -f cgi-bin/zz-*-test.cgi
 }
 trap restore_mcp EXIT INT TERM
 
@@ -1080,8 +1085,13 @@ if [ -x "bin/react-ssr-server" ] && command -v node >/dev/null 2>&1; then
     # file's last line: several instances share this log, so "tail -1" used
     # to report whatever request happened to land last, passing or failing
     # for reasons that had nothing to do with the relay.
+    # Match on the PATH only: log_request() in src/http/http_log.c strips the
+    # query string on purpose (URLs carry tokens/session ids/PII that must not
+    # be persisted), so the line reads "GET /react/ HTTP/1.1", never
+    # "...?name=Resident". This case only runs when bin/react-ssr-server
+    # exists, so the mismatch stayed hidden while that binary was missing.
     relay_line=$(tail -n +"$((RELAY_LOG_BASE + 1))" logs/access.log \
-        | grep 'react/?name=Resident' | tail -1)
+        | grep -E '"GET /react/ ' | tail -1)
     relay_bytes=$(printf '%s' "$relay_line" | sed -E 's/.*" ([0-9]{3}) ([0-9]+) .*/\2/')
     relay_bytes_ok=0
     [ -n "$relay_bytes" ] && [ "$relay_bytes" -gt 0 ] && relay_bytes_ok=1
@@ -1133,7 +1143,11 @@ if command -v node >/dev/null 2>&1 && [ -d "cgi-bin/react-ssr/node_modules/vite"
         sleep 0.25
     done
     check "HMR dev server comes up (health)" "1" "$hmr_ready"
-    hmr_ssr=$(curl -s --max-time 30 "http://localhost:$HMR_PORT/react/?name=Smoke" | grep -c 'Hello, Smoke')
+    # Keep the response: when this flakes, the bytes are the only way to tell a
+    # slow first SSR compile from a broken render (see /tmp/hmr-ssr-probe.html).
+    curl -s --max-time 30 "http://localhost:$HMR_PORT/react/?name=Smoke" \
+        -o /tmp/hmr-ssr-probe.html
+    hmr_ssr=$(grep -c 'Hello, Smoke' /tmp/hmr-ssr-probe.html)
     check "HMR dev server SSR renders" "1" "$hmr_ssr"
     hmr_pre=$(curl -s --max-time 30 "http://localhost:$HMR_PORT/react/" | grep -c '@react-refresh')
     check "HMR page injects react-refresh preamble" "1" "$hmr_pre"

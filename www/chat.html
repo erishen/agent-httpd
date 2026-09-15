@@ -162,10 +162,27 @@
   .c-pse    { border-color: rgba(232,121,249,.4); color: #e879f9; } .d-pse    { background: #e879f9; }
   .c-round  { border-color: var(--edge); color: var(--slate-400); } .d-round  { background: #64748b; }
   .c-info   { border-color: var(--edge); color: var(--slate-500); } .d-info   { background: #475569; }
+  /* site nav — page chrome, deliberately outside the chat card */
+  .topnav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 14px; }
+  .topnav .brand { margin-right: auto; font-weight: 700; color: var(--slate-200); text-decoration: none; }
+  .topnav .brand:hover { color: var(--accent); }
+  .topnav .brand code { color: #fcd34d; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .topnav a.link {
+    color: var(--slate-400); text-decoration: none; font-size: 13px; font-weight: 500;
+    padding: 5px 11px; border-radius: 6px; transition: background .15s, color .15s;
+  }
+  .topnav a.link:hover { background: var(--surface); color: var(--slate-200); }
 </style>
 </head>
 <body>
 <div class="wrap">
+  <nav class="topnav">
+    <a class="brand" href="/"><code>agent-httpd</code> &times; Vanilla chat</a>
+    <a class="link" href="/" title="Back to the site home page">&larr; Home</a>
+    <a class="link" href="/react">React SSR</a>
+    <a class="link" href="/react/chat">React chat</a>
+  </nav>
+
   <section class="card">
     <div class="bar">
       <span class="pill">SSE stream</span>
@@ -201,7 +218,7 @@
       <span class="k c-tool">tool</span> · <span class="k c-mcp">mcp</span> ·
       <span class="k c-skill">skill</span> · <span class="k c-memory">memory</span> ·
       <span class="k c-pse">pse</span>. In sync with <code>src/agent.c</code> and
-      <code>src/pse.c</code>. <a href="/react">Home</a>
+      <code>src/pse.c</code>. <a href="/react">React SSR demo</a>
     </footer>
   </section>
 </div>
