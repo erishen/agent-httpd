@@ -361,7 +361,8 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         /* headers arrived, but the overall request window is already spent */
         set_error_response(&response, 408, "Request Timeout");
     } else if (g_rate_limit_rps > 0 &&
-               !rate_limit_allow(client_addr ? client_addr->sin_addr.s_addr : 0)) {
+               !rate_limit_allow(rate_limit_client_ip(&request,
+                   client_addr ? client_addr->sin_addr.s_addr : 0))) {
         /* Checked before auth on purpose: a flood must not reach dispatch or
          * burn crypt() CPU. 429 + Retry-After, then close (queued requests
          * from the same abuser would otherwise smuggle past the counter). */

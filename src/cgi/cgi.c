@@ -104,6 +104,8 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
         setenv("REMOTE_ADDR", request->remote_addr, 1);
         setenv("HTTP_HOST", request->host, 1);
         setenv("HTTP_USER_AGENT", request->user_agent, 1);
+        if (request->x_forwarded_for[0])
+            setenv("HTTP_X_FORWARDED_FOR", request->x_forwarded_for, 1);
         if (g_auth_file[0]) {
             /* CGI convention: scripts learn who authenticated via
              * REMOTE_USER (value validated by check_basic_auth already). */

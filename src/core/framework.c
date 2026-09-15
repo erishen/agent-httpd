@@ -281,6 +281,13 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     g_cgi_body_tmp_threshold = env_int("CGI_BODY_TMP_THRESHOLD", g_cgi_body_tmp_threshold);
     g_rate_limit_rps = c.rate_limit_rps;
     g_rate_limit_rps = env_int("RATE_LIMIT_RPS", g_rate_limit_rps);
+    /* Trusted reverse-proxy subnets for X-Forwarded-For-aware rate limiting.
+     * Must be set before the worker pool forks (rate_limit_init + workers
+     * inherit the parsed table). Unset = trust nobody. */
+    {
+        const char *tp = getenv("RATE_LIMIT_TRUSTED_PROXIES");
+        if (tp) rate_limit_set_trusted_proxies(tp);
+    }
     snprintf(g_log_path, sizeof(g_log_path), "%s", c.access_log);
 
     if (c.htpasswd) {

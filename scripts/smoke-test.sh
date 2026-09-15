@@ -946,9 +946,9 @@ if command -v python3 >/dev/null 2>&1; then
     rm -f .data/sessions/s1.json
 fi
 
-# Per-IP rate limiting (-l <rps>): dedicated instance, fixed-window quota.
-# The probe/burst share one window, so success counts use <= -l (a burst
-# crossing a 1s boundary can see a fresh quota, but never exceeds it).
+# Per-IP rate limiting (-l <rps>): dedicated instance, token-bucket quota.
+# The probe/burst share one bucket, so success counts use <= -l (a burst
+# crossing a 1s refill boundary can see a fresh quota, but never exceeds it).
 RATE_PORT=3111
 RATE_BASE="http://localhost:$RATE_PORT"
 "$SERVER" -p "$RATE_PORT" -l 3 > /tmp/agent-httpd-rate.log 2>&1 &
@@ -1010,6 +1010,73 @@ check "rate-limit (pool): workers share one quota (200s=$pool_200 429s=$pool_429
 kill "$RATE_PID" 2>/dev/null
 wait "$RATE_PID" 2>/dev/null
 rm -f /tmp/agent-httpd-rate-pool.out
+
+# X-Forwarded-For: behind a trusted reverse proxy the limiting key must be the
+# header's first hop, not the proxy's peer address. The test client connects
+# from 127.0.0.1, so trust that as the proxy.
+RATE_XFF_PORT=3113
+RATE_XFF_BASE="http://localhost:$RATE_XFF_PORT"
+RATE_LIMIT_TRUSTED_PROXIES=127.0.0.1 "$SERVER" -p "$RATE_XFF_PORT" -l 3 > /tmp/agent-httpd-rate-xff.log 2>&1 &
+RATE_XFF_PID=$!
+xff_ready=0
+i=0
+while [ "$i" -lt 30 ]; do
+    curl -s -o /dev/null --max-time 1 "$RATE_XFF_BASE/" && xff_ready=1 && break
+    i=$((i + 1)); sleep 0.2
+done
+check "rate-limit (xff) instance up" "1" "$xff_ready"
+# align to a fresh second so the whole burst lands in one refill window
+xff_sec=$(date +%S)
+while [ "$(date +%S)" = "$xff_sec" ]; do :; done
+xff_headers="/tmp/agent-httpd-rate-xff.txt"
+: > "$xff_headers"
+i=0
+while [ "$i" -lt 4 ]; do
+    curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 1.1.1.1" "$RATE_XFF_BASE/" >> "$xff_headers" 2>/dev/null
+    curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 2.2.2.2" "$RATE_XFF_BASE/" >> "$xff_headers" 2>/dev/null
+    i=$((i + 1))
+done
+xff_200=$(grep -c '^HTTP/1.1 200' "$xff_headers")
+xff_429=$(grep -c '^HTTP/1.1 429' "$xff_headers")
+# Two distinct XFF clients must get independent quotas (3 each) — proof the
+# header is honoured. If it were ignored, all 8 would collapse onto the proxy's
+# 127.0.0.1 peer bucket and we'd see 3x200 / 5x429 instead.
+check "rate-limit (xff): distinct XFF clients get independent quotas (200s=$xff_200 429s=$xff_429 of 8, limit 3)" "1" \
+    "$([ "$xff_200" -eq 6 ] && [ "$xff_429" -eq 2 ] && echo 1 || echo 0)"
+kill "$RATE_XFF_PID" 2>/dev/null
+wait "$RATE_XFF_PID" 2>/dev/null
+rm -f "$xff_headers"
+
+# Security: an untrusted peer must NOT be able to spoof the limiter key via a
+# forged X-Forwarded-For. With no trusted-proxy set, the header is ignored and
+# every request collapses to the real peer bucket.
+RATE_XFF2_PORT=3114
+RATE_XFF2_BASE="http://localhost:$RATE_XFF2_PORT"
+"$SERVER" -p "$RATE_XFF2_PORT" -l 3 > /tmp/agent-httpd-rate-xff2.log 2>&1 &
+RATE_XFF2_PID=$!
+xff2_ready=0
+i=0
+while [ "$i" -lt 30 ]; do
+    curl -s -o /dev/null --max-time 1 "$RATE_XFF2_BASE/" && xff2_ready=1 && break
+    i=$((i + 1)); sleep 0.2
+done
+check "rate-limit (xff-untrusted) instance up" "1" "$xff2_ready"
+xff2_sec=$(date +%S)
+while [ "$(date +%S)" = "$xff2_sec" ]; do :; done
+xff2_headers="/tmp/agent-httpd-rate-xff2.txt"
+: > "$xff2_headers"
+i=0
+while [ "$i" -lt 8 ]; do
+    curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 5.5.5.5" "$RATE_XFF2_BASE/" >> "$xff2_headers" 2>/dev/null
+    i=$((i + 1))
+done
+xff2_200=$(grep -c '^HTTP/1.1 200' "$xff2_headers")
+xff2_429=$(grep -c '^HTTP/1.1 429' "$xff2_headers")
+check "rate-limit (xff-untrusted): header ignored, peer bucket used (200s=$xff2_200 429s=$xff2_429 of 8, limit 3)" "1" \
+    "$([ "$xff2_200" -le 3 ] && [ "$xff2_429" -ge 4 ] && echo 1 || echo 0)"
+kill "$RATE_XFF2_PID" 2>/dev/null
+wait "$RATE_XFF2_PID" 2>/dev/null
+rm -f "$xff2_headers"
 
 # The limiter is opt-in: the main instance runs without -l and must never 429.
 main_429=0

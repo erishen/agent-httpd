@@ -81,6 +81,7 @@ typedef struct {
     char expect[32];
     char range[64]; /* raw Range: header value (bytes=N-M single range) */
     char remote_addr[64]; /* client IP, dotted quad (CGI REMOTE_ADDR) */
+    char x_forwarded_for[256]; /* raw X-Forwarded-For value, when present */
     int content_length;
     int chunked;       /* Transfer-Encoding: chunked framing (RFC 9110 8.7) */
     int te_unsupported; /* a request transfer coding we cannot frame */
@@ -142,11 +143,33 @@ int load_htpasswd(const char *path);
 /* Verify one Authorization: header value. Returns 1 when valid. */
 int check_basic_auth(const char *header_value);
 
-/* Per-IP fixed-window rate limiting (shared memory across workers).
+/* Per-IP rate limiting (token bucket, shared memory across workers).
  * g_rate_limit_rps == 0 disables. rate_limit_init() must run once in the
- * PARENT before workers are forked; rate_limit_allow(ip) is process-safe. */
+ * PARENT before workers are forked; rate_limit_allow(ip) is process-safe.
+ *
+ * The limiter key is a 32-bit IPv4 address in NETWORK byte order (the same
+ * value as struct sockaddr_in.sin_addr.s_addr), so a direct connection and an
+ * X-Forwarded-For hop compare identically.
+ *
+ * Behind a trusted reverse proxy the real client IP lives in the
+ * X-Forwarded-For header. rate_limit_client_ip() resolves it only when the
+ * direct peer is in the trusted set configured via
+ * rate_limit_set_trusted_proxies(); otherwise it falls back to the peer IP.
+ * This keeps a spoofed X-Forwarded-For from an untrusted source powerless. */
 extern int g_rate_limit_rps;
 void rate_limit_init(void);
+/* Configure the trusted-proxy CIDR/IP list (comma-separated, e.g.
+ * "127.0.0.1,10.0.0.0/8,172.16.0.0/12"). Call once before fork. Empty/unset
+ * means "trust nobody" -> X-Forwarded-For is never used. */
+void rate_limit_set_trusted_proxies(const char *csv);
+/* True when peer_ip (network order) sits inside a trusted proxy subnet. */
+int rate_limit_is_trusted(unsigned int peer_ip);
+/* First (leftmost, original-client) IPv4 in an X-Forwarded-For value, in
+ * network order; 0 if none is parseable. */
+unsigned int rate_limit_parse_xff(const char *xff);
+/* Resolve the IP to limit on: X-Forwarded-For's first hop when the peer is
+ * trusted, else the peer itself. Always network order. */
+unsigned int rate_limit_client_ip(const HttpRequest *req, unsigned int peer_ip);
 int rate_limit_allow(unsigned int ip);
 
 /* Shared request pipeline: method check + CGI/static dispatch.
