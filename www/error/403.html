@@ -1,18 +1,121 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Access Denied</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 600px; margin: 80px auto; padding: 20px; text-align: center; }
-        h1 { color: #f39c12; font-size: 42px; margin-bottom: 10px; }
-        p { color: #555; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>403 Forbidden — AgentHTTPD</title>
+<style>
+  /* Custom error page. src/http/http_resp.c set_error_response() loads
+   * www/error/<status>.html in place of the built-in body. Palette matches
+   * cgi-bin/react-ssr/styles/main.css; --tone is the one per-status knob
+   * (amber here: reachable URL, refused by policy). */
+  :root {
+    color-scheme: dark;
+    --ink: #0f1420;
+    --surface: #1c2536;
+    --edge: #334155;
+    --slate-200: #e2e8f0;
+    --slate-300: #cbd5e1;
+    --slate-400: #94a3b8;
+    --slate-500: #64748b;
+    --tone: #fbbf24;
+    --tone-ink: #451a03;
+    --tone-soft: rgba(251,191,36,.12);
+    --tone-line: rgba(251,191,36,.4);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column;
+    background: var(--ink); color: var(--slate-200);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .glow {
+    position: fixed; top: -20vh; left: 0; right: 0; height: 60vh;
+    pointer-events: none; z-index: 0;
+    background: radial-gradient(52% 58% at 50% 0%, var(--tone-soft), transparent 72%);
+  }
+  main {
+    position: relative; z-index: 1;
+    flex: 1; display: grid; place-items: center; padding: 64px 20px;
+  }
+  .card {
+    position: relative; width: 100%; max-width: 540px;
+    border: 1px solid var(--edge); border-radius: 20px;
+    background: var(--surface); padding: 46px 36px 38px;
+    text-align: center; box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  }
+  .card::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    border-radius: 20px 20px 0 0;
+    background: linear-gradient(90deg, transparent, var(--tone), transparent);
+  }
+  .eyebrow {
+    margin: 0 0 18px; font-size: 11px; font-weight: 700;
+    letter-spacing: .28em; text-transform: uppercase; color: var(--tone);
+  }
+  .code {
+    margin: 0; font-weight: 800; line-height: .95;
+    font-size: clamp(64px, 15vw, 92px); letter-spacing: -.045em;
+    color: var(--tone); text-shadow: 0 0 46px var(--tone-line);
+  }
+  h1 { margin: 18px 0 0; font-size: 21px; font-weight: 700; letter-spacing: -.01em; }
+  p.msg {
+    margin: 12px auto 0; max-width: 44ch;
+    font-size: 14px; line-height: 1.72; color: var(--slate-400);
+  }
+  p.msg code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .9em; background: rgba(51,65,85,.5);
+    border-radius: 4px; padding: 1px 5px; color: var(--slate-300);
+  }
+  .acts {
+    display: flex; flex-wrap: wrap; justify-content: center;
+    gap: 10px; margin-top: 28px;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--edge); border-radius: 10px;
+    background: transparent; padding: 9px 18px;
+    font-size: 13.5px; font-weight: 600; color: var(--slate-200);
+    text-decoration: none;
+    transition: border-color .15s, color .15s, transform .15s;
+  }
+  .btn:hover { border-color: var(--tone); color: var(--tone); transform: translateY(-1px); }
+  .btn.primary {
+    background: var(--tone); border-color: var(--tone); color: var(--tone-ink);
+  }
+  .btn.primary:hover { filter: brightness(1.12); }
+  footer {
+    position: relative; z-index: 1; padding: 0 20px 40px;
+    text-align: center; font-size: 12px; color: var(--slate-500);
+  }
+  footer code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--slate-400); }
+</style>
 </head>
 <body>
-    <h1>403</h1>
-    <h2>Access Forbidden</h2>
-    <p>You don't have permission to access the requested resource.</p>
-    <hr>
-    <p>AgentHTTPD custom error page</p>
+<div class="glow" aria-hidden="true"></div>
+
+<main>
+  <section class="card">
+    <p class="eyebrow">HTTP 403 &middot; Forbidden</p>
+    <p class="code">403</p>
+    <h1>Access denied</h1>
+    <p class="msg">
+      The path exists, but this server won't hand it over. Dotfiles are
+      refused outright, and protected areas sit behind Basic Auth
+      (<code>-a htpasswd</code>).
+    </p>
+    <div class="acts">
+      <a class="btn primary" href="/">Back to home</a>
+      <a class="btn" href="/react/chat">Open the agent chat</a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <code>agent-httpd</code> &middot; custom error page, served from <code>www/error/403.html</code>
+</footer>
 </body>
 </html>
