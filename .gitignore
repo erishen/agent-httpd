@@ -47,3 +47,6 @@ www/js/fix-mid.bin
 deploy/.env.cloud
 # 含密钥的备份(如 gemini 端点尝试)
 deploy/.env.cloud.*
+
+# demo: generated assembly dumps for teaching (not project source)
+asm-demo/
