@@ -562,10 +562,19 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
                         keep_alive_force_close = 1;
                     }
                 }
-            } else if (request.body == NULL && response.status_code == 0) {
-                int body_start = header_end_len;
-                int have = total - body_start;
-                if (have < request.content_length) {
+        } else if (request.body == NULL && response.status_code == 0) {
+            int body_start = header_end_len;
+            int have = total - body_start;
+            if (request.body_too_large) {
+                /* Content-Length exceeded MAX_REQUEST_SIZE. The body can never
+                 * be buffered here, so reject before reading any of it and
+                 * force-close: a keep-alive client would otherwise have its
+                 * oversized body parsed as the next request (desync /
+                 * smuggling). Mirrors the 413 at the chunked path and the
+                 * "body did not fit" 413 just below. */
+                set_error_response(&response, 413, "Request Entity Too Large");
+                keep_alive_force_close = 1;
+            } else if (have < request.content_length) {
                     int avail = (int)sizeof(buffer) - 1 - total;
                     if (request.content_length - have > avail) {
                         set_error_response(&response, 413, "Request Entity Too Large");
@@ -626,17 +635,20 @@ void handle_client(int client_fd, struct sockaddr_in *client_addr) {
         /* Native C chat endpoint (src/llm.c): the LLM data path streams
          * SSE straight from this process (forked curl upstream), taking
          * priority over the /react FastCGI relay even when -R is set. */
-        if (g_vite_upstream_port > 0 &&
+        if (response.status_code != 0) {
+            /* An error was already determined during header/body parsing
+             * (oversized-Content-Length 413, or a 408/400/431 from the body
+             * read). Do not let dispatch re-classify it as a 405/404 — the
+             * error response is serialized below. */
+        } else if (g_vite_upstream_port > 0 &&
             is_websocket_upgrade(buffer, (size_t)header_end_len)) {
             /* HMR WebSocket: splice to the internal Vite server. */
             ws_tunnel(client_fd, buffer, (size_t)header_end_len);
             return;
-        }
-        if (g_vite_upstream_port > 0 && is_vite_proxy_route(&request)) {
+        } else if (g_vite_upstream_port > 0 && is_vite_proxy_route(&request)) {
             proxy_to_vite(client_fd, buffer, (size_t)header_end_len, &request);
             return;
-        }
-        if (llm_is_pse_route(request.path, request.method)) {
+        } else if (llm_is_pse_route(request.path, request.method)) {
             llm_handle_chat(&request, &response, client_fd);
         } else if (llm_is_chat_route(request.path, request.method)) {
             llm_handle_chat(&request, &response, client_fd);

@@ -73,7 +73,18 @@ static void parse_header_line(const char *line, HttpRequest *request) {
         trim_whitespace(request->range);
     } else if (strncasecmp(line, "Content-Length:", 15) == 0) {
         long cl = strtol(line + 15, NULL, 10);
-        request->content_length = (cl > 0 && cl <= MAX_REQUEST_SIZE) ? (int)cl : 0;
+        if (cl > 0 && cl <= MAX_REQUEST_SIZE) {
+            request->content_length = (int)cl;
+        } else if (cl > MAX_REQUEST_SIZE) {
+            /* Declared length can never fit the single request buffer. Signal
+             * oversize (do NOT clamp to 0: that would make the body-read path
+             * treat it as a body-less request and leave the bytes on the
+             * socket — a keep-alive desync / request-smuggling hole). http.c
+             * turns this into a clean 413 + forced close. */
+            request->body_too_large = 1;
+        } else {
+            request->content_length = 0;
+        }
     } else if (strncasecmp(line, "Transfer-Encoding:", 18) == 0) {
         /* RFC 9110 8.7: only chunked is defined for requests; a TE naming
          * any other (final) coding cannot be framed by this server. If TE

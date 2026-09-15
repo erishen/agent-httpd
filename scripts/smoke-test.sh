@@ -129,8 +129,9 @@ if [ -f "www/js/react-ssr.js" ]; then
 fi
 
 # regression: files just under the stream threshold must not be truncated.
-# MAX_RESPONSE_SIZE == MAX_STREAMED_SIZE == 65536 used to let the header push
-# the body past the write buffer -> Content-Length lied, client hung.
+# Static file bodies above MAX_MEM_BODY_SIZE (static.c) are streamed from
+# stream_path; a 63KB file must download in full, not hang on a short body /
+# lying Content-Length.
 mkdir -p www/js
 head -c 63000 /dev/urandom > www/js/fix-mid.bin
 m_fsize=$(wc -c < www/js/fix-mid.bin | tr -d ' ')
