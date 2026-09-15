@@ -195,6 +195,11 @@ fast & slow paths / agent stack / security depth) see the
   both key independently, and a trusted reverse proxy's `X-Forwarded-For` can
   supply the key (`RATE_LIMIT_TRUSTED_PROXIES`); the check runs before auth
   (floods never burn crypt CPU); over-limit gets 429 + Retry-After and a close
+- **Dual-stack listeners**: binds IPv4 `0.0.0.0` *and* IPv6 `::` on the same
+  port (`IPV6_V6ONLY` set explicitly, otherwise `::` would also swallow v4 and
+  the v4 bind would fail with EADDRINUSE); both accept paths — the master event
+  loop and fork-per-connection — serve either family, and a host with no usable
+  v6 stack logs one notice and serves IPv4 only
 
 ## Directory layout
 
@@ -352,7 +357,7 @@ Notes:
   `AGENT_MAX_ROUNDS` / `AGENT_MAX_CONCURRENT` (ReAct rounds/concurrency
   slots), `AGENT_UPSTREAM_ATTEMPTS` / `AGENT_BACKOFF_MS_1` /
   `AGENT_BACKOFF_MS_2` (upstream retry count & backoff, compile-time
-  constants in `src/agent.h`), `PSE_ENABLED` / `PSE_SOULS_DIR` (PSE
+  constants in `src/agent/agent.h`), `PSE_ENABLED` / `PSE_SOULS_DIR` (PSE
   orchestrator/souls dir), `MCP_SERVERS` (MCP stdio server config),
   `HARNESS_SKILLS_DIR` / `SKILLS_EXTRA_DIRS` (skills dirs); the React backend
   reads `REACT_HTTP_PORT` / `REACT_RENDER_TTL_MS` / `REACT_FCGI_SOCK_MODE`
@@ -1059,6 +1064,7 @@ that Next can't swap in.
 - [~] Thread pool instead of forked processes — **evaluated, not done**: benefits overlap with the prefork worker pool (`-w N`) (isolation is actually worse; a thread pool buys little under the CGI fork+exec model); the project already offers two concurrency models, a third only adds teaching noise
 - [x] Basic Auth (`-a htpasswd` + `-r realm`, plaintext/crypt hash dual mode, fail-closed, CGI reads `REMOTE_USER`)
 - [x] Per-IP rate limiting (`-l <rps>`, token bucket + shared-memory table, one quota across fork/pool modes, IPv4/IPv6 keys, X-Forwarded-For behind a trusted proxy, 429 + Retry-After)
+- [x] Dual-stack listeners (IPv4 `0.0.0.0` + IPv6 `::` on one port, `IPV6_V6ONLY` set explicitly, both accept paths serve either family, graceful IPv4-only fallback when the host has no v6 stack)
 - [x] Chat upstream transient-failure retries (3 attempts + 1s/2.5s backoff, transient/permanent classification, backoff watches for client disconnects)
 - [x] Privacy & compliance hardening (proxied-path security header parity, FCGI socket default 0700, log files 0600, outbound error scrubbing)
 - [x] MCP subprocess secret scrubbing: the LLM credentials (`LLM_API_KEY` / `LLM_API_URL` / `LLM_MODEL`) are `unsetenv`'d in the child before `execvp`, so third-party npx-fetched MCP servers (e.g. `server-filesystem`) never inherit them. (`MCP_FS_ROOT` is kept — the fs server needs it as its sandbox root; the CGI path scrubs the same trio in `cgi.c`.)
