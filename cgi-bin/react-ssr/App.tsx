@@ -88,6 +88,15 @@ function Layout({ nodeVersion, mode }: { nodeVersion: string; mode: RenderMode }
           <NavLink to="/react/chat" className={({ isActive }) => navLink(isActive)}>
             Chat
           </NavLink>
+          {/* Plain <a>, not <Link>: the site home lives OUTSIDE the /react
+              route tree, so leaving it must be a full page load. */}
+          <a
+            href="/"
+            title="Back to the site home page"
+            className={navLink(false)}
+          >
+            &larr; Site
+          </a>
         </nav>
       </header>
 
