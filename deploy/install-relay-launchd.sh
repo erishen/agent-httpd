@@ -10,7 +10,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-WORKSPACE="$(cd "$REPO/../../.." && pwd)"   # .../individular-invest
+WORKSPACE="$(cd "$REPO/../../.." && pwd)"   # <workspace root>
 BRIDGES="$WORKSPACE/work/harness/resolve-skills/skills/weekly-investment/scripts"
 RELAY="$HERE/mcp-host-relay.mjs"
 LOGDIR="$HOME/Library/Logs"

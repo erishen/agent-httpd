@@ -25,7 +25,7 @@ set -euo pipefail
 export PATH="/usr/local/bin:$PATH"   # OrbStack docker
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-WORKSPACE="$(cd "$REPO/../../.." && pwd)"   # .../individular-invest
+WORKSPACE="$(cd "$REPO/../../.." && pwd)"   # <workspace root>
 IMAGE="${AGENT_HTTPD_IMAGE:-agent-httpd:local-arm64}"
 NAME="${AGENT_HTTPD_NAME:-agent-httpd-local}"
 PORT="${AGENT_HTTPD_PORT:-12080}"

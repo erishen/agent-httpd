@@ -11,7 +11,7 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-WORKSPACE="$(cd "$REPO/../../.." && pwd)"   # .../individular-invest
+WORKSPACE="$(cd "$REPO/../../.." && pwd)"   # <workspace root>
 BRIDGES="$WORKSPACE/work/harness/resolve-skills/skills/weekly-investment/scripts"
 LOGDIR="${RELAY_LOG_DIR:-/tmp}"
 
