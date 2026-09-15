@@ -2,7 +2,7 @@
  * buffer (build_response), render a status error page or fall back to the
  * inline template (set_error_response), and the one-shot client-cache purge
  * switch (purge_client_cache). The keep-alive connection loop that calls
- * build_response lives in src/http.c; request parsing in src/http_parse.c. */
+ * build_response lives in src/http/http.c; request parsing in src/http/http_parse.c. */
 
 #include <stdio.h>
 #include <stdlib.h>

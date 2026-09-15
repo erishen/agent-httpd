@@ -3,7 +3,7 @@
 
 #include "minijson.h"
 
-/* Agent tool registry (OpenAI function-calling dialect), src/tools.c.
+/* Agent tool registry (OpenAI function-calling dialect), src/agent/tools.c.
  *
  * Built-ins are registered at tools_init(); MCP servers register their
  * tools dynamically at startup in the parent (tools_register) under
@@ -14,7 +14,7 @@
  * library dependencies besides libc (+ jq(1) for MCP pretty-printing).
  *
  * Session-aware tools (remember/recall) receive the current sessionId via
- * tools_dispatch and persist to .data via src/session.c.
+ * tools_dispatch and persist to .data via src/agent/session.c.
  */
 
 #define TOOL_NAME_MAX 64

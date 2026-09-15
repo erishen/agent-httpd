@@ -6,10 +6,10 @@
 #include "chatio.h"
 
 /* Agentic chat loop (ReAct: reason -> act -> observe, OpenAI tool-calling
- * dialect), src/agent.c. llm.c parses the request and dispatches here when
+ * dialect), src/agent/agent.c. llm.c parses the request and dispatches here when
  * LLM_API_KEY is configured; everything that talks to the model lives in
  * this module, built on the same primitives as the CGI chain (fork curl
- * per round, pipes, poll timeouts). PSE (src/pse.c) drives the same
+ * per round, pipes, poll timeouts). PSE (src/agent/pse.c) drives the same
  * primitives: agent_round() for its one-shot Planner/Evaluator phases and
  * agent_run() (single "Specialist" loop) for the execution phase.
  *

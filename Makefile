@@ -4,7 +4,7 @@ CC = gcc
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     LDFLAGS_EXTRA += -lcrypt
-    # libm (pow/fmod in src/tools.c): glibc keeps it out of libc, so the link
+    # libm (pow/fmod in src/agent/tools.c): glibc keeps it out of libc, so the link
     # fails with "undefined reference to pow" without it; macOS folds libm
     # into libSystem and needs no flag.
     LDFLAGS_EXTRA += -lm
@@ -21,7 +21,7 @@ ifeq ($(UNAME_S),Darwin)
     CFLAGS_EXTRA += -D_DARWIN_C_SOURCE
 endif
 # Test-only garbage-collection flags: standalone compilation of a single .c
-# (e.g. src/fastcgi.c for the stream test) discards unused functions that
+# (e.g. src/cgi/fastcgi.c for the stream test) discards unused functions that
 # reference main.c globals, so no project globals need stubbing. The comma
 # inside -Wl,--gc-sections must live inside a variable, not a $(if) argument.
 GC_LINUX = -ffunction-sections -fdata-sections -Wl,--gc-sections

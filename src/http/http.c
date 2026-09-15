@@ -4,7 +4,7 @@
  * that parses a request, reads its body, dispatches it, serializes the
  * response and streams it out. Request parsing, response serialization,
  * access logging and route classification live in their own modules
- * (src/http_parse.c, src/http_resp.c, src/http_log.c, src/http_route.c). */
+ * (src/http/http_parse.c, src/http/http_resp.c, src/http/http_log.c, src/http/http_route.c). */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -687,7 +687,7 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
                 }
             }
 
-        /* Native C chat endpoint (src/llm.c): the LLM data path streams
+        /* Native C chat endpoint (src/agent/llm.c): the LLM data path streams
          * SSE straight from this process (forked curl upstream), taking
          * priority over the /react FastCGI relay even when -R is set. */
         if (response.status_code != 0) {

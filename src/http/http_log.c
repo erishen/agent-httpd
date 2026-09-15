@@ -1,7 +1,7 @@
 /* Access logging: emit one Combined-Log-Format line per response with the
  * request's control characters sanitized (log_field) and the query string
  * stripped from the path (log_request). The global g_log_fp is defined in
- * src/http.c; the connection loop that calls log_request lives in src/http.c. */
+ * src/http/http.c; the connection loop that calls log_request lives in src/http/http.c. */
 
 #include <stdio.h>
 #include <stdlib.h>

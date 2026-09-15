@@ -1,4 +1,4 @@
-/* src/vite.c - Vite dev-proxy header construction, extracted from http.c
+/* src/cgi/vite.c - Vite dev-proxy header construction, extracted from http.c
  * for testability. Self-contained: depends only on the C standard library
  * (strncasecmp comes from <strings.h>). */
 #include <string.h>
