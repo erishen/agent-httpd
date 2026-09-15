@@ -34,7 +34,7 @@ func main() {
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Go CGI</title>
-<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;max-width:640px;margin:40px auto;padding:0 20px}code{background:#1e293b;padding:1px 5px;border-radius:4px;color:#38bdf8}table{border-collapse:collapse;width:100%}th,td{padding:6px 8px;border-bottom:1px solid #334155;text-align:left}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:16px 20px;margin:16px 0}h1{color:#34d399}</style>
+<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;max-width:640px;margin:40px auto;padding:0 20px}code{background:#1e293b;padding:1px 5px;border-radius:4px;color:#38bdf8}table{border-collapse:collapse;width:100%%}th,td{padding:6px 8px;border-bottom:1px solid #334155;text-align:left}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:16px 20px;margin:16px 0}h1{color:#34d399}</style>
 </head><body>
 <h1>Go CGI</h1>
 <p>Native binary (<code>go build</code>), executed directly by <code>execl</code>.</p>
