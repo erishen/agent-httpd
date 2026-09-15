@@ -7,9 +7,12 @@ logs/
 *.d
 docker-compose.override.yml
 
-# SSR 依赖在构建阶段内 npm ci 重新安装, 不拷贝宿主机的 node_modules
+# SSR 依赖在构建阶段内 pnpm install 重新安装, 不拷贝宿主机的 node_modules
 cgi-bin/react-ssr/node_modules
 cgi-bin/react-ssr/tailwind.css
+# pnpm 是这块的包管理器 (pnpm-lock.yaml 必须进上下文, Dockerfile 要 COPY 它);
+# npm 的锁文件不是第二个真相来源, 不进构建上下文。
+cgi-bin/react-ssr/package-lock.json
 
 # 客户端 bundle 及其预压缩表亲由 ssr-build 阶段生成 (Dockerfile 里显式 COPY)。
 # 构建上下文里的那两份是宿主工作树的旧产物, 而浏览器只读 gzip 那份 —— 一旦它

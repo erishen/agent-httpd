@@ -5,6 +5,14 @@ logs/
 *.o
 *.d
 
+# package manager for cgi-bin/react-ssr is pnpm (see packageManager in its
+# package.json); pnpm-lock.yaml IS tracked so the committed SSR bundles and
+# tailwind.css stay reproducible. npm's lockfile is not a second source of
+# truth -- and it used to be ignored only by a machine-local
+# ~/.gitignore_global entry, so on any other checkout it was untracked-and-
+# stageable. Ignore it repo-wide on purpose.
+cgi-bin/react-ssr/package-lock.json
+
 # toolchain scratch: some builders stage an output as .!<pid>!<name> next to
 # the target before renaming it, which left a stray 0-byte cgi-bin entry
 cgi-bin/.!*

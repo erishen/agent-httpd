@@ -530,13 +530,26 @@ self-contained per runtime (node process / browser).
 Build flow (only needed after changing source):
 
 ```bash
-cd cgi-bin/react-ssr && npm install   # one-time build deps (react, esbuild, tailwindcss, typescript, @types/*)
+cd cgi-bin/react-ssr && pnpm install   # one-time build deps (react, esbuild, tailwindcss, typescript, @types/*)
 make build-ssr                        # tsc --noEmit type gate, then Tailwind, then artifacts:
                                       # server/cgi.tsx  → cgi-bin/react-ssr.cgi
                                       # server/main.tsx → bin/react-ssr-server (resident)
                                       # client.tsx      → www/js/react-ssr.js
 make typecheck                        # type check alone (esbuild transpiles but doesn't check)
 ```
+
+This sub-project is installed with **pnpm** (pinned by `packageManager` in
+`package.json`; `pnpm-lock.yaml` is committed, npm's lockfile is deliberately
+not). That matters for reproducibility: `cgi-bin/react-ssr.cgi`,
+`www/js/react-ssr.js[.gz]` and `tailwind.css` are tracked build artifacts, and
+a different dependency resolution produces different bytes. Use
+`pnpm install --frozen-lockfile` in any automation.
+
+`esbuild` is an explicit devDependency on purpose: `build-ssr.sh` executes
+`node_modules/.bin/esbuild` directly, and pnpm only links the bins of *direct*
+dependencies — relying on npm's flat hoisting to surface it transitively
+(which is how it used to work) breaks the build with a misleading
+"esbuild/tsc/tailwindcss missing" error.
 
 TS constraints and classic pitfalls:
 
@@ -566,7 +579,7 @@ esbuild). Dev uses Vite's on-demand transform against the same `render.tsx`
 core instead — changes apply instantly:
 
 ```bash
-cd cgi-bin/react-ssr && npm install   # one-time (vite/@vitejs/plugin-react are devDependencies)
+cd cgi-bin/react-ssr && pnpm install   # one-time (vite/@vitejs/plugin-react are devDependencies)
 make dev                              # http://localhost:3100/react/?name=Alice
 DEV_PORT=3100 make dev                # different port
 ```
