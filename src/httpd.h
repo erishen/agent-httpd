@@ -7,7 +7,6 @@
 #define MAX_REQUEST_SIZE 65536
 #define MAX_RESPONSE_SIZE 65536
 #define MAX_PATH_SIZE 1024
-#define MAX_STREAMED_SIZE 65536
 /* Product name only - no version. Used for the Server: header, error pages,
  * directory-listing footers and CGI SERVER_SOFTWARE, so the fingerprint is
  * consistent and reveals no release details (L1 hardening). */
@@ -85,6 +84,7 @@ typedef struct {
     int content_length;
     int chunked;       /* Transfer-Encoding: chunked framing (RFC 9110 8.7) */
     int te_unsupported; /* a request transfer coding we cannot frame */
+    int body_too_large; /* Content-Length exceeded MAX_REQUEST_SIZE (413) */
     char *body;
 } HttpRequest;
 
