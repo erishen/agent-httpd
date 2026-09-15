@@ -185,10 +185,11 @@ fast & slow paths / agent stack / security depth) see the
   the page needed zero changes; config lives in the project-root `.env`
   (template in `.env.example`); on the nginx side `location =
   /react/api/chat` proxies back to httpd with `proxy_buffering off`
-- **Basic Auth (-a/-r)**: RFC 7617, htpasswd-file driven, secrets in plaintext
-  or crypt(3) hashes (modern SHA formats on Linux / DES on macOS),
-  fail-closed (malformed lines skipped, all-invalid refuses to start), 401s
-  carry a WWW-Authenticate challenge, CGI gets the login via `REMOTE_USER`,
+- **Basic Auth (-a/-r)**: RFC 7617, htpasswd-file driven, **strong hashes only**
+  (`$5$`/`$6$`/bcrypt; plaintext, DES and `$1$`/`$apr1$` are skipped at load
+  time, and the `AGENTHTTPD_ALLOW_WEAK_AUTH=1` dev escape hatch is the only way
+  back), fail-closed (malformed lines skipped, all-invalid refuses to start),
+  401s carry a WWW-Authenticate challenge, CGI gets the login via `REMOTE_USER`,
   the gate covers the whole site including `/react/` forwarding
 - **Per-IP rate limiting (-l)**: token-bucket counting on a shared-memory
   table, fork/worker-pool modes enforce the same quota; IPv4 and IPv6 peers
@@ -986,10 +987,15 @@ outbound error text are guarded too:
   publishing on `0.0.0.0` would put those on the LAN. Override with
   `AGENT_HTTPD_BIND` only when another machine genuinely needs it.
 - **A reachable instance needs `-l` and auth**: the cloud env template
-  (`deploy/env.cloud.example`) ships `RATE_LIMIT=0`, so a container exposed on
-  a public address is an unauthenticated LLM proxy on someone else's bill.
-  Enable per-IP rate limiting (`-l`) and Basic Auth, or restrict the security
-  group to known sources.
+  (`deploy/env.cloud.example`) ships a non-zero `RATE_LIMIT` *and*
+  `AUTH_HTPASSWD`, because a container exposed on a public address with neither
+  is an unauthenticated LLM proxy on someone else's bill. Both are entrypoint
+  knobs — `deploy/docker-entrypoint.sh` translates them into `-l` / `-a`, since
+  a `--env-file` deployment has nowhere else to put a flag. A missing or
+  unreadable htpasswd file makes the container **exit** rather than fall back to
+  open access. Behind a reverse proxy set `RATE_LIMIT_TRUSTED_PROXIES`, or every
+  request shares the proxy's bucket and per-IP limiting degrades into a global
+  one. Otherwise restrict the security group to known sources.
 
 ## CGI environment variables
 
@@ -1081,7 +1087,7 @@ that Next can't swap in.
 - [x] FastCGI backend (UNIX socket, reusing the HTTP dispatch chain)
 - [x] HTTP/1.1 keep-alive connection reuse (RFC 7230: persistent by default in 1.1, explicit opt-in for 1.0, `Connection: close` always honored; 100-request cap per connection, close after 5xx, streamed relay responses without Content-Length follow close semantics)
 - [~] Thread pool instead of forked processes — **evaluated, not done**: benefits overlap with the prefork worker pool (`-w N`) (isolation is actually worse; a thread pool buys little under the CGI fork+exec model); the project already offers two concurrency models, a third only adds teaching noise
-- [x] Basic Auth (`-a htpasswd` + `-r realm`, plaintext/crypt hash dual mode, fail-closed, CGI reads `REMOTE_USER`)
+- [x] Basic Auth (`-a htpasswd` + `-r realm`, strong-hash-only htpasswd policy, fail-closed, CGI reads `REMOTE_USER`)
 - [x] Per-IP rate limiting (`-l <rps>`, token bucket + shared-memory table, one quota across fork/pool modes, IPv4/IPv6 keys, X-Forwarded-For behind a trusted proxy, 429 + Retry-After)
 - [x] Dual-stack listeners (IPv4 `0.0.0.0` + IPv6 `::` on one port, `IPV6_V6ONLY` set explicitly, both accept paths serve either family, graceful IPv4-only fallback when the host has no v6 stack)
 - [x] Chat upstream transient-failure retries (3 attempts + 1s/2.5s backoff, transient/permanent classification, backoff watches for client disconnects)
@@ -1103,3 +1109,8 @@ that Next can't swap in.
 - [~] Virtual hosts — **deferred**: a single docroot suffices for a teaching server; if truly needed, front nginx and split by Host across multiple agent-httpd instances — no need to re-implement it in C
 - [x] URL routing (react-router client-side routing + SSR deep links; C-side `/react/` forwarding)
 - [~] SSL/HTTPS support — **evaluated, not done**: production convention is to terminate TLS at nginx/load balancers (this repo's docker-compose does exactly that); integrating OpenSSL into a teaching server would bloat the code and derail the focus
+
+## License
+
+MIT — see [LICENSE](LICENSE). The bundled front-end dependencies keep their
+own licenses (React, Vite and Tailwind are all MIT).
