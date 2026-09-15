@@ -971,6 +971,25 @@ outbound error text are guarded too:
   at the transport level, but the page text it returns enters the agent
   loop, so a malicious page can try to steer the model (prompt injection).
   Keep file-tool roots narrow and never hand the agent credentials.
+- **Secret hygiene lives in the repo, not on one machine**: the ignore rules
+  for every `.env` variant (`deploy/.env.local`, `deploy/.env.cloud.*`) are in
+  this repo's `.gitignore`, so a fresh clone or CI checkout cannot stage a key
+  file — a developer-local `~/.gitignore_global` entry protects exactly one
+  laptop. `.dockerignore` excludes *all* `.env` variants plus `.data/`
+  (session transcripts) even though the Dockerfile reads only `.env` today:
+  the entire build context is uploaded to the builder. Config that inherently
+  needs a machine-specific absolute path ships as a `.example` template
+  (`deploy/cicdkit-project.example.json`) with the real file ignored.
+- **Instances that can reach local data bind loopback**: the local demo
+  container (`deploy/run-local-container.sh`) publishes on `127.0.0.1` by
+  default, because it drives MCP bridges into host-side data pipelines —
+  publishing on `0.0.0.0` would put those on the LAN. Override with
+  `AGENT_HTTPD_BIND` only when another machine genuinely needs it.
+- **A reachable instance needs `-l` and auth**: the cloud env template
+  (`deploy/env.cloud.example`) ships `RATE_LIMIT=0`, so a container exposed on
+  a public address is an unauthenticated LLM proxy on someone else's bill.
+  Enable per-IP rate limiting (`-l`) and Basic Auth, or restrict the security
+  group to known sources.
 
 ## CGI environment variables
 
