@@ -59,6 +59,9 @@ static void parse_header_line(const char *line, HttpRequest *request) {
     } else if (strncasecmp(line, "Authorization:", 14) == 0) {
         set_str(request->authorization, sizeof(request->authorization), line + 14);
         trim_whitespace(request->authorization);
+    } else if (strncasecmp(line, "X-Forwarded-For:", 16) == 0) {
+        set_str(request->x_forwarded_for, sizeof(request->x_forwarded_for), line + 17);
+        trim_whitespace(request->x_forwarded_for);
     } else if (strncasecmp(line, "If-None-Match:", 14) == 0) {
         set_str(request->if_none_match, sizeof(request->if_none_match), line + 14);
         trim_whitespace(request->if_none_match);

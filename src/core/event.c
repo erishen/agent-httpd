@@ -295,7 +295,7 @@ static void conn_readable(Conn *c) {
         fast_serve(c, &req, &resp, hdr_len, 0);
         return;
     }
-    if (g_rate_limit_rps > 0 && !rate_limit_allow(c->ip)) {
+    if (g_rate_limit_rps > 0 && !rate_limit_allow(rate_limit_client_ip(&req, c->ip))) {
         set_error_response(&resp, 429, "Too Many Requests");
         resp.retry_after = 1;
         fast_serve(c, &req, &resp, hdr_len, 1);
