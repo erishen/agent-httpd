@@ -50,6 +50,7 @@ MCP / 技能 / 记忆 / ReAct / PSE）。
 - **LLM 流式聊天 (`/react/chat`)**: SSE 流式对话页 + `/react/api/chat` 数据端点; **数据端点已由 C 进程原生处理 (`src/agent/llm.c`)**: 有 `LLM_API_KEY` 时 fork `curl -N` 调 OpenAI 兼容上游 (TLS 交给 curl, 服务器本体仍只链 libc), 逐 delta 重发 SSE; 上游瞬时故障 (连接拒绝/重置、5xx、429) 自动重试——共 3 次尝试, 间隔 1s/2.5s 退避, 期间 SSE 下发 `upstream hiccup, retrying` note, 退避按 100ms 小步检查客户端断开即中止; 重试判定见 `agent_retryable()` (curl exit 7/18/35/52/55/56、HTTP 429/5xx 视为瞬时, 4xx 拒绝与 127 不重试)。无密钥回落内置 C 演示引擎 (逐词节流的罐头回复)。SSE 信封 (note/delta/error/done) 与 node 后端 `chat.ts` 完全一致, 页面零改动; 配置写在项目根 `.env` (模板见 `.env.example`); nginx 侧 `location = /react/api/chat` 反代回 httpd 并 `proxy_buffering off` 直通
 - **Basic Auth 认证 (-a/-r)**: RFC 7617, htpasswd 文件驱动, secret 支持明文或 crypt(3) 哈希 (Linux 现代 SHA 格式 / macOS DES), fail-closed (非法行跳过、全无效拒绝启动), 401 响应带 WWW-Authenticate 质询, CGI 经 REMOTE_USER 获取认证用户, 全站门禁含 `/react/` 转发
 - **每 IP 限流 (-l)**: 令牌桶计数 + 共享内存计数表, fork/worker 池模式共用同一配额; IPv4/IPv6 对端各自独立成桶, 可信反代可用 `X-Forwarded-For` (`RATE_LIMIT_TRUSTED_PROXIES`) 提供 key; 检查先于认证 (洪水烧不到 crypt CPU), 超限回 429 + Retry-After 并断连
+- **双栈监听**: 同一端口同时绑 IPv4 `0.0.0.0` 与 IPv6 `::` (显式置 `IPV6_V6ONLY`, 否则 `::` 会把 v4 一起吞掉、v4 的 bind 直接撞 EADDRINUSE); 事件循环与每连接 fork 两条 accept 路径都服务两族; 主机无可用 v6 栈时只打一行提示、退回纯 IPv4
 
 ## 目录结构
 
@@ -185,7 +186,7 @@ docker compose logs -f httpd # 跟看日志
 
 - 镜像四阶段构建 (C 编译 → 原生 CGI 编译 → SSR 打包 → node:20-slim 运行时, 约 620MB); 构建参数与本地 `make` 完全一致 (`-Wall -Wextra -Werror -O2`)
 - 容器内 CGI 动物园完整可用: bash/python/ruby/php 解释器内置; go/rust/java 由 `cgi-build` 阶段用 Linux 工具链**在容器内重新编译** (宿主机的 Mach-O 产物被 `.dockerignore` 排除, 不进镜像)
-- 环境变量: `WORKERS` (worker 数, 0 = 每连接 fork)、`RATE_LIMIT` (每 IP 限流 req/s)、`LOG_FILE` (默认 `/var/log/agent-httpd/access.log`); C 聊天端点另认 `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` (不设则用内置演示引擎, 无需密钥)。Agent 能力另有 `AGENT_MAX_ROUNDS` / `AGENT_MAX_CONCURRENT` (ReAct 轮数/并发槽)、`AGENT_UPSTREAM_ATTEMPTS` / `AGENT_BACKOFF_MS_1` / `AGENT_BACKOFF_MS_2` (上游重试次数与退避间隔, 编译期常量见 `src/agent.h`)、`PSE_ENABLED` / `PSE_SOULS_DIR` (PSE 编排器/角色灵魂目录)、`MCP_SERVERS` (MCP stdio 服务器配置)、`HARNESS_SKILLS_DIR` / `SKILLS_EXTRA_DIRS` (技能目录); llm-router 目录同步认 `ROUTER_API_URL` (缺省复用 `LLM_API_URL`) / `ROUTER_SYNC_BUDGET_SECONDS` (整轮同步的墙钟预算, 默认 10s, 0 = 不限; 上游半死时按剩余预算动态收紧每个 curl 的 `--max-time`, 超墙即跳过剩余拉取——同步陈旧可接受, 启动卡死不可接受); react 后端认 `REACT_HTTP_PORT` / `REACT_RENDER_TTL_MS` / `REACT_FCGI_SOCK_MODE` (socket 权限, 默认 0700); 容器日志自轮转认 `LOG_ROTATE_SECONDS` (默认 86400, 0 = 关闭) / `LOG_ROTATE_KEEP` (默认 7 份)
+- 环境变量: `WORKERS` (worker 数, 0 = 每连接 fork)、`RATE_LIMIT` (每 IP 限流 req/s)、`LOG_FILE` (默认 `/var/log/agent-httpd/access.log`); C 聊天端点另认 `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` (不设则用内置演示引擎, 无需密钥)。Agent 能力另有 `AGENT_MAX_ROUNDS` / `AGENT_MAX_CONCURRENT` (ReAct 轮数/并发槽)、`AGENT_UPSTREAM_ATTEMPTS` / `AGENT_BACKOFF_MS_1` / `AGENT_BACKOFF_MS_2` (上游重试次数与退避间隔, 编译期常量见 `src/agent/agent.h`)、`PSE_ENABLED` / `PSE_SOULS_DIR` (PSE 编排器/角色灵魂目录)、`MCP_SERVERS` (MCP stdio 服务器配置)、`HARNESS_SKILLS_DIR` / `SKILLS_EXTRA_DIRS` (技能目录); llm-router 目录同步认 `ROUTER_API_URL` (缺省复用 `LLM_API_URL`) / `ROUTER_SYNC_BUDGET_SECONDS` (整轮同步的墙钟预算, 默认 10s, 0 = 不限; 上游半死时按剩余预算动态收紧每个 curl 的 `--max-time`, 超墙即跳过剩余拉取——同步陈旧可接受, 启动卡死不可接受); react 后端认 `REACT_HTTP_PORT` / `REACT_RENDER_TTL_MS` / `REACT_FCGI_SOCK_MODE` (socket 权限, 默认 0700); 容器日志自轮转认 `LOG_ROTATE_SECONDS` (默认 86400, 0 = 关闭) / `LOG_ROTATE_KEEP` (默认 7 份)
 - **LLM 配置走项目根 `.env`**: `cp .env.example .env` 后填 `LLM_API_KEY` 即接真实模型 (OpenAI 兼容端点均可: OpenAI / DeepSeek / 本地 Ollama); compose 的 httpd 与 react 服务都经 `env_file` 注入 (文件缺失也能启动), `make dev` 用 `--env-file-if-exists=.env` 自动加载; C 服务器在首个聊天请求时也从工作目录读 `.env` 的 `LLM_*` (环境变量已存在的优先 —— 可用空 `LLM_API_KEY` 强制回落演示引擎)。改完 `docker compose up -d` 重建容器生效。`.env` 已被 `.gitignore`/`.dockerignore` 排除, 密钥不进仓库不进镜像
 - `docker stop` 的 SIGTERM 直达 agent-httpd 的优雅排水逻辑 (停 accept → worker 排水最多 5 秒 → SIGKILL 兜底), 重启不丢在途请求
 - **FCGI socket 权限默认收紧**: react 后端的 UNIX socket 默认 `0700` (owner-only)——socket 直连可绕过 httpd 的认证/限流, 不能让同机任意进程可连; nginx `fastcgi_pass` 场景下 worker 用户不同时, 给 react 服务设 `REACT_FCGI_SOCK_MODE=0777` 放宽
@@ -763,6 +764,7 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [~] 线程池代替 fork 进程 —— **评估后不做**: 与 prefork worker 池 (`-w N`) 收益重叠 (隔离性反而更差, CGI fork+exec 模型下线程池优势有限); 项目已有两种并发模型可选, 再加第三种只增加教学噪音
 - [x] Basic Auth 认证 (`-a htpasswd` + `-r realm`, 明文/crypt 哈希双模式, fail-closed, CGI 经 `REMOTE_USER` 获取用户)
 - [x] 每 IP 限流 (`-l <rps>`, 令牌桶 + 共享内存计数表, fork/worker 池共用配额, IPv4/IPv6 key, 可信反代下的 X-Forwarded-For, 429 + Retry-After)
+- [x] 双栈监听 (同端口绑 IPv4 `0.0.0.0` + IPv6 `::`, 显式置 `IPV6_V6ONLY`, 两条 accept 路径都服务两族, 主机无 v6 栈时优雅退回纯 IPv4)
 - [x] chat 上游瞬时故障重试 (3 次尝试 + 1s/2.5s 退避, 瞬时/永久错误分类判定, 退避期监听客户端断开)
 - [x] 隐私与合规加固 (安全头代理同构、FCGI socket 默认 0700、日志文件 0600、对外错误脱敏)
 - [x] MCP 子进程密钥脱敏: 在 `execvp` 前的子进程里 `unsetenv` 掉 LLM 凭据 (`LLM_API_KEY` / `LLM_API_URL` / `LLM_MODEL`), 因此经 npx 拉取的第三方 MCP server (如 `server-filesystem`) 绝不会继承密钥。(保留 `MCP_FS_ROOT` —— fs server 需要它作沙箱根; CGI 侧在 `cgi.c` 同样脱敏这三项。)
