@@ -17,7 +17,10 @@
  * rate_limit_set_trusted_proxies from RATE_LIMIT_TRUSTED_PROXIES), the first
  * hop of X-Forwarded-For becomes the limiting key; otherwise the peer IP is
  * used. This keeps the limiter correct behind a reverse proxy instead of
- * collapsing every real client into the proxy's single bucket.
+ * collapsing every real client into the proxy's single bucket. Trust is
+ * evaluated on the peer ADDRESS, not on the hashed bucket key, so a proxy
+ * reached over IPv4 or IPv6 can be trusted with "1.2.3.4", "10.0.0.0/8",
+ * "::1" or "2001:db8::/32" alike.
  *
  * 0 rps disables everything. */
 
@@ -27,6 +30,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "internal.h"
@@ -48,12 +52,17 @@ struct rate_bucket {
 static struct rate_bucket *g_rate_table = NULL; /* mmap(MAP_SHARED|MAP_ANON) */
 
 /* Trusted reverse-proxy subnets. A peer outside every entry is never trusted
- * to supply a real client IP, so X-Forwarded-For from it is ignored. Both
- * fields are IPv4 in NETWORK byte order, matching the bucket keys. */
-static struct {
-    unsigned int ip;
-    unsigned int mask;
-} g_trusted[RATE_TRUSTED_MAX];
+ * to supply a real client IP, so X-Forwarded-For from it is ignored. Each
+ * entry is family-tagged and holds a 16-byte network-order address with its
+ * prefix mask (IPv4 uses the first 4 bytes, the rest stay zero). Addresses are
+ * canonicalised (AND-ed with the mask) at parse time so matching is a plain
+ * masked compare. IPv4 and IPv6 peers are both supported. */
+struct trusted_net {
+    int family;                 /* AF_INET or AF_INET6 */
+    unsigned char addr[16];     /* network order, already masked */
+    unsigned char mask[16];     /* prefix mask, same layout */
+};
+static struct trusted_net g_trusted[RATE_TRUSTED_MAX];
 static int g_trusted_n = 0;
 
 /* Integer mix (splitmix-style) so adjacent IPs spread across the table
@@ -65,30 +74,99 @@ static unsigned int mix_ip(unsigned int x) {
     return x;
 }
 
-/* Parse "a.b.c.d" or "a.b.c.d/n" (n = prefix length 0..32) into a
- * network-order address + network-order mask. Returns 1 on success. */
-static int parse_cidr(const char *s, unsigned int *out_ip, unsigned int *out_mask) {
+/* Fill a 16-byte prefix mask: `prefix` leading 1 bits over `nbytes` bytes. */
+static void build_mask(unsigned char *mask, int prefix, int nbytes) {
+    memset(mask, 0, 16);
+    for (int i = 0; i < nbytes; i++) {
+        if (prefix >= 8) { mask[i] = 0xff; prefix -= 8; }
+        else if (prefix > 0) { mask[i] = (unsigned char)(0xffu << (8 - prefix)); prefix = 0; }
+        else break;
+    }
+}
+
+/* Strict decimal prefix: rejects "", "abc", "1a", negatives and anything over
+ * 128. Returns -1 on malformed input — the caller drops the entry, so a typo
+ * can never silently widen the trusted set (atoi would map "abc" to 0, i.e.
+ * "trust everyone"). */
+static int parse_prefix(const char *s) {
+    if (!*s) return -1;
+    int v = 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return -1;
+        v = v * 10 + (*s - '0');
+        if (v > 128) return -1;
+    }
+    return v;
+}
+
+/* Parse one entry — "a.b.c.d", "a.b.c.d/n", "::1", "2001:db8::/32" or the
+ * bracketed "[::1]" / "[::1]/128" form — into a family-tagged network. The
+ * stored address is AND-ed with its mask so rate_limit_is_trusted() is a
+ * plain masked compare. Returns 1 on success. */
+static int parse_cidr(const char *s, struct trusted_net *out) {
     char buf[64];
     size_t n = 0;
     while (*s && *s != ',' && n + 1 < sizeof(buf)) buf[n++] = *s++;
     buf[n] = '\0';
-    char *slash = strchr(buf, '/');
-    int prefix = 32;
-    if (slash) {
-        *slash = '\0';
-        prefix = atoi(slash + 1);
-        if (prefix < 0 || prefix > 32) return 0;
+
+    /* trim surrounding blanks */
+    char *t = buf;
+    while (*t == ' ' || *t == '\t') t++;
+    size_t tl = strlen(t);
+    while (tl > 0 && (t[tl - 1] == ' ' || t[tl - 1] == '\t')) t[--tl] = '\0';
+    if (!*t) return 0;
+
+    /* Optional [..] around an IPv6 literal. */
+    char *addr = t;
+    const char *tail = NULL;
+    if (*addr == '[') {
+        char *close = strchr(addr, ']');
+        if (!close) return 0;
+        *close = '\0';                       /* terminate the literal */
+        addr++;
+        tail = close + 1;                    /* "" or "/nnn" */
     }
-    struct in_addr a;
-    if (inet_aton(buf, &a) == 0) return 0;
-    unsigned int mask;
-    if (prefix == 0) mask = 0;
-    else {
-        unsigned int host_mask = ~((1u << (32 - prefix)) - 1) & 0xFFFFFFFFu;
-        mask = htonl(host_mask);
+
+    /* Split off the prefix. For a bracketed entry the literal is already
+     * NUL-terminated; a bare "addr/nnn" must be cut at the '/' or inet_aton
+     * would see the prefix as trailing junk (BSD inet_aton rejects it). */
+    int prefix = -1;
+    if (tail) {
+        if (*tail) {
+            if (*tail != '/') return 0;      /* junk after "]" */
+            prefix = parse_prefix(tail + 1);
+            if (prefix < 0) return 0;
+        }
+    } else {
+        char *slash = strchr(addr, '/');
+        if (slash) {
+            *slash = '\0';
+            prefix = parse_prefix(slash + 1);
+            if (prefix < 0) return 0;
+        }
     }
-    *out_ip = a.s_addr;       /* network order */
-    *out_mask = mask;         /* network order */
+
+    if (strchr(addr, ':')) {                 /* IPv6 literal */
+        struct in6_addr a6;
+        if (inet_pton(AF_INET6, addr, &a6) != 1) return 0;
+        if (prefix < 0) prefix = 128;
+        if (prefix > 128) return 0;
+        out->family = AF_INET6;
+        build_mask(out->mask, prefix, 16);
+        memcpy(out->addr, &a6, 16);
+        for (int i = 0; i < 16; i++) out->addr[i] &= out->mask[i];
+        return 1;
+    }
+
+    struct in_addr a4;
+    if (inet_aton(addr, &a4) == 0) return 0;
+    if (prefix < 0) prefix = 32;
+    if (prefix > 32) return 0;
+    out->family = AF_INET;
+    build_mask(out->mask, prefix, 4);
+    memset(out->addr, 0, 16);
+    memcpy(out->addr, &a4, 4);
+    for (int i = 0; i < 4; i++) out->addr[i] &= out->mask[i];
     return 1;
 }
 
@@ -106,56 +184,54 @@ void rate_limit_set_trusted_proxies(const char *csv) {
         if (len >= sizeof(entry)) { if (*p == ',') p++; continue; }
         memcpy(entry, start, len);
         entry[len] = '\0';
-        unsigned int ip, mask;
-        if (parse_cidr(entry, &ip, &mask)) {
-            g_trusted[g_trusted_n].ip = ip;
-            g_trusted[g_trusted_n].mask = mask;
+        if (parse_cidr(entry, &g_trusted[g_trusted_n])) {
             g_trusted_n++;
         }
         if (*p == ',') p++;
     }
 }
 
-int rate_limit_is_trusted(unsigned int peer_ip) {
+int rate_limit_is_trusted(const struct sockaddr *sa, socklen_t len) {
+    (void)len;
+    if (!sa) return 0;
+    const unsigned char *bytes;
+    int nbytes;
+    if (sa->sa_family == AF_INET) {
+        bytes = (const unsigned char *)&((const struct sockaddr_in *)sa)->sin_addr;
+        nbytes = 4;
+    } else if (sa->sa_family == AF_INET6) {
+        bytes = (const unsigned char *)&((const struct sockaddr_in6 *)sa)->sin6_addr;
+        nbytes = 16;
+    } else {
+        return 0;
+    }
     for (int i = 0; i < g_trusted_n; i++) {
-        if ((peer_ip & g_trusted[i].mask) == (g_trusted[i].ip & g_trusted[i].mask))
-            return 1;
+        if (g_trusted[i].family != sa->sa_family) continue;
+        int match = 1;
+        for (int j = 0; j < nbytes; j++) {
+            if ((bytes[j] & g_trusted[i].mask[j]) != g_trusted[i].addr[j]) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) return 1;
     }
     return 0;
 }
 
-unsigned int rate_limit_parse_xff(const char *xff) {
-    if (!xff) return 0;
-    /* The original client is the LEFTmost address; downstream proxies append
-     * to the right. Take the substring up to the first comma. */
-    char buf[64];
-    size_t n = 0;
-    while (*xff && *xff != ',' && n + 1 < sizeof(buf)) {
-        if (*xff != ' ' && *xff != '\t') buf[n++] = *xff;
-        xff++;
+/* Derive the 32-bit bucket key from a v4/v6 address: the IPv4 address as-is
+ * (network order, matching struct sockaddr_in.sin_addr.s_addr) so a direct
+ * peer and an X-Forwarded-For hop compare identically, or an FNV-1a hash of
+ * the 128-bit IPv6 address so each v6 client lands in one consistent bucket.
+ * Never returns 0 for a valid address (0 means "no key" to callers). */
+static unsigned int key_from_addr(int family, const void *addr) {
+    if (family == AF_INET) {
+        unsigned int v;
+        memcpy(&v, addr, sizeof v);
+        return v;
     }
-    buf[n] = '\0';
-    if (!n) return 0;
-    struct in_addr a;
-    if (inet_aton(buf, &a) == 0) return 0;
-    return a.s_addr; /* network order, matches the bucket key */
-}
-
-/* Derive the 32-bit bucket key for a peer address: the IPv4 address as-is, or
- * an FNV-1a hash of the 128-bit IPv6 address. When the peer is a TRUSTED proxy
- * (rate_limit_is_trusted) supplying X-Forwarded-For, the first hop replaces the
- * key (IPv4 only today: trusted proxies sit in front of IPv4 clients). Returns
- * 0 for an unknown/absent family. */
-static unsigned int sockaddr_key(const struct sockaddr *sa, socklen_t len) {
-    (void)len;
-    if (!sa) return 0;
-    if (sa->sa_family == AF_INET) {
-        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
-        return sin->sin_addr.s_addr;
-    }
-    if (sa->sa_family == AF_INET6) {
-        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
-        const unsigned char *b = sin6->sin6_addr.s6_addr;
+    if (family == AF_INET6) {
+        const unsigned char *b = (const unsigned char *)addr;
         unsigned int h = 0x811c9dc5u; /* FNV-1a 32-bit offset basis */
         for (int i = 0; i < 16; i++) { h ^= b[i]; h *= 0x01000193u; }
         return h ? h : 1u; /* never return 0: 0 means "no key" to callers */
@@ -163,10 +239,63 @@ static unsigned int sockaddr_key(const struct sockaddr *sa, socklen_t len) {
     return 0;
 }
 
+unsigned int rate_limit_parse_xff(const char *xff) {
+    if (!xff) return 0;
+    /* The original client is the LEFTmost address; downstream proxies append
+     * to the right. Take the token up to the first comma. */
+    char buf[128];
+    size_t n = 0;
+    while (*xff && *xff != ',' && n + 1 < sizeof(buf)) {
+        if (*xff != ' ' && *xff != '\t') buf[n++] = *xff;
+        xff++;
+    }
+    buf[n] = '\0';
+    if (!n) return 0;
+
+    char *p = buf;
+    if (*p == '[') {                /* [2001:db8::1] or [2001:db8::1]:port */
+        char *close = strchr(p, ']');
+        if (!close) return 0;
+        *close = '\0';
+        p++;
+        struct in6_addr a6;
+        if (inet_pton(AF_INET6, p, &a6) != 1) return 0;
+        return key_from_addr(AF_INET6, &a6);
+    }
+    int colons = 0;
+    for (const char *q = p; *q; q++) { if (*q == ':') colons++; }
+    if (colons > 1) {               /* bare IPv6 literal */
+        struct in6_addr a6;
+        if (inet_pton(AF_INET6, p, &a6) != 1) return 0;
+        return key_from_addr(AF_INET6, &a6);
+    }
+    if (colons == 1) {              /* "1.2.3.4:5678" -> drop the port */
+        *strchr(p, ':') = '\0';
+    }
+    struct in_addr a4;
+    if (inet_aton(p, &a4) == 0) return 0;
+    return key_from_addr(AF_INET, &a4);
+}
+
+/* Bucket key for a peer sockaddr (see key_from_addr). 0 = unknown family. */
+static unsigned int sockaddr_key(const struct sockaddr *sa, socklen_t len) {
+    (void)len;
+    if (!sa) return 0;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        return key_from_addr(AF_INET, &sin->sin_addr);
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        return key_from_addr(AF_INET6, &sin6->sin6_addr);
+    }
+    return 0;
+}
+
 unsigned int rate_limit_key_from_peer(const struct sockaddr *sa, socklen_t len,
                                       const HttpRequest *req) {
     unsigned int peer = sockaddr_key(sa, len);
-    if (peer && req && req->x_forwarded_for[0] && rate_limit_is_trusted(peer)) {
+    if (peer && req && req->x_forwarded_for[0] && rate_limit_is_trusted(sa, len)) {
         unsigned int x = rate_limit_parse_xff(req->x_forwarded_for);
         if (x) return x;
     }

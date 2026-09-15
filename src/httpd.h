@@ -159,19 +159,26 @@ int check_basic_auth(const char *header_value);
  * direct peer is in the trusted set configured via
  * rate_limit_set_trusted_proxies(); otherwise it falls back to the peer key.
  * This keeps a spoofed X-Forwarded-For from an untrusted source powerless.
- * The trusted-proxy list is IPv4-only: an IPv6 peer is never treated as a
- * trusted proxy, so X-Forwarded-For arriving over v6 is always ignored. */
+ * Trust is matched against the peer ADDRESS, so proxies reached over IPv4 or
+ * IPv6 are both supported. */
 extern int g_rate_limit_rps;
 void rate_limit_init(void);
-/* Configure the trusted-proxy CIDR/IP list (comma-separated IPv4, e.g.
- * "127.0.0.1,10.0.0.0/8,172.16.0.0/12"). Call once before fork. Empty/unset
- * means "trust nobody" -> X-Forwarded-For is never used. IPv4 only: entries
- * are parsed with inet_aton, so an IPv6 proxy address matches nothing. */
+/* Configure the trusted-proxy CIDR/IP list. Comma-separated; each entry is
+ * IPv4 or IPv6, with an optional prefix, e.g.
+ * "127.0.0.1,10.0.0.0/8,172.16.0.0/12,::1,2001:db8::/32,[fe80::1]". Call once
+ * before fork. Entries are trimmed of surrounding blanks; a bracketed IPv6
+ * literal and a "/nnn" prefix are both accepted. A malformed entry (bad
+ * address or non-numeric/out-of-range prefix) is dropped — it never widens
+ * the trusted set. Empty/unset means "trust nobody" -> X-Forwarded-For is
+ * never used. */
 void rate_limit_set_trusted_proxies(const char *csv);
-/* True when peer_ip (network order) sits inside a trusted proxy subnet. */
-int rate_limit_is_trusted(unsigned int peer_ip);
-/* First (leftmost, original-client) IPv4 in an X-Forwarded-For value, in
- * network order; 0 if none is parseable. */
+/* True when the peer address sits inside a trusted proxy subnet. Matched by
+ * family + masked prefix; an unknown address family is never trusted. */
+int rate_limit_is_trusted(const struct sockaddr *sa, socklen_t len);
+/* First (leftmost, original-client) address in an X-Forwarded-For value, as a
+ * bucket key: IPv4 in network order or an FNV-1a hash of an IPv6 literal.
+ * Accepts "1.2.3.4", "1.2.3.4:port", "2001:db8::1" and "[2001:db8::1]:port".
+ * 0 if nothing parseable. */
 unsigned int rate_limit_parse_xff(const char *xff);
 /* Resolve the IP to limit on: X-Forwarded-For's first hop when the peer is
  * trusted, else the peer itself. Always network order. */

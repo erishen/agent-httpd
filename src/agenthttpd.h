@@ -45,7 +45,7 @@ typedef struct {
     const char *access_log; /* combined-format access log ["./logs/access.log"] */
     const char *htpasswd; /* Basic Auth file; NULL = auth off [NULL] */
     const char *auth_realm; /* 401 realm ["agent-httpd"] */
-    int rate_limit_rps;   /* per-IP fixed window; 0 = off [0] */
+    int rate_limit_rps;   /* per-IP token-bucket rate (req/s); 0 = off [0] */
     const char *fcgi_socket; /* also serve FastCGI on this UNIX socket; NULL = off [NULL] */
     const char *react_socket; /* resident React SSR backend to relay /react/ to [NULL] */
     int vite_upstream_port; /* DEV ONLY: Vite proxy upstream; 0 = off [0] */
