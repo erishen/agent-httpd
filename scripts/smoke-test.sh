@@ -1012,10 +1012,10 @@ wait "$RATE_PID" 2>/dev/null
 rm -f /tmp/agent-httpd-rate-pool.out
 
 # X-Forwarded-For: behind a trusted reverse proxy the limiting key must be the
-# header's first hop, not the proxy's peer address. The test client trusts
-# 127.0.0.1 as the proxy, so pin the URL to IPv4: the trusted-proxy list is
-# IPv4-only, and "localhost" may now resolve to ::1 (we listen on :: too, and
-# a v6 peer is never trusted) which would silently ignore the header.
+# header's first hop, not the proxy's peer address. Trust is family-aware and
+# the entry configured here is the IPv4 127.0.0.1, so pin the URL to IPv4:
+# "localhost" may resolve to ::1, a different family that would NOT match the
+# entry (and would silently ignore the header).
 RATE_XFF_PORT=3113
 RATE_XFF_BASE="http://127.0.0.1:$RATE_XFF_PORT"
 RATE_LIMIT_TRUSTED_PROXIES=127.0.0.1 "$SERVER" -p "$RATE_XFF_PORT" -l 3 > /tmp/agent-httpd-rate-xff.log 2>&1 &
@@ -1080,6 +1080,91 @@ check "rate-limit (xff-untrusted): header ignored, peer bucket used (200s=$xff2_
 kill "$RATE_XFF2_PID" 2>/dev/null
 wait "$RATE_XFF2_PID" 2>/dev/null
 rm -f "$xff2_headers"
+
+# IPv6 trusted proxy: trust is matched on the peer ADDRESS by family, so a
+# proxy reached over ::1 is honoured exactly like an IPv4 one, and an IPv6
+# X-Forwarded-For hop hashes to the same bucket a direct v6 client from that
+# address would use. Skips when the host has no usable [::1] route.
+RATE_XFF6_PORT=3125
+RATE_XFF6_BASE="http://[::1]:$RATE_XFF6_PORT"
+RATE_LIMIT_TRUSTED_PROXIES="::1" "$SERVER" -p "$RATE_XFF6_PORT" -l 3 > /tmp/agent-httpd-rate-xff6.log 2>&1 &
+RATE_XFF6_PID=$!
+xff6_ready=0
+i=0
+while [ "$i" -lt 30 ]; do
+    curl -s -o /dev/null --max-time 1 "$RATE_XFF6_BASE/" && xff6_ready=1 && break
+    i=$((i + 1)); sleep 0.2
+done
+if [ "$xff6_ready" = "1" ]; then
+    xff6_headers="/tmp/agent-httpd-rate-xff6.txt"
+    # burst 1: IPv4 XFF values behind a trusted v6 proxy
+    xff6_sec=$(date +%S)
+    while [ "$(date +%S)" = "$xff6_sec" ]; do :; done
+    : > "$xff6_headers"
+    i=0
+    while [ "$i" -lt 4 ]; do
+        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 1.1.1.1" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
+        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 2.2.2.2" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
+        i=$((i + 1))
+    done
+    xff6_200=$(grep -c '^HTTP/1.1 200' "$xff6_headers")
+    xff6_429=$(grep -c '^HTTP/1.1 429' "$xff6_headers")
+    check "rate-limit (xff6): v6-trusted proxy honours v4 XFF (200s=$xff6_200 429s=$xff6_429 of 8, limit 3)" "1" \
+        "$([ "$xff6_200" -eq 6 ] && [ "$xff6_429" -eq 2 ] && echo 1 || echo 0)"
+    # burst 2: IPv6 XFF literals, bare and bracketed-with-port forms
+    xff6_sec=$(date +%S)
+    while [ "$(date +%S)" = "$xff6_sec" ]; do :; done
+    : > "$xff6_headers"
+    i=0
+    while [ "$i" -lt 4 ]; do
+        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 2001:db8::1" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
+        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: [2001:db8::2]:443" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
+        i=$((i + 1))
+    done
+    xff6b_200=$(grep -c '^HTTP/1.1 200' "$xff6_headers")
+    xff6b_429=$(grep -c '^HTTP/1.1 429' "$xff6_headers")
+    check "rate-limit (xff6): IPv6 XFF bare + [..]:port get distinct quotas (200s=$xff6b_200 429s=$xff6b_429 of 8, limit 3)" "1" \
+        "$([ "$xff6b_200" -eq 6 ] && [ "$xff6b_429" -eq 2 ] && echo 1 || echo 0)"
+    rm -f "$xff6_headers"
+else
+    echo "SKIP: rate-limit (xff6) (no usable [::1] route on this host)"
+fi
+kill "$RATE_XFF6_PID" 2>/dev/null
+wait "$RATE_XFF6_PID" 2>/dev/null
+rm -f /tmp/agent-httpd-rate-xff6.log
+
+# A malformed trusted-proxy entry must never widen trust: atoi-style parsing
+# would read "127.0.0.1/abc" as prefix 0 (= trust everyone), letting any peer
+# spoof its limiter key. Every entry below is invalid, so nothing is trusted
+# and X-Forwarded-For must be ignored.
+RATE_BAD_PORT=3126
+RATE_BAD_BASE="http://127.0.0.1:$RATE_BAD_PORT"
+RATE_LIMIT_TRUSTED_PROXIES="127.0.0.1/abc,::1/zz,127.0.0.1/-1,10.0.0.0/99" \
+    "$SERVER" -p "$RATE_BAD_PORT" -l 3 > /tmp/agent-httpd-rate-bad.log 2>&1 &
+RATE_BAD_PID=$!
+bad_ready=0
+i=0
+while [ "$i" -lt 30 ]; do
+    curl -s -o /dev/null --max-time 1 "$RATE_BAD_BASE/" && bad_ready=1 && break
+    i=$((i + 1)); sleep 0.2
+done
+check "rate-limit (bad-cidr) instance up" "1" "$bad_ready"
+bad_sec=$(date +%S)
+while [ "$(date +%S)" = "$bad_sec" ]; do :; done
+bad_headers="/tmp/agent-httpd-rate-bad.txt"
+: > "$bad_headers"
+i=0
+while [ "$i" -lt 8 ]; do
+    curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 7.7.7.7" "$RATE_BAD_BASE/" >> "$bad_headers" 2>/dev/null
+    i=$((i + 1))
+done
+bad_200=$(grep -c '^HTTP/1.1 200' "$bad_headers")
+bad_429=$(grep -c '^HTTP/1.1 429' "$bad_headers")
+check "rate-limit (bad-cidr): malformed entries trust nobody (200s=$bad_200 429s=$bad_429 of 8, limit 3)" "1" \
+    "$([ "$bad_200" -le 3 ] && [ "$bad_429" -ge 4 ] && echo 1 || echo 0)"
+kill "$RATE_BAD_PID" 2>/dev/null
+wait "$RATE_BAD_PID" 2>/dev/null
+rm -f "$bad_headers" /tmp/agent-httpd-rate-bad.log
 
 # IPv6 listener: the server also binds :: (IPV6_V6ONLY) so a v6-only client can
 # connect. Probe loopback v6 and skip when the host has no v6 route. With -l 2

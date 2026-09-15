@@ -190,10 +190,11 @@ fast & slow paths / agent stack / security depth) see the
   fail-closed (malformed lines skipped, all-invalid refuses to start), 401s
   carry a WWW-Authenticate challenge, CGI gets the login via `REMOTE_USER`,
   the gate covers the whole site including `/react/` forwarding
-- **Per-IP rate limiting (-l)**: fixed-window counting on a shared-memory
-  table, fork/worker-pool modes enforce the same quota; the check runs before
-  auth (floods never burn crypt CPU); over-limit gets 429 + Retry-After and
-  a close
+- **Per-IP rate limiting (-l)**: token-bucket counting on a shared-memory
+  table, fork/worker-pool modes enforce the same quota; IPv4 and IPv6 peers
+  both key independently, and a trusted reverse proxy's `X-Forwarded-For` can
+  supply the key (`RATE_LIMIT_TRUSTED_PROXIES`); the check runs before auth
+  (floods never burn crypt CPU); over-limit gets 429 + Retry-After and a close
 
 ## Directory layout
 
@@ -627,20 +628,36 @@ disconnects early terminates the CGI immediately and abandons the send —
 ./bin/agent-httpd -p 18080 -l 20   # at most 20 req/s per IP
 ```
 
-- **Fixed-window counting**: the table lives in `MAP_SHARED` anonymous shared
-  memory (each IP hashes into 1024 buckets, bucket mutexes explicitly
-  `PTHREAD_PROCESS_SHARED`), so **fork-per-connection and worker-pool modes
-  enforce the same quota** — pooled processes can't each count separately.
+- **Token bucket, shared table**: the table lives in `MAP_SHARED` anonymous
+  shared memory (each IP hashes into 4096 buckets via a splitmix mix, bucket
+  mutexes explicitly `PTHREAD_PROCESS_SHARED`), so **fork-per-connection and
+  worker-pool modes enforce the same quota** — pooled processes can't each
+  count separately. Tokens refill at `-l` per second, so there's no 2x burst
+  at a window boundary.
 - **The check runs before Basic Auth**: floods never reach the dispatch layer
   nor burn crypt() CPU — rate limiting is exactly the right shield against
   Basic Auth brute force.
 - **Over-limit response**: `429 Too Many Requests` + `Retry-After: 1`, with a
   forced `Connection: close` (queued same-source requests can't sneak past the
   counter).
-- **Hash collisions use "bucket stealing"**: the table stays tiny with no
-  chains; a collision briefly mis-attributes to another IP — acceptable for a
-  teaching server.
+- **Hash collisions probe, never steal**: a colliding IP probes up to 8
+  following slots and only consumes a bucket it already owns, so a later
+  arrival can't wipe another IP's live counter (the old "bucket stealing" was
+  a rate-limit bypass). Only when every probe slot is taken does it degrade to
+  sharing the base slot — still without overwriting anyone's accounting.
+- **Behind a reverse proxy**: the key is the direct peer's address, which
+  collapses every real client onto the proxy. Set
+  `RATE_LIMIT_TRUSTED_PROXIES` to a comma-separated list of proxy IPs/CIDRs
+  and the leftmost `X-Forwarded-For` hop becomes the key instead — but only
+  when the peer is trusted, so an untrusted client can't spoof its bucket.
+  Entries are IPv4 **or** IPv6 (`127.0.0.1,10.0.0.0/8,::1,2001:db8::/32`),
+  optionally bracketed for v6 (`[::1]`); a malformed entry (bad address, or a
+  non-numeric / out-of-range prefix) is dropped rather than widened to
+  "trust everyone". IPv6 XFF hops are matched the same way IPv6 peers are
+  (hashed to the 32-bit key), so both families limit independently.
 - The env var `RATE_LIMIT_RPS` overrides `-l`.
+- The env var `RATE_LIMIT_TRUSTED_PROXIES` enables the X-Forwarded-For
+  handling above (unset = trust nobody).
 
 ## Basic Auth
 
@@ -1041,7 +1058,7 @@ that Next can't swap in.
 - [x] HTTP/1.1 keep-alive connection reuse (RFC 7230: persistent by default in 1.1, explicit opt-in for 1.0, `Connection: close` always honored; 100-request cap per connection, close after 5xx, streamed relay responses without Content-Length follow close semantics)
 - [~] Thread pool instead of forked processes — **evaluated, not done**: benefits overlap with the prefork worker pool (`-w N`) (isolation is actually worse; a thread pool buys little under the CGI fork+exec model); the project already offers two concurrency models, a third only adds teaching noise
 - [x] Basic Auth (`-a htpasswd` + `-r realm`, plaintext/crypt hash dual mode, fail-closed, CGI reads `REMOTE_USER`)
-- [x] Per-IP rate limiting (`-l <rps>`, fixed window + shared-memory table, one quota across fork/pool modes, 429 + Retry-After)
+- [x] Per-IP rate limiting (`-l <rps>`, token bucket + shared-memory table, one quota across fork/pool modes, IPv4/IPv6 keys, X-Forwarded-For behind a trusted proxy, 429 + Retry-After)
 - [x] Chat upstream transient-failure retries (3 attempts + 1s/2.5s backoff, transient/permanent classification, backoff watches for client disconnects)
 - [x] Privacy & compliance hardening (proxied-path security header parity, FCGI socket default 0700, log files 0600, outbound error scrubbing)
 - [x] MCP subprocess secret scrubbing: the LLM credentials (`LLM_API_KEY` / `LLM_API_URL` / `LLM_MODEL`) are `unsetenv`'d in the child before `execvp`, so third-party npx-fetched MCP servers (e.g. `server-filesystem`) never inherit them. (`MCP_FS_ROOT` is kept — the fs server needs it as its sandbox root; the CGI path scrubs the same trio in `cgi.c`.)

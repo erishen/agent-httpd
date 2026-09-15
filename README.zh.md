@@ -49,7 +49,7 @@ MCP / 技能 / 记忆 / ReAct / PSE）。
 - **HMR 开发模式 (`make dev`)**: C 是唯一公网服务器, Vite 退化为内部服务 (`127.0.0.1:PORT+2`) —— 客户端组件 react-refresh 热替换, 服务端代码改动免重启, Tailwind 类名实时重编译; `/@*`、`/src/*`、`/react/*` 经 C `-v` 反向代理 + WebSocket 隧道接到 Vite, 静态/CGI/chat 由 C 直服 (与生产同一条代码路径)
 - **LLM 流式聊天 (`/react/chat`)**: SSE 流式对话页 + `/react/api/chat` 数据端点; **数据端点已由 C 进程原生处理 (`src/agent/llm.c`)**: 有 `LLM_API_KEY` 时 fork `curl -N` 调 OpenAI 兼容上游 (TLS 交给 curl, 服务器本体仍只链 libc), 逐 delta 重发 SSE; 上游瞬时故障 (连接拒绝/重置、5xx、429) 自动重试——共 3 次尝试, 间隔 1s/2.5s 退避, 期间 SSE 下发 `upstream hiccup, retrying` note, 退避按 100ms 小步检查客户端断开即中止; 重试判定见 `agent_retryable()` (curl exit 7/18/35/52/55/56、HTTP 429/5xx 视为瞬时, 4xx 拒绝与 127 不重试)。无密钥回落内置 C 演示引擎 (逐词节流的罐头回复)。SSE 信封 (note/delta/error/done) 与 node 后端 `chat.ts` 完全一致, 页面零改动; 配置写在项目根 `.env` (模板见 `.env.example`); nginx 侧 `location = /react/api/chat` 反代回 httpd 并 `proxy_buffering off` 直通
 - **Basic Auth 认证 (-a/-r)**: RFC 7617, htpasswd 文件驱动, secret 支持明文或 crypt(3) 哈希 (Linux 现代 SHA 格式 / macOS DES), fail-closed (非法行跳过、全无效拒绝启动), 401 响应带 WWW-Authenticate 质询, CGI 经 REMOTE_USER 获取认证用户, 全站门禁含 `/react/` 转发
-- **每 IP 限流 (-l)**: 固定窗口计数 + 共享内存计数表, fork/worker 池模式共用同一配额; 检查先于认证 (洪水烧不到 crypt CPU), 超限回 429 + Retry-After 并断连
+- **每 IP 限流 (-l)**: 令牌桶计数 + 共享内存计数表, fork/worker 池模式共用同一配额; IPv4/IPv6 对端各自独立成桶, 可信反代可用 `X-Forwarded-For` (`RATE_LIMIT_TRUSTED_PROXIES`) 提供 key; 检查先于认证 (洪水烧不到 crypt CPU), 超限回 429 + Retry-After 并断连
 
 ## 目录结构
 
@@ -409,11 +409,13 @@ HMR 与代理行为均由 `make test` 的守卫用例覆盖 (vite 未安装时�
 ./bin/agent-httpd -p 18080 -l 20   # 每个 IP 每秒最多 20 个请求
 ```
 
-- **固定窗口计数**: 计数表放在 `MAP_SHARED` 匿名共享内存里 (每 IP 哈希进 1024 个桶, 桶内互斥锁显式 `PTHREAD_PROCESS_SHARED`), 所以**每连接 fork 模式和 worker 池模式强制的是同一个配额**——worker 池下多个进程不会各算各的。
+- **令牌桶 + 共享表**: 计数表放在 `MAP_SHARED` 匿名共享内存里 (每 IP 经 splitmix 混合后哈希进 4096 个桶, 桶内互斥锁显式 `PTHREAD_PROCESS_SHARED`), 所以**每连接 fork 模式和 worker 池模式强制的是同一个配额**——worker 池下多个进程不会各算各的。令牌按 `-l` 每秒补充, 窗口边界不再出现 2 倍突发。
 - **检查顺序在 Basic Auth 之前**: 洪水打不到分发层, 也烧不到 crypt() CPU——用限流挡住 Basic Auth 爆破正合适。
 - **超限响应**: `429 Too Many Requests` + `Retry-After: 1`, 并强制 `Connection: close` (排队中的同源请求无法借道溜过计数器)。
-- **哈希冲突取“抢占桶”策略**: 表保持极小、无链表; 冲突时短暂错记到别的 IP, 对教学服务器可接受。
+- **哈希冲突靠线性探测, 绝不抢占**: 冲突时向后探测最多 8 个槽, 只消费自己名下的桶; 后来者无法清空他人仍在窗口期的计数 (旧的"抢占桶"等于限流可被绕过)。只有 8 个槽全满才退化为共用基槽——同样不覆盖别人的计数。
+- **反代场景**: 默认 key 是 TCP 对端地址, 走反代时所有真实客户端会塌缩到代理这一个桶。把 `RATE_LIMIT_TRUSTED_PROXIES` 设为**逗号分隔的代理 IP/CIDR 列表**, `X-Forwarded-For` 最左跳即成为 key——但**仅当对端落在可信列表内**才采纳, 不可信客户端无法伪造自己的桶。条目支持 IPv4 **与** IPv6 (`127.0.0.1,10.0.0.0/8,::1,2001:db8::/32`), v6 可加方括号 (`[::1]`); 非法条目 (地址不合法, 或前缀非数字/越界) 会被**丢弃而非放宽**成"信任所有人"。IPv6 的 XFF 跳与 IPv6 对端用同一套 key 推导 (哈希成 32 位), 两种族各自独立限流。
 - 环境变量 `RATE_LIMIT_RPS` 可覆盖 `-l`。
+- 环境变量 `RATE_LIMIT_TRUSTED_PROXIES` 启用上面的 X-Forwarded-For 处理 (不设 = 不信任任何代理)。
 
 ## Basic Auth 认证
 
@@ -760,7 +762,7 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [x] HTTP/1.1 Keep-Alive 连接复用 (RFC 7230: 1.1 默认持久, 1.0 需显式 keep-alive, `Connection: close` 总是生效; 单连接上限 100 请求, 5xx 响应后关闭, 流式转发响应因无 Content-Length 仍按 close 语义)
 - [~] 线程池代替 fork 进程 —— **评估后不做**: 与 prefork worker 池 (`-w N`) 收益重叠 (隔离性反而更差, CGI fork+exec 模型下线程池优势有限); 项目已有两种并发模型可选, 再加第三种只增加教学噪音
 - [x] Basic Auth 认证 (`-a htpasswd` + `-r realm`, 明文/crypt 哈希双模式, fail-closed, CGI 经 `REMOTE_USER` 获取用户)
-- [x] 每 IP 限流 (`-l <rps>`, 固定窗口 + 共享内存计数表, fork/worker 池共用配额, 429 + Retry-After)
+- [x] 每 IP 限流 (`-l <rps>`, 令牌桶 + 共享内存计数表, fork/worker 池共用配额, IPv4/IPv6 key, 可信反代下的 X-Forwarded-For, 429 + Retry-After)
 - [x] chat 上游瞬时故障重试 (3 次尝试 + 1s/2.5s 退避, 瞬时/永久错误分类判定, 退避期监听客户端断开)
 - [x] 隐私与合规加固 (安全头代理同构、FCGI socket 默认 0700、日志文件 0600、对外错误脱敏)
 - [x] MCP 子进程密钥脱敏: 在 `execvp` 前的子进程里 `unsetenv` 掉 LLM 凭据 (`LLM_API_KEY` / `LLM_API_URL` / `LLM_MODEL`), 因此经 npx 拉取的第三方 MCP server (如 `server-filesystem`) 绝不会继承密钥。(保留 `MCP_FS_ROOT` —— fs server 需要它作沙箱根; CGI 侧在 `cgi.c` 同样脱敏这三项。)
