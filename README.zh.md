@@ -48,7 +48,7 @@ MCP / 技能 / 记忆 / ReAct / PSE）。
 - **React SSR 全 TS + Tailwind + React Router + SSR/CSR 可切换**: React SSR 源码为 TypeScript (tsc 门禁), 样式用 Tailwind CSS v4 并按需内联进 SSR `<head>`; 客户端路由用 react-router v8 (SSR 深链 + 浏览器无刷新切换); 每个请求可用 `?mode=csr|ssr` 双模式渲染, 产物全部 esbuild `--minify`
 - **HMR 开发模式 (`make dev`)**: C 是唯一公网服务器, Vite 退化为内部服务 (`127.0.0.1:PORT+2`) —— 客户端组件 react-refresh 热替换, 服务端代码改动免重启, Tailwind 类名实时重编译; `/@*`、`/src/*`、`/react/*` 经 C `-v` 反向代理 + WebSocket 隧道接到 Vite, 静态/CGI/chat 由 C 直服 (与生产同一条代码路径)
 - **LLM 流式聊天 (`/react/chat`)**: SSE 流式对话页 + `/react/api/chat` 数据端点; **数据端点已由 C 进程原生处理 (`src/agent/llm.c`)**: 有 `LLM_API_KEY` 时 fork `curl -N` 调 OpenAI 兼容上游 (TLS 交给 curl, 服务器本体仍只链 libc), 逐 delta 重发 SSE; 上游瞬时故障 (连接拒绝/重置、5xx、429) 自动重试——共 3 次尝试, 间隔 1s/2.5s 退避, 期间 SSE 下发 `upstream hiccup, retrying` note, 退避按 100ms 小步检查客户端断开即中止; 重试判定见 `agent_retryable()` (curl exit 7/18/35/52/55/56、HTTP 429/5xx 视为瞬时, 4xx 拒绝与 127 不重试)。无密钥回落内置 C 演示引擎 (逐词节流的罐头回复)。SSE 信封 (note/delta/error/done) 与 node 后端 `chat.ts` 完全一致, 页面零改动; 配置写在项目根 `.env` (模板见 `.env.example`); nginx 侧 `location = /react/api/chat` 反代回 httpd 并 `proxy_buffering off` 直通
-- **Basic Auth 认证 (-a/-r)**: RFC 7617, htpasswd 文件驱动, secret 支持明文或 crypt(3) 哈希 (Linux 现代 SHA 格式 / macOS DES), fail-closed (非法行跳过、全无效拒绝启动), 401 响应带 WWW-Authenticate 质询, CGI 经 REMOTE_USER 获取认证用户, 全站门禁含 `/react/` 转发
+- **Basic Auth 认证 (-a/-r)**: RFC 7617, htpasswd 文件驱动, **仅强哈希** (`$5$`/`$6$`/bcrypt; 明文、DES、`$1$`/`$apr1$` 在加载期即被跳过, 唯一回退途径是开发用的 `AGENTHTTPD_ALLOW_WEAK_AUTH=1`), fail-closed (非法行跳过、全无效拒绝启动), 401 响应带 WWW-Authenticate 质询, CGI 经 REMOTE_USER 获取认证用户, 全站门禁含 `/react/` 转发
 - **每 IP 限流 (-l)**: 令牌桶计数 + 共享内存计数表, fork/worker 池模式共用同一配额; IPv4/IPv6 对端各自独立成桶, 可信反代可用 `X-Forwarded-For` (`RATE_LIMIT_TRUSTED_PROXIES`) 提供 key; 检查先于认证 (洪水烧不到 crypt CPU), 超限回 429 + Retry-After 并断连
 - **双栈监听**: 同一端口同时绑 IPv4 `0.0.0.0` 与 IPv6 `::` (显式置 `IPV6_V6ONLY`, 否则 `::` 会把 v4 一起吞掉、v4 的 bind 直接撞 EADDRINUSE); 事件循环与每连接 fork 两条 accept 路径都服务两族; 主机无可用 v6 栈时只打一行提示、退回纯 IPv4
 
@@ -690,9 +690,13 @@ PSE 单轮 Planner→Specialist→Evaluator(PASS)。
   通往宿主数据管线的 MCP 桥, 发布到 `0.0.0.0` 等于把这些摊到局域网上。
   确有跨机需求时用 `AGENT_HTTPD_BIND` 覆盖。
 - **对外可达的实例必须开 `-l` 与认证**: 云机环境模板
-  (`deploy/env.cloud.example`) 里是 `RATE_LIMIT=0`, 于是暴露在公网地址上的
-  容器就是一个无鉴权的 LLM 代理, 而且花的是你的钱。请开每 IP 限流 (`-l`)
-  与 Basic Auth, 或把安全组限到已知来源。
+  (`deploy/env.cloud.example`) 现在给出非 0 的 `RATE_LIMIT` **和**
+  `AUTH_HTPASSWD` —— 两样都没有的对外容器就是一个无鉴权的 LLM 代理, 而且花的是
+  你的钱。两者都是 entrypoint 层开关 (`deploy/docker-entrypoint.sh` 翻译成
+  `-l` / `-a`): 用 `--env-file` 部署时没有别的地方能追加命令行参数。htpasswd
+  文件缺失或不可读时容器**直接退出**, 不会退回开放访问。前面有反向代理时必须设
+  `RATE_LIMIT_TRUSTED_PROXIES`, 否则所有请求共用代理那一个桶, 每 IP 限流退化成
+  全局限流。或者干脆把安全组限到已知来源。
 
 ## CGI 环境变量
 
@@ -778,7 +782,7 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [x] FastCGI 后端 (UNIX socket, 复用 HTTP 分发链)
 - [x] HTTP/1.1 Keep-Alive 连接复用 (RFC 7230: 1.1 默认持久, 1.0 需显式 keep-alive, `Connection: close` 总是生效; 单连接上限 100 请求, 5xx 响应后关闭, 流式转发响应因无 Content-Length 仍按 close 语义)
 - [~] 线程池代替 fork 进程 —— **评估后不做**: 与 prefork worker 池 (`-w N`) 收益重叠 (隔离性反而更差, CGI fork+exec 模型下线程池优势有限); 项目已有两种并发模型可选, 再加第三种只增加教学噪音
-- [x] Basic Auth 认证 (`-a htpasswd` + `-r realm`, 明文/crypt 哈希双模式, fail-closed, CGI 经 `REMOTE_USER` 获取用户)
+- [x] Basic Auth 认证 (`-a htpasswd` + `-r realm`, **仅强哈希** `$5$`/`$6$`/bcrypt, fail-closed, CGI 经 `REMOTE_USER` 获取用户; 弱哈希须显式 `AGENTHTTPD_ALLOW_WEAK_AUTH=1`)
 - [x] 每 IP 限流 (`-l <rps>`, 令牌桶 + 共享内存计数表, fork/worker 池共用配额, IPv4/IPv6 key, 可信反代下的 X-Forwarded-For, 429 + Retry-After)
 - [x] 双栈监听 (同端口绑 IPv4 `0.0.0.0` + IPv6 `::`, 显式置 `IPV6_V6ONLY`, 两条 accept 路径都服务两族, 主机无 v6 栈时优雅退回纯 IPv4)
 - [x] chat 上游瞬时故障重试 (3 次尝试 + 1s/2.5s 退避, 瞬时/永久错误分类判定, 退避期监听客户端断开)
@@ -793,3 +797,7 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 - [~] 多虚拟主机 —— **暂缓**: 教学场景单 docroot 已够; 真需要时前置 nginx 按 Host 分流到多个 agent-httpd 实例即可, 不必在 C 层重新实现
 - [x] URL 路由 (react-router 客户端路由 + SSR 深链; C 层 `/react/` 转发)
 - [~] SSL/HTTPS 支持 —— **评估后不做**: 生产部署惯例是 nginx/负载均衡终结 TLS (本仓库的 docker-compose 就是这个形态); 在教学服务器里集成 OpenSSL 会显著膨胀代码而偏离主线
+
+## 许可
+
+MIT —— 见 [LICENSE](LICENSE)。前端依赖保留各自许可 (React、Vite、Tailwind 均为 MIT)。

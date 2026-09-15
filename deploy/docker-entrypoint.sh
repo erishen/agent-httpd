@@ -22,6 +22,20 @@ fi
 # 组装命令行 (语义与本地 make start 一致)
 ARGS="-p ${PORT:-8080} -w ${WORKERS:-8}"
 [ "${RATE_LIMIT:-0}" != "0" ] && ARGS="$ARGS -l $RATE_LIMIT"
+# Basic Auth: 环境变量翻成命令行 flag (与 RATE_LIMIT 同一套路), 因为
+# --env-file 部署的人没有地方追加 CLI 参数, 而不设就等于无鉴权 —— 公网实例
+# 必须设 AUTH_HTPASSWD。文件不存在/不可读时**直接退出**: 静默降级成开放
+# 访问是最糟的失败模式, 宁可容器起不来。
+if [ -n "${AUTH_HTPASSWD:-}" ]; then
+    if [ ! -r "$AUTH_HTPASSWD" ]; then
+        echo "[httpd] fatal: AUTH_HTPASSWD=$AUTH_HTPASSWD 不可读 (挂载了吗?)" >&2
+        echo "        生成:  htpasswd -B -c <file> <user>" >&2
+        echo "        服务端只接受强哈希 (\$5\$/\$6\$/bcrypt); 弱哈希需 AGENTHTTPD_ALLOW_WEAK_AUTH=1" >&2
+        exit 1
+    fi
+    ARGS="$ARGS -a $AUTH_HTPASSWD"
+fi
+[ -n "${AUTH_REALM:-}" ] && ARGS="$ARGS -r $AUTH_REALM"
 [ -n "$FCGI_SOCK" ] && ARGS="$ARGS -F $FCGI_SOCK"
 # /react/* 中继到驻留后端 (agent-httpd 作 FCGI 客户端的那条链)
 [ -n "${REACT_SOCK:-}" ] && ARGS="$ARGS -R $REACT_SOCK"
@@ -70,5 +84,8 @@ for _p in ${LLM_FORWARD_PORTS:-}; do
 ) &
 done
 
-echo "[httpd] exec bin/agent-httpd $ARGS (docroot: /app/www)"
-exec bin/agent-httpd $ARGS
+echo "[httpd] exec bin/agent-httpd $ARGS $* (docroot: /app/www)"
+# "$@" 一并转发: 镜像名之后追加的参数过去是被**静默丢弃**的, 于是
+# `docker run ... -a /path/htpasswd` 看起来配了鉴权、实际没有。AUTH_HTPASSWD
+# 是推荐路径, 但这里不再让额外参数凭空消失。
+exec bin/agent-httpd $ARGS "$@"
