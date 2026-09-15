@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
+#include <poll.h>
 
 #include "internal.h"
 #include "metrics.h"
@@ -214,18 +215,37 @@ int start_worker_pool(int n, int server_fd) {
  * *tok_out, or 0 when the server is shutting down mid-wait. The token must
  * be returned via pool_return_token() if dispatch then fails. */
 int pool_claim_slot(char *tok_out) {
-    char tok = 0;
-    ssize_t r;
-    do {
-        r = read(token_r, &tok, 1);
+    for (;;) {
+        char tok = 0;
+        ssize_t r = read(token_r, &tok, 1);
         if (r == 1) {
             *tok_out = tok;
             if (g_metrics) __atomic_fetch_add(&g_metrics->workers_busy,
                                              1ULL, __ATOMIC_RELAXED);
             return 1;
         }
-    } while (r < 0 && errno == EINTR && g_server_running);
-    return 0;
+        if (r == 0) return 0; /* write end closed: the pool is gone */
+        if (errno == EINTR) {
+            if (!g_server_running) return 0;
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (!g_server_running) return 0;
+            /* token_r is O_NONBLOCK (set by start_worker_pool so the event
+             * loop can poll it without blocking). A bare read() therefore
+             * returns EAGAIN the instant the pool is drained — which the
+             * caller would misread as "shutting down" and answer by closing
+             * the connection. Wait for a token explicitly instead; the 1s
+             * tick keeps the shutdown flag observable. */
+            struct pollfd pf;
+            pf.fd = token_r;
+            pf.events = POLLIN;
+            pf.revents = 0;
+            if (poll(&pf, 1, 1000) < 0 && errno != EINTR) return 0;
+            continue;
+        }
+        return 0; /* unexpected errno: treat the pool as unusable */
+    }
 }
 
 void pool_return_token(char tok) {

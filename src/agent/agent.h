@@ -42,6 +42,11 @@
 #define UP_ERR_LOCAL -1    /* pipe/fork/OOM inside agent_round (already emitted) */
 #define UP_ERR_TIMEOUT -2  /* LLM_TIMEOUT expired while reading the stream */
 #define UP_ERR_EMPTY -3    /* clean HTTP 200 but zero content and zero tool calls */
+/* The upstream answered with a JSON error object (quota exhausted, bad
+ * request...). That is a DEFINITE rejection, not a transient drop: it is
+ * surfaced by handle_upstream_line as it arrives and must never be retried,
+ * or one failure becomes three identical error events on the wire. */
+#define UP_ERR_UPSTREAM -4
 /* up_err >= UP_ERR_HTTP_BASE carries the upstream HTTP status as
  * up_err - UP_ERR_HTTP_BASE (captured via curl -w). Separates a HARD 4xx
  * reject (waste of a retry) from a 5xx/429 gateway failure (transient —
@@ -78,6 +83,7 @@ typedef struct {
     RoundCall calls[AGENT_TOOL_CALLS_MAX];
     int n_calls;
     int saw_content; /* round streamed at least one content delta */
+    int saw_error;   /* round carried a JSON "error" object (already surfaced) */
 } RoundState;
 
 /* Create the token pipe; call once in the PARENT before any worker/child
