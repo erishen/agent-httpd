@@ -38,9 +38,17 @@ RUN sh scripts/build-cgis.sh
 FROM node:20-bookworm-slim AS ssr-build
 # 镜像内保持仓库布局 (/build 为仓库根), build-ssr.sh 按自身位置寻址
 WORKDIR /build
-# 先只拷贝 lockfile 安装依赖, 充分利用层缓存 (源码改动不重装 npm 包)
-COPY cgi-bin/react-ssr/package.json cgi-bin/react-ssr/package-lock.json cgi-bin/react-ssr/
-RUN cd cgi-bin/react-ssr && npm ci --no-audit --no-fund
+# 先只拷贝清单+锁文件安装依赖, 充分利用层缓存 (源码改动不重装依赖)。
+# 包管理器是 pnpm (见 cgi-bin/react-ssr/package.json 的 packageManager 字段):
+# npm 的扁平 hoisting 会把 tsx/vite 的传递依赖 esbuild 提升到根 .bin, 而
+# build-ssr.sh 恰恰直接执行 node_modules/.bin/esbuild —— pnpm 只链「直接依赖」
+# 的 bin, 所以 esbuild 必须显式声明 (已是直接 devDependency, 钉 0.28.2),
+# 否则构建停在 "esbuild/tsc/tailwindcss missing"。
+# 用 npm 全局装 pnpm 而不是 corepack: 规避 corepack 的一整类签名校验失败,
+# 版本可复现由这里的显式钉定 + --frozen-lockfile 共同保证。
+COPY cgi-bin/react-ssr/package.json cgi-bin/react-ssr/pnpm-lock.yaml cgi-bin/react-ssr/
+RUN npm i -g pnpm@9.15.9 \
+    && cd cgi-bin/react-ssr && pnpm install --frozen-lockfile
 COPY cgi-bin/react-ssr/ cgi-bin/react-ssr/
 COPY scripts/build-ssr.sh scripts/
 # 产物: cgi-bin/react-ssr.cgi (CGI) + bin/react-ssr-server (驻留后端)

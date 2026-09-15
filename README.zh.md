@@ -318,13 +318,23 @@ make build-cgis
 构建流程(仅改源码后需要):
 
 ```bash
-cd cgi-bin/react-ssr && npm install   # 一次性安装构建依赖 (react, esbuild, tailwindcss, typescript, @types/*)
+cd cgi-bin/react-ssr && pnpm install   # 一次性安装构建依赖 (react, esbuild, tailwindcss, typescript, @types/*)
 make build-ssr                        # 先 tsc --noEmit 类型检查, 再 Tailwind 编译, 再产物:
                                       # server/cgi.tsx  → cgi-bin/react-ssr.cgi
                                       # server/main.tsx → bin/react-ssr-server (常驻)
                                       # client.tsx      → www/js/react-ssr.js
 make typecheck                        # 单独跑类型检查 (esbuild 只转译不查类型)
 ```
+
+这个子项目用 **pnpm** 安装依赖(版本由 `package.json` 的 `packageManager` 钉定;
+`pnpm-lock.yaml` 已入库, npm 的锁文件故意不入)。这对可复现性是必要的:
+`cgi-bin/react-ssr.cgi`、`www/js/react-ssr.js[.gz]` 与 `tailwind.css` 都是**被跟踪的构建
+产物**, 依赖解析一变产物字节就变。自动化里请用 `pnpm install --frozen-lockfile`。
+
+`esbuild` 是**故意**写成直接 devDependency 的: `build-ssr.sh` 直接执行
+`node_modules/.bin/esbuild`, 而 pnpm 只链**直接依赖**的 bin —— 若继续依赖 npm 扁平
+安装把传递依赖提升上来(过去的实际情况), 构建会停在
+"esbuild/tsc/tailwindcss missing" 这种极具误导性的报错上。
 
 TS 约束与典型坑:
 
@@ -350,7 +360,7 @@ GET/POST 与 FastCGI 三个入口。
 Vite 按需转换代替——同一个 `render.tsx` 渲染核心, 但改完即生效:
 
 ```bash
-cd cgi-bin/react-ssr && npm install   # 一次性 (vite/@vitejs/plugin-react 已在 devDependencies)
+cd cgi-bin/react-ssr && pnpm install   # 一次性 (vite/@vitejs/plugin-react 已在 devDependencies)
 make dev                              # http://localhost:3100/react/?name=Alice
 DEV_PORT=3100 make dev                # 换端口
 ```

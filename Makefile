@@ -109,12 +109,12 @@ build-ssr:
 
 # Type-check the React SSR TypeScript sources (tsc --noEmit; esbuild does not type-check)
 typecheck:
-	@cd cgi-bin/react-ssr && npm run typecheck
+	@cd cgi-bin/react-ssr && pnpm run typecheck
 
 # Development mode: HMR dev server for the React app (Vite middleware mode,
 # same render.tsx core as production). Edit App.tsx / render.tsx /
 # styles/main.css and the browser updates automatically - no esbuild rebuild,
-# no server restart. One-time setup: cd cgi-bin/react-ssr && npm install.
+# no server restart. One-time setup: cd cgi-bin/react-ssr && pnpm install.
 # Override with DEV_PORT=. Stops a previous dev-server instance first.
 DEV_PORT ?= 3100
 dev:

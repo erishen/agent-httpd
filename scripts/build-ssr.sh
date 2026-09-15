@@ -12,11 +12,16 @@
 # Usage: sh scripts/build-ssr.sh
 
 set -e
-SRC_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../cgi-bin/react-ssr" && pwd)"
-BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../bin" && pwd)"
-CGI_OUT="$(CDPATH= cd -- "$(dirname -- "$0")/../cgi-bin" && pwd)/react-ssr.cgi"
+# Derive every path from the repo root instead of `cd`-ing into each target
+# directory: bin/ is gitignored, so on a fresh clone the `cd .../../bin` that
+# used to sit here failed under `set -e` BEFORE the dependency check below
+# could report anything useful. mkdir -p creates it a few lines down.
+REPO="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SRC_DIR="$REPO/cgi-bin/react-ssr"
+BIN_DIR="$REPO/bin"
+CGI_OUT="$REPO/cgi-bin/react-ssr.cgi"
 SERVER_OUT="$BIN_DIR/react-ssr-server"
-CLIENT_OUT="$(CDPATH= cd -- "$(dirname -- "$0")/../www" && pwd)/js/react-ssr.js"
+CLIENT_OUT="$REPO/www/js/react-ssr.js"
 ESBUILD="$SRC_DIR/node_modules/.bin/esbuild"
 TSC="$SRC_DIR/node_modules/.bin/tsc"
 TAILWIND="$SRC_DIR/node_modules/.bin/tailwindcss"
@@ -24,7 +29,7 @@ TAILWIND_OUT="$SRC_DIR/tailwind.css"
 TAILWIND_IN="$SRC_DIR/styles/main.css"
 
 if [ ! -x "$ESBUILD" ] || [ ! -x "$TSC" ] || [ ! -x "$TAILWIND" ]; then
-    echo "error: esbuild/tsc/tailwindcss missing. Run 'cd cgi-bin/react-ssr && npm install' first" >&2
+    echo "error: esbuild/tsc/tailwindcss missing. Run 'cd cgi-bin/react-ssr && pnpm install' first" >&2
     exit 1
 fi
 
