@@ -1,79 +1,324 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>AgentHTTPD Server</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            background-color: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #333;
-            border-bottom: 2px solid #4CAF50;
-            padding-bottom: 10px;
-        }
-        .links {
-            margin: 20px 0;
-        }
-        a {
-            display: inline-block;
-            margin: 10px 10px 10px 0;
-            padding: 10px 20px;
-            background-color: #4CAF50;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            transition: background-color 0.3s;
-        }
-        a:hover {
-            background-color: #45a049;
-        }
-        .info {
-            background-color: #e8f5e9;
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
-            border-left: 4px solid #4CAF50;
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentHTTPD — an HTTP/1.1 server in C</title>
+<style>
+  /* Design tokens mirrored from cgi-bin/react-ssr/styles/main.css, so the
+   * static pages and the React demo share one palette. Styles are inlined
+   * on purpose: every page here stays self-contained (no extra request),
+   * matching the SSR pipeline's css=text decision. */
+  :root {
+    color-scheme: dark;
+    --ink: #0f1420;
+    --surface: #1c2536;
+    --edge: #334155;
+    --accent: #38bdf8;
+    --accent-hi: #7dd3fc;
+    --accent-ink: #082f49;
+    --slate-100: #f1f5f9;
+    --slate-200: #e2e8f0;
+    --slate-300: #cbd5e1;
+    --slate-400: #94a3b8;
+    --slate-500: #64748b;
+    --slate-600: #475569;
+  }
+  * { box-sizing: border-box; }
+  html { height: 100%; }
+  body {
+    margin: 0; min-height: 100%;
+    background: var(--ink); color: var(--slate-200);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Two soft colour washes anchor the page without adding an asset. */
+  .glow {
+    position: fixed; top: -18vh; left: 0; right: 0; height: 64vh;
+    pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(58% 62% at 26% 0%, rgba(56,189,248,.17), transparent 72%),
+      radial-gradient(48% 52% at 78% 6%, rgba(167,139,250,.15), transparent 72%);
+  }
+  /* ---------- nav ---------- */
+  .nav {
+    position: sticky; top: 0; z-index: 20;
+    border-bottom: 1px solid var(--edge);
+    background: rgba(15,20,32,.78);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .nav-in {
+    max-width: 1000px; margin: 0 auto; padding: 12px 20px;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .brand {
+    margin-right: auto; font-weight: 700; letter-spacing: -.01em;
+    color: var(--slate-100); text-decoration: none;
+  }
+  .brand:hover { color: var(--accent); }
+  .brand code { color: #fbbf24; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .brand .x { color: var(--slate-600); margin: 0 6px; }
+  .nav a.link {
+    border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 500;
+    color: var(--slate-400); text-decoration: none;
+    transition: background .15s, color .15s;
+  }
+  .nav a.link:hover { background: var(--surface); color: var(--slate-200); }
+  /* ---------- shell ---------- */
+  .wrap { position: relative; z-index: 1; max-width: 1000px; margin: 0 auto; padding: 60px 20px 0; }
+  .eyebrow {
+    margin: 0 0 16px; font-size: 11px; font-weight: 700;
+    letter-spacing: .3em; text-transform: uppercase; color: var(--accent);
+  }
+  h1 {
+    margin: 0; font-weight: 800; letter-spacing: -.028em;
+    font-size: clamp(30px, 5.2vw, 50px); line-height: 1.1;
+  }
+  .grad {
+    background-image: linear-gradient(100deg, #38bdf8, #a78bfa 48%, #e879f9);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent; -webkit-text-fill-color: transparent;
+  }
+  .lede {
+    margin: 20px 0 0; max-width: 64ch;
+    font-size: 16px; line-height: 1.72; color: var(--slate-400);
+  }
+  .lede code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .9em; background: rgba(51,65,85,.5);
+    border-radius: 4px; padding: 1px 5px; color: var(--slate-200);
+  }
+  /* ---------- stat chips ---------- */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+  .tag {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    border: 1px solid var(--edge); border-radius: 9999px;
+    background: rgba(28,37,54,.55); padding: 5px 13px;
+    font-size: 12px; color: var(--slate-400);
+  }
+  .tag b { font-size: 13px; font-weight: 700; color: var(--slate-100); }
+  /* ---------- buttons ---------- */
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--edge); border-radius: 10px;
+    background: transparent; padding: 10px 18px;
+    font-size: 14px; font-weight: 600; color: var(--slate-200);
+    text-decoration: none;
+    transition: border-color .15s, color .15s, background .15s, transform .15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+  .btn.primary {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  }
+  .btn.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+  .rule {
+    height: 1px; margin: 52px 0 0; border: 0;
+    background: linear-gradient(90deg, rgba(56,189,248,.55), rgba(167,139,250,.3), transparent);
+  }
+  /* ---------- entry cards ---------- */
+  .grid {
+    display: grid; gap: 16px; margin-top: 40px;
+    grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+  }
+  .card {
+    display: flex; flex-direction: column; gap: 10px;
+    border: 1px solid var(--edge); border-radius: 16px;
+    background: var(--surface); padding: 22px;
+    color: inherit; text-decoration: none;
+    box-shadow: 0 20px 40px rgba(0,0,0,.35);
+    transition: border-color .18s, transform .18s, box-shadow .18s;
+  }
+  .card:hover {
+    border-color: var(--accent); transform: translateY(-3px);
+    box-shadow: 0 26px 52px rgba(0,0,0,.46);
+  }
+  .card h2 { margin: 0; font-size: 17px; font-weight: 700; }
+  .card p { margin: 0; font-size: 14px; line-height: 1.66; color: var(--slate-400); }
+  .card .go {
+    margin-top: auto; padding-top: 10px;
+    font-size: 13px; font-weight: 600; color: var(--accent);
+  }
+  .card:hover .go { color: var(--accent-hi); }
+  .icon {
+    width: 36px; height: 36px; border-radius: 10px;
+    display: grid; place-items: center; border: 1px solid;
+  }
+  .icon svg { width: 19px; height: 19px; }
+  .icon.sky    { color: #38bdf8; border-color: rgba(56,189,248,.36); background: rgba(56,189,248,.12); }
+  .icon.violet { color: #a78bfa; border-color: rgba(167,139,250,.36); background: rgba(167,139,250,.12); }
+  .icon.emerald{ color: #34d399; border-color: rgba(52,211,153,.36);  background: rgba(52,211,153,.12); }
+  /* ---------- cookbook ---------- */
+  .panel {
+    margin-top: 40px; border: 1px solid var(--edge); border-radius: 16px;
+    background: var(--surface); padding: 24px;
+    box-shadow: 0 20px 40px rgba(0,0,0,.35);
+  }
+  .panel h2 { margin: 0 0 6px; font-size: 18px; letter-spacing: -.01em; }
+  .panel .sub { margin: 0; font-size: 14px; line-height: 1.66; color: var(--slate-400); }
+  .grp { margin-top: 22px; }
+  .grp h3 {
+    margin: 0 0 10px; font-size: 11px; font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--slate-500);
+  }
+  .links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .links a {
+    border: 1px solid var(--edge); border-radius: 8px;
+    background: rgba(15,20,32,.6); padding: 7px 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px; color: var(--slate-300); text-decoration: none;
+    transition: border-color .15s, color .15s;
+  }
+  .links a:hover { border-color: var(--accent); color: var(--accent); }
+  /* ---------- footer ---------- */
+  footer {
+    position: relative; z-index: 1;
+    max-width: 1000px; margin: 0 auto; padding: 40px 20px 52px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px;
+    font-size: 12px; color: var(--slate-500);
+  }
+  footer .dot { color: var(--slate-600); }
+  footer a { color: var(--slate-400); text-decoration: none; }
+  footer a:hover { color: var(--accent); text-decoration: underline; }
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>Welcome to AgentHTTPD</h1>
-        <p>This is a simple HTTP server implemented in C. Below are some features:</p>
-        
-        <div class="info">
-            <h3>Features</h3>
-            <ul>
-                <li>Static file serving</li>
-                <li>CGI script execution</li>
-                <li>Multi-process concurrency (fork model)</li>
-                <li>Request logging</li>
-                <li>MIME type detection</li>
-            </ul>
-        </div>
-        
-        <h3>Try these pages:</h3>
-        <div class="links">
-            <a href="/cgi-bin/hello.cgi">Hello CGI</a>
-            <a href="/cgi-bin/form.cgi">Form Handler</a>
-            <a href="/cgi-bin/python.cgi?name=Alice&message=Hi">Python CGI</a>
-            <a href="/cgi-bin/react-ssr.cgi?name=Alice&message=Hi">React SSR</a>
-            <a href="/cgi-bin/go.cgi?name=Alice&message=Hi">Go CGI</a>
-            <a href="/cgi-bin/rust.cgi?name=Alice&message=Hi">Rust CGI</a>
-            <a href="/cgi-bin/java.cgi?name=Alice&message=Hi">Java CGI</a>
-            <a href="/cgi-bin/php.cgi?name=Alice&message=Hi">PHP CGI</a>
-            <a href="/cgi-bin/ruby.cgi?name=Alice&message=Hi">Ruby CGI</a>
-        </div>
+<div class="glow" aria-hidden="true"></div>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="/">
+      <code>agent-httpd</code><span class="x">&#215;</span><span class="grad">C</span>
+    </a>
+    <a class="link" href="/react">React SSR</a>
+    <a class="link" href="/react/chat">Chat</a>
+    <a class="link" href="/chat.html">Vanilla chat</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <p class="eyebrow">Prefork event loop &middot; CGI &middot; FastCGI &middot; React SSR</p>
+    <h1>
+      A hand-written HTTP/1.1 server,<br>
+      <span class="grad">from sockets to an LLM agent.</span>
+    </h1>
+    <p class="lede">
+      Static files, a nine-script CGI zoo, FastCGI at both ends and
+      server-rendered React &mdash; plus a native C chat agent that drives
+      <code>tools</code>, <code>MCP</code> servers, <code>skills</code>,
+      session <code>memory</code> and a Planner &rarr; Specialist &rarr;
+      Evaluator orchestrator.
+    </p>
+
+    <div class="chips">
+      <span class="tag"><b>0</b> external deps</span>
+      <span class="tag"><b>7</b> HTTP methods</span>
+      <span class="tag"><b>9</b> CGI scripts</span>
+      <span class="tag"><b>8</b> worker pool</span>
+      <span class="tag"><b>SSE</b> streaming</span>
     </div>
+
+    <div class="cta">
+      <a class="btn primary" href="/react/chat">
+        Open the agent chat
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13"/><path d="M12 5l7 7-7 7"/></svg>
+      </a>
+      <a class="btn" href="/react">React SSR demo</a>
+      <a class="btn" href="/chat.html">Vanilla chat</a>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <section class="grid">
+    <a class="card" href="/react/chat">
+      <span class="icon sky">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h16v10.5H9.5L4 20z"/><path d="M8.5 9.5h7"/><path d="M8.5 12.5h4"/></svg>
+      </span>
+      <h2>Agent chat</h2>
+      <p>
+        A C LLM agent over SSE: every tool call, MCP round-trip, skill run
+        and PSE cycle is streamed back as a coloured chip above the reply.
+        Switch between the single ReAct loop and the PSE orchestrator.
+      </p>
+      <span class="go">/react/chat &rarr;</span>
+    </a>
+
+    <a class="card" href="/react">
+      <span class="icon violet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="1.9" fill="currentColor" stroke="none"/><ellipse cx="12" cy="12" rx="10" ry="4.1"/><ellipse cx="12" cy="12" rx="10" ry="4.1" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4.1" transform="rotate(120 12 12)"/></svg>
+      </span>
+      <h2>React SSR</h2>
+      <p>
+        A React Router app rendered by a CGI program, then hydrated in the
+        browser. Route-level code splitting, streaming SSR and an error
+        boundary &mdash; all served straight from C.
+      </p>
+      <span class="go">/react &rarr;</span>
+    </a>
+
+    <a class="card" href="/cgi-bin/hello.cgi">
+      <span class="icon emerald">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6.5l5.5 5.5L5 17.5"/><path d="M13 17.5h6"/></svg>
+      </span>
+      <h2>CGI zoo</h2>
+      <p>
+        The same CGI contract driven from nine scripts &mdash; C, Python,
+        Go, Rust, Java, PHP, Ruby and React &mdash; each one a full
+        process fork away from the event loop.
+      </p>
+      <span class="go">/cgi-bin/hello.cgi &rarr;</span>
+    </a>
+  </section>
+
+  <section class="panel">
+    <h2>Try it</h2>
+    <p class="sub">
+      Every link below is a live endpoint of this server. The polyglot group
+      runs the identical request through a different language runtime each
+      time.
+    </p>
+
+    <div class="grp">
+      <h3>C teaching scripts</h3>
+      <div class="links">
+        <a href="/cgi-bin/hello.cgi">hello.cgi</a>
+        <a href="/cgi-bin/form.cgi">form.cgi</a>
+      </div>
+    </div>
+
+    <div class="grp">
+      <h3>Polyglot CGI</h3>
+      <div class="links">
+        <a href="/cgi-bin/python.cgi?name=Alice&amp;message=Hi">python.cgi</a>
+        <a href="/cgi-bin/go.cgi?name=Alice&amp;message=Hi">go.cgi</a>
+        <a href="/cgi-bin/rust.cgi?name=Alice&amp;message=Hi">rust.cgi</a>
+        <a href="/cgi-bin/java.cgi?name=Alice&amp;message=Hi">java.cgi</a>
+        <a href="/cgi-bin/php.cgi?name=Alice&amp;message=Hi">php.cgi</a>
+        <a href="/cgi-bin/ruby.cgi?name=Alice&amp;message=Hi">ruby.cgi</a>
+      </div>
+    </div>
+
+    <div class="grp">
+      <h3>Server-rendered React</h3>
+      <div class="links">
+        <a href="/cgi-bin/react-ssr.cgi?name=Alice&amp;message=Hi">react-ssr.cgi</a>
+        <a href="/react">/react</a>
+        <a href="/react/about">/react/about</a>
+        <a href="/react/counter">/react/counter</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>AgentHTTPD &middot; a teaching HTTP/1.1 server in C</span>
+  <span class="dot">&middot;</span>
+  <span>path traversal protection &middot; dotfile denial &middot; constant-time auth</span>
+  <span class="dot">&middot;</span>
+  <a href="/react/chat">Agent chat</a>
+</footer>
 </body>
 </html>
