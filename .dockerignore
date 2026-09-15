@@ -38,4 +38,16 @@ www/range-test-smoke.bin
 www/js/fix-mid.bin
 
 # 密钥文件绝不进镜像 (compose 在运行时经 env_file 注入容器)
+# `.env` 只是其一 —— 一切 .env 变体都排除。构建上下文会被送往构建器
+# (远端 builder / 共享 daemon 时等于把它们上传出去)，所以这里必须比
+# Dockerfile 实际 COPY 的路径更宽，而不是刚好够用。
 .env
+.env.*
+deploy/.env.local
+deploy/.env.cloud
+deploy/.env.cloud.*
+deploy/cicdkit-project.json
+
+# 运行时状态: 会话记录 / MCP 注册 / 记忆 (含真实对话内容与宿主绝对路径)。
+# 镜像里只用 deploy/mcp-servers.container.json 那一份，绝不整目录搬。
+.data/

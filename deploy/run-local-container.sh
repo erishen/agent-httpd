@@ -51,7 +51,12 @@ for v in "$VOL_VENV_ASSET" "$VOL_VENV_PSE" "$VOL_UV_CACHE"; do
 done
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d --name "$NAME" -p "${PORT}:8080" \
+# Bind loopback by default: this instance drives the weekly-investment bridges,
+# so it can read REAL holdings — publishing on 0.0.0.0 would put that on the
+# LAN (café wifi, hotel network). Override with AGENT_HTTPD_BIND only when you
+# actually need it reachable from another machine.
+BIND="${AGENT_HTTPD_BIND:-127.0.0.1}"
+docker run -d --name "$NAME" -p "${BIND}:${PORT}:8080" \
   --env-file "$HERE/.env.local" \
   -e ASSET_LENS_DIR="$WS/invest-kit/apps/asset-lens" \
   -e AUTOGEN_PSE_DIR="$WS/frameworks/autogen-pse" \
