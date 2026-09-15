@@ -677,6 +677,22 @@ PSE 单轮 Planner→Specialist→Evaluator(PASS)。
 - **抓取的网页内容是不可信输入**: `fetch_url` 在传输层做了 SSRF 加固, 但返回
   的页面文本会进入 agent 循环 —— 恶意页面可以试图操纵模型 (prompt
   injection)。文件工具的根保持最小化, 绝不把凭据交给 agent。
+- **密钥卫生写进仓库, 而不是某台机器**: 各种 `.env` 变体
+  (`deploy/.env.local`、`deploy/.env.cloud.*`) 的忽略规则在仓库自己的
+  `.gitignore` 里 —— 写进开发者个人的 `~/.gitignore_global` 只保护这一台
+  笔记本, 换台机器或 CI 检出时密钥文件就会变成「未跟踪且可暂存」。
+  `.dockerignore` 排除的是**全部** `.env` 变体外加 `.data/` (会话记录),
+  尽管当前 Dockerfile 只读 `.env`: 构建上下文是整个目录送进构建器的。
+  天然需要绝对路径的部署配置以 `.example` 模板入库
+  (`deploy/cicdkit-project.example.json`), 真实文件忽略。
+- **能触达本地数据的实例只绑回环**: 本地演示容器
+  (`deploy/run-local-container.sh`) 默认发布在 `127.0.0.1` —— 它驱动的是
+  通往宿主数据管线的 MCP 桥, 发布到 `0.0.0.0` 等于把这些摊到局域网上。
+  确有跨机需求时用 `AGENT_HTTPD_BIND` 覆盖。
+- **对外可达的实例必须开 `-l` 与认证**: 云机环境模板
+  (`deploy/env.cloud.example`) 里是 `RATE_LIMIT=0`, 于是暴露在公网地址上的
+  容器就是一个无鉴权的 LLM 代理, 而且花的是你的钱。请开每 IP 限流 (`-l`)
+  与 Basic Auth, 或把安全组限到已知来源。
 
 ## CGI 环境变量
 
