@@ -9,8 +9,16 @@ logs/
 # the target before renaming it, which left a stray 0-byte cgi-bin entry
 cgi-bin/.!*
 
-# secrets (template: .env.example)
+# secrets (templates: .env.example / deploy/env.cloud.example)
+# Repo-level on purpose: `deploy/.env.local` used to be covered only by a
+# machine-local ~/.gitignore_global entry, so on any other checkout (or CI)
+# the key file showed up as untracked-and-stageable. Ignore every .env
+# variant here, then re-allow the templates.
 .env
+.env.*
+!.env.example
+!*.env.example
+deploy/.env.local
 
 # runtime state: sessions / MCP registrations / memory (contains conversation data + absolute paths)
 .data/
@@ -47,6 +55,11 @@ www/js/fix-mid.bin
 deploy/.env.cloud
 # 含密钥的备份(如 gemini 端点尝试)
 deploy/.env.cloud.*
+
+# cicdkit needs a server-visible ABSOLUTE build context, so the real project
+# file is inherently machine-specific (and leaks the local username/layout if
+# committed). The tracked deploy/cicdkit-project.example.json is the template.
+deploy/cicdkit-project.json
 
 # demo: generated assembly dumps for teaching (not project source)
 asm-demo/
