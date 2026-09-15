@@ -161,9 +161,17 @@ async function main() {
   const rebuildTailwind = (reason) => {
     clearTimeout(twTimer);
     twTimer = setTimeout(() => {
+      // --minify must match scripts/build-ssr.sh: this writes the TRACKED
+      // artifact cgi-bin/react-ssr/tailwind.css, so omitting the flag rewrites
+      // it in a different (pretty) form and every dev run leaves a 1400-line
+      // spurious diff behind.
       require("child_process").execFile(
         TAILWIND_BIN,
-        ["-i", path.join(SRC_DIR, "styles/main.css"), "-o", path.join(SRC_DIR, "tailwind.css")],
+        [
+          "-i", path.join(SRC_DIR, "styles/main.css"),
+          "-o", path.join(SRC_DIR, "tailwind.css"),
+          "--minify",
+        ],
         (err) => {
           if (err) {
             console.error("[dev-server] tailwindcss rebuild failed:", err.message);
