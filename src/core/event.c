@@ -62,8 +62,9 @@ typedef enum {
 typedef struct {
     int fd;
     ConnState state;
-    unsigned int ip;             /* network-order client addr */
-    char ip_str[INET_ADDRSTRLEN];
+    struct sockaddr_storage peer; /* client address (IPv4 or IPv6) */
+    socklen_t peer_len;
+    char ip_str[INET6_ADDRSTRLEN];
     time_t deadline;             /* header/idle timeout */
     int served;                  /* requests served on this connection */
     int in_use;
@@ -295,7 +296,9 @@ static void conn_readable(Conn *c) {
         fast_serve(c, &req, &resp, hdr_len, 0);
         return;
     }
-    if (g_rate_limit_rps > 0 && !rate_limit_allow(rate_limit_client_ip(&req, c->ip))) {
+    if (g_rate_limit_rps > 0 &&
+        !rate_limit_allow(rate_limit_key_from_peer((struct sockaddr *)&c->peer,
+                                                   c->peer_len, &req))) {
         set_error_response(&resp, 429, "Too Many Requests");
         resp.retry_after = 1;
         fast_serve(c, &req, &resp, hdr_len, 1);
@@ -334,7 +337,7 @@ static void conn_readable(Conn *c) {
 
 static void accept_http(int server_fd) {
     for (;;) {
-        struct sockaddr_in ca;
+        struct sockaddr_storage ca;
         socklen_t cl = sizeof(ca);
         int fd = accept(server_fd, (struct sockaddr *)&ca, &cl);
         if (fd < 0) {
@@ -356,8 +359,9 @@ static void accept_http(int server_fd) {
         }
         c->fd = fd;
         c->state = S_READ_HEADER;
-        c->ip = ca.sin_addr.s_addr;
-        snprintf(c->ip_str, sizeof(c->ip_str), "%s", inet_ntoa(ca.sin_addr));
+        memcpy(&c->peer, &ca, (size_t)cl);
+        c->peer_len = cl;
+        sockaddr_to_str((struct sockaddr *)&c->peer, c->ip_str, sizeof(c->ip_str));
         c->served = 0;
         c->deadline = time(NULL) + g_request_timeout_seconds;
         c->in_use = 1;
@@ -365,7 +369,7 @@ static void accept_http(int server_fd) {
     }
 }
 
-static void accept_fcgi(int server_fd, int fcgi_fd) {
+static void accept_fcgi(int server_fd4, int server_fd6, int fcgi_fd) {
     struct sockaddr_un client_sa;
     socklen_t client_len = sizeof(client_sa);
     int client_fd = accept(fcgi_fd, (struct sockaddr *)&client_sa, &client_len);
@@ -373,7 +377,9 @@ static void accept_fcgi(int server_fd, int fcgi_fd) {
     pid_t pid = fork();
     if (pid == 0) {
         close(fcgi_fd);
-        close(server_fd); /* don't leak the listening socket into the handler */
+        /* don't leak the listening sockets into the handler */
+        if (server_fd4 >= 0) close(server_fd4);
+        if (server_fd6 >= 0) close(server_fd6);
         if (g_kq >= 0) close(g_kq);
         int tfd = pool_token_fd();
         if (tfd >= 0) close(tfd);
@@ -386,7 +392,7 @@ static void accept_fcgi(int server_fd, int fcgi_fd) {
     }
 }
 
-int event_loop(int server_fd, int fcgi_fd) {
+int event_loop(int server_fd4, int server_fd6, int fcgi_fd) {
 #if defined(__linux__)
     g_kq = epoll_create1(0);
 #else
@@ -400,15 +406,20 @@ int event_loop(int server_fd, int fcgi_fd) {
     /* Listeners must be non-blocking so accept() returns EAGAIN instead of
      * parking the whole loop when accept_http drains the backlog. */
     {
-        int fl = fcntl(server_fd, F_GETFL, 0);
-        fcntl(server_fd, F_SETFL, fl | O_NONBLOCK);
+        int fl = fcntl(server_fd4, F_GETFL, 0);
+        fcntl(server_fd4, F_SETFL, fl | O_NONBLOCK);
+        if (server_fd6 >= 0) {
+            fl = fcntl(server_fd6, F_GETFL, 0);
+            fcntl(server_fd6, F_SETFL, fl | O_NONBLOCK);
+        }
         if (fcgi_fd >= 0) {
             fl = fcntl(fcgi_fd, F_GETFL, 0);
             fcntl(fcgi_fd, F_SETFL, fl | O_NONBLOCK);
         }
     }
 
-    ev_register(server_fd);
+    ev_register(server_fd4);
+    if (server_fd6 >= 0) ev_register(server_fd6);
     if (fcgi_fd >= 0) ev_register(fcgi_fd);
     /* The pool's token pipe must NOT be registered here, tempting as the
      * "wake me when a worker frees up" semantics are: it is a counting
@@ -472,10 +483,10 @@ int event_loop(int server_fd, int fcgi_fd) {
                 if (c) conn_close(c);
                 continue;
             }
-            if (fd == server_fd) {
-                accept_http(server_fd);
+            if (fd == server_fd4 || (server_fd6 >= 0 && fd == server_fd6)) {
+                accept_http(fd);
             } else if (fcgi_fd >= 0 && fd == fcgi_fd) {
-                accept_fcgi(server_fd, fcgi_fd);
+                accept_fcgi(server_fd4, server_fd6, fcgi_fd);
             } else {
                 Conn *c = conn_by_fd(fd);
                 if (c && c->state == S_READ_HEADER) conn_readable(c);

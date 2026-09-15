@@ -57,7 +57,8 @@ extern volatile sig_atomic_t g_shutdown_requested;
 /* Master event loop (src/event.c): serves fast requests in-process and
  * hands slow ones to the prefork pool. Runs until g_server_running is
  * cleared. Returns 0 on clean exit. */
-int event_loop(int server_fd, int fcgi_fd);
+/* IPv4 and IPv6 listeners; pass -1 for the one that could not be created. */
+int event_loop(int server_fd4, int server_fd6, int fcgi_fd);
 
 /* ---- framework.c (public API declared in agenthttpd.h) ---- */
 /* Custom-route dispatch: runs the agenthttpd_route() table against the
@@ -75,6 +76,8 @@ void url_decode(char *dst, const char *src);
 int path_has_dot_component(const char *path);
 void html_escape(const char *src, char *dst, size_t dst_size);
 const char *get_content_type(const char *path);
+/* Format a peer sockaddr (IPv4 or IPv6) into buf; returns buf. */
+const char *sockaddr_to_str(const struct sockaddr *sa, char *buf, size_t n);
 
 /* ---- auth.c (check_basic_auth/load_htpasswd declared in httpd.h) ---- */
 void b64_decode(const char *in, char *out, size_t out_size);
@@ -104,8 +107,12 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response,
 
 /* ---- http.c ---- */
 int parse_request(const char *raw_request, HttpRequest *request);
-/* Create the listening TCP socket (SO_REUSEADDR, backlog 128). */
+/* Create the IPv4 listening TCP socket (SO_REUSEADDR, backlog 128). */
 int create_server_socket(int port);
+/* Create the IPv6 listening socket bound to :: with IPV6_V6ONLY (so it does
+ * not also swallow IPv4; the v4 listener above owns those). Returns -1 when
+ * the host has no usable IPv6 stack, letting the caller serve IPv4 only. */
+int create_server_socket6(int port);
 
 /* ---- worker.c (start_worker_pool declared in httpd.h) ---- */
 /* Reap the pool's workers and release its dispatch/token fds after the

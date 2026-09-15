@@ -1012,10 +1012,12 @@ wait "$RATE_PID" 2>/dev/null
 rm -f /tmp/agent-httpd-rate-pool.out
 
 # X-Forwarded-For: behind a trusted reverse proxy the limiting key must be the
-# header's first hop, not the proxy's peer address. The test client connects
-# from 127.0.0.1, so trust that as the proxy.
+# header's first hop, not the proxy's peer address. The test client trusts
+# 127.0.0.1 as the proxy, so pin the URL to IPv4: the trusted-proxy list is
+# IPv4-only, and "localhost" may now resolve to ::1 (we listen on :: too, and
+# a v6 peer is never trusted) which would silently ignore the header.
 RATE_XFF_PORT=3113
-RATE_XFF_BASE="http://localhost:$RATE_XFF_PORT"
+RATE_XFF_BASE="http://127.0.0.1:$RATE_XFF_PORT"
 RATE_LIMIT_TRUSTED_PROXIES=127.0.0.1 "$SERVER" -p "$RATE_XFF_PORT" -l 3 > /tmp/agent-httpd-rate-xff.log 2>&1 &
 RATE_XFF_PID=$!
 xff_ready=0
@@ -1049,9 +1051,10 @@ rm -f "$xff_headers"
 
 # Security: an untrusted peer must NOT be able to spoof the limiter key via a
 # forged X-Forwarded-For. With no trusted-proxy set, the header is ignored and
-# every request collapses to the real peer bucket.
+# every request collapses to the real peer bucket. (IPv4 pinned like above so
+# the peer is a known address.)
 RATE_XFF2_PORT=3114
-RATE_XFF2_BASE="http://localhost:$RATE_XFF2_PORT"
+RATE_XFF2_BASE="http://127.0.0.1:$RATE_XFF2_PORT"
 "$SERVER" -p "$RATE_XFF2_PORT" -l 3 > /tmp/agent-httpd-rate-xff2.log 2>&1 &
 RATE_XFF2_PID=$!
 xff2_ready=0
@@ -1077,6 +1080,45 @@ check "rate-limit (xff-untrusted): header ignored, peer bucket used (200s=$xff2_
 kill "$RATE_XFF2_PID" 2>/dev/null
 wait "$RATE_XFF2_PID" 2>/dev/null
 rm -f "$xff2_headers"
+
+# IPv6 listener: the server also binds :: (IPV6_V6ONLY) so a v6-only client can
+# connect. Probe loopback v6 and skip when the host has no v6 route. With -l 2
+# a burst must be limited exactly as on v4 -- proving the v6 bucket key (a hash
+# of the 128-bit address) works, not merely that the socket accepts.
+V6_PORT=3115
+"$SERVER" -p "$V6_PORT" -l 2 > /tmp/agent-httpd-v6.log 2>&1 &
+V6_PID=$!
+v6_code=000
+i=0
+while [ "$i" -lt 30 ]; do
+    v6_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://[::1]:$V6_PORT/health" 2>/dev/null)
+    [ "$v6_code" = "200" ] && break
+    i=$((i + 1)); sleep 0.2
+done
+if [ "$v6_code" = "200" ]; then
+    check "IPv6 listener serves loopback [::1]" "200" "$v6_code"
+    # Align to just after a second boundary so the whole burst lands in one
+    # refill window (crossing a boundary refills the bucket to cap; straddling
+    # one would hand out a second quota and flake the counts). Same trick as
+    # the v4 quota test above.
+    v6_sec=$(date +%S)
+    while [ "$(date +%S)" = "$v6_sec" ]; do :; done
+    v6_200=0; v6_429=0
+    i=0
+    while [ "$i" -lt 6 ]; do
+        v6_c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://[::1]:$V6_PORT/")
+        [ "$v6_c" = "200" ] && v6_200=$((v6_200 + 1))
+        [ "$v6_c" = "429" ] && v6_429=$((v6_429 + 1))
+        i=$((i + 1))
+    done
+    check "IPv6 rate-limit key works (200s=$v6_200 429s=$v6_429 of 6, limit 2)" "1" \
+        "$([ "$v6_200" -le 2 ] && [ "$v6_429" -ge 3 ] && echo 1 || echo 0)"
+else
+    echo "SKIP: IPv6 listener (no usable [::1] route on this host)"
+fi
+kill "$V6_PID" 2>/dev/null
+wait "$V6_PID" 2>/dev/null
+rm -f /tmp/agent-httpd-v6.log
 
 # The limiter is opt-in: the main instance runs without -l and must never 429.
 main_429=0
