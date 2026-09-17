@@ -1,8 +1,8 @@
 // stdio-over-TCP relay for MCP servers that must run on the HOST.
 //
 // agent-httpd's MCP client speaks stdio and spawns the server as a child
-// *inside* its own process tree. Some MCP bridges (e.g. the resolve-skills
-// weekly-investment bridges) need a host-native environment (node + uv + make
+// *inside* its own process tree. Some MCP bridges (e.g. the data-pipeline
+// bridges under a skills root) need a host-native environment (node + uv + make
 // + private project dirs) that the container does not have. This relay runs on
 // the host: it listens on 127.0.0.1:<port> and, per accepted TCP connection,
 // spawns `node <bridge.mjs>` and pipes the socket to the child's stdio. The
