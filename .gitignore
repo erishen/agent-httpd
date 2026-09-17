@@ -69,5 +69,10 @@ deploy/.env.cloud.*
 # committed). The tracked deploy/cicdkit-project.example.json is the template.
 deploy/cicdkit-project.json
 
-# demo: generated assembly dumps for teaching (not project source)
-asm-demo/
+# demo: teaching playground. Only the hand-written *.c sources and the
+# Makefile are tracked; the generated *.s assembly dumps and the compiled
+# Mach-O binaries are build artifacts (regenerate locally via
+# asm-demo/Makefile) and stay ignored.
+asm-demo/*
+!asm-demo/*.c
+!asm-demo/Makefile
