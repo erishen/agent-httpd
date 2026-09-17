@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """容器内的本地端口转发：把宿主上的服务暴露成容器内的 127.0.0.1:<port>。
 
-为什么需要它：weekly-investment 的 pse-review 桥从 autogen-pse/.env 读
-ROUTER_BASE_URL（= http://127.0.0.1:9070/v1，宿主上的 tsm-hub / llm-router
-网关），而这个值是由桥自己解析、无法用环境变量覆盖。容器内 127.0.0.1 指向
-容器自身，桥就永远连不上网关。
+为什么需要它：pse-review 桥从本地项目 .env 读 ROUTER_BASE_URL（=
+http://127.0.0.1:9070/v1，宿主上的 LLM 网关），而这个值是由桥自己解析、
+无法用环境变量覆盖。容器内 127.0.0.1 指向容器自身，桥就永远连不上网关。
 
 这个转发器在容器内监听 127.0.0.1:<port>，把每个连接中继到
 <target_host>:<target_port>（默认 host.docker.internal:9070，即宿主），

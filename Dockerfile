@@ -62,9 +62,9 @@ FROM node:20-bookworm-slim
 # python3/ruby/php-cgi: CGI 动物园的可移植成员; python3 兼做容器 healthcheck;
 # default-jre-headless: java.cgi 包装器运行 Main.class 需要 JVM;
 # curl: src/agent/llm.c 的 LLM 上游通道 (fork curl -N 流式拉取 chat/completions);
-# make: weekly-investment 的 portfolio-check 桥在容器内跑
-#       `make calculate/analyze/compare` (asset-lens) 需要它;
-# git:  asset-lens 依赖 git+https 形式的 investkit-utils, `uv sync` 要靠 git 拉取;
+# make: portfolio-check 桥在容器内跑 `make calculate/analyze/compare`
+#       刷新本地快照需要它;
+# git:  被桥驱动的 Python 项目依赖 git+https 形式的共享库, `uv sync` 要靠 git 拉取;
 # ca-certificates: git over https 与 uv 拉包所需的根证书;
 # libgomp1/libmagic1: 两个桥驱动的 Python 项目在 import 时要用到的共享库 ——
 #       lightgbm/xgboost 要 libgomp.so.1, python-magic 要 libmagic.so.1,
@@ -72,12 +72,12 @@ FROM node:20-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 ruby php-cgi default-jre-headless curl make git ca-certificates libgomp1 libmagic1 \
     && rm -rf /var/lib/apt/lists/*
-# uv: weekly-investment 的两个 MCP 桥 (portfolio-check / pse-review) 都以
-# `uv run` 驱动各自的 Python 项目 (asset-lens / autogen-pse)。从 astral 官方
-# 镜像拷二进制, 免在 slim 镜像里装 pip (bookworm 的 python3 受 PEP 668 保护)。
+# uv: 两个 MCP 桥 (portfolio-check / pse-review) 都以 `uv run` 驱动各自的
+# Python 项目。从 astral 官方镜像拷二进制, 免在 slim 镜像里装 pip
+# (bookworm 的 python3 受 PEP 668 保护)。
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
-# 容器内 `uv sync` 要拉整棵 Python 依赖树 (autogen-pse: faiss / langchain /
-# autogen… 数百个包), 走官方 PyPI 在国内慢且易超时 → 默认国内镜像,
+# 容器内 `uv sync` 要拉整棵 Python 依赖树 (faiss / langchain / autogen …
+# 数百个包), 走官方 PyPI 在国内慢且易超时 → 默认国内镜像,
 # 需要时可在运行时用 UV_DEFAULT_INDEX 覆盖。
 # UV_HTTP_TIMEOUT: uv 默认 30s, 下大 wheel (xgboost 125MB 等) 时会中途超时。
 ENV UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/

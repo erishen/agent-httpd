@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# One-off init for the in-container weekly-investment bridges.
+# One-off init for the in-container MCP bridges.
 #
 # Both bridges drive their Python project with `uv run`, and the venvs live in
 # named volumes (see run-local-container.sh) so the container never writes a
 # Linux .venv into the macOS working tree. That means each venv starts empty and
-# has to be populated once; asset-lens in particular runs `uv run --no-sync`, so
+# has to be populated once; one project in particular runs `uv run --no-sync`, so
 # its venv MUST exist before the first portfolio-check call.
 #
 # Runs `uv sync --frozen` (uses the committed uv.lock, never rewrites it).
@@ -17,7 +17,7 @@ WS=/workspace
 
 sync_one() {
   local dir="$1" label="$2" attempt
-  # asset-lens 的依赖树很重 (pandas/numpy/scipy/xgboost/lightgbm … 未缓存时
+  # 被桥驱动的 Python 项目依赖树很重 (pandas/numpy/scipy/xgboost/lightgbm … 未缓存时
   # 要下 1GB+), 默认 30s 的 uv HTTP 超时在国内网络下会中途失败 → 放宽到
   # 600s, 并允许重试: 已下载的部分留在 uv 缓存卷里, 重试可续传。
   local tries="${UV_SYNC_ATTEMPTS:-3}"
