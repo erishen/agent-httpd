@@ -31,6 +31,7 @@
 #include "tools.h"
 #include "skills.h"
 #include "session.h"
+#include "sqlite_tool.h"
 
 #define TOOL_READ_MAX 8192
 #define TOOL_FETCH_MAX 16384
@@ -866,6 +867,9 @@ void tools_init(void) {
     tools_register("recall",
         "Read a stored fact from long-term memory by key.",
         P_KEY, tool_recall, NULL);
+
+    /* native SQLite (registers nothing when SQLITE_DB is unset) */
+    sqlite_tools_init();
 }
 
 int tools_dispatch(const char *name, const char *args_raw,
