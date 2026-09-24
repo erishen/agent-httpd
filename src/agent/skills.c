@@ -51,9 +51,16 @@ static void add_root(char roots[][MAX_PATH_SIZE], int *n, const char *path) {
     set_str(roots[*n], MAX_PATH_SIZE, path);
     (*n)++;
     /* parent needs this if it lives behind relative-dir env vars — resolve
-     * once here so scanning doesn't depend on the server's cwd later. */
-    char real[MAX_PATH_SIZE];
-    if (realpath(path, real)) set_str(roots[*n - 1], MAX_PATH_SIZE, real);
+     * once here so scanning doesn't depend on the server's cwd later.
+     * realpath(path, NULL) returns a malloc'd full path, avoiding a fixed
+     * stack buffer: realpath(3)'s _FORTIFY_SOURCE check aborts when the
+     * caller's buffer is smaller than PATH_MAX (MAX_PATH_SIZE here is 1024),
+     * which Ubuntu's default gcc flags trip unconditionally. */
+    char *real = realpath(path, NULL);
+    if (real) {
+        set_str(roots[*n - 1], MAX_PATH_SIZE, real);
+        free(real);
+    }
 }
 
 /* Frontmatter: ---\nname: x\ndescription: y\n---\n ...
