@@ -26,6 +26,22 @@ static char g_index_text[SKILL_IDX_TEXT_MAX + 1];
 
 /* ---- dir discovery -------------------------------------------------- */
 
+/* Profile allow-list: HARNESS_SKILLS_ALLOW="a,b" restricts the catalog to
+ * those skill names; unset/empty allows everything. Lets each hosting
+ * example (invest.lume, a future media.lume, …) expose only the skills its
+ * task actually needs, without moving files in the shared corpus. */
+static int skill_allowed(const char *name) {
+    const char *allow = getenv("HARNESS_SKILLS_ALLOW");
+    if (!allow || !allow[0]) return 1;
+    char buf[1024];
+    set_str(buf, sizeof buf, allow);
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        trim_whitespace(tok);
+        if (strcmp(tok, name) == 0) return 1;
+    }
+    return 0;
+}
+
 static void add_root(char roots[][MAX_PATH_SIZE], int *n, const char *path) {
     if (!path || !path[0] || *n >= SKILL_ROOTS_MAX) return;
     /* dedupe */
@@ -54,11 +70,11 @@ static void fm_scan_field(SkillFm *fm, const char *line) {
     if (strncmp(p, "name:", 5) == 0) {
         p += 5;
         while (*p == ' ' || *p == '\t') p++;
-        set_str(fm->name, sizeof fm->name, p);
+        set_str_utf8(fm->name, sizeof fm->name, p);
     } else if (strncmp(p, "description:", 12) == 0) {
         p += 12;
         while (*p == ' ' || *p == '\t') p++;
-        set_str(fm->desc, sizeof fm->desc, p);
+        set_str_utf8(fm->desc, sizeof fm->desc, p);
     }
 }
 
@@ -91,6 +107,7 @@ static int add_skill(const char *dir, const char *name) {
     /* name must be a plain directory name: no separators/dots — the model
      * passes skill names around, so curb path tricks before we touch disk. */
     if (!name[0] || strpbrk(name, "/\\")) return 0;
+    if (!skill_allowed(name)) return 0;
     for (int i = 0; i < g_nskills; i++) {
         if (strcmp(g_skills[i].name, name) == 0) return 0; /* earlier wins */
     }
@@ -107,8 +124,8 @@ static int add_skill(const char *dir, const char *name) {
     parse_frontmatter(md, &fm);
     if (g_nskills >= SKILL_MAX) return 0;
     SkillInfo *sk = &g_skills[g_nskills];
-    set_str(sk->name, sizeof sk->name, fm.name[0] ? fm.name : name);
-    set_str(sk->desc, sizeof sk->desc, fm.desc);
+    set_str_utf8(sk->name, sizeof sk->name, fm.name[0] ? fm.name : name);
+    set_str_utf8(sk->desc, sizeof sk->desc, fm.desc);
     set_str(sk->path, sizeof sk->path, md);
     g_nskills++;
     return 1;

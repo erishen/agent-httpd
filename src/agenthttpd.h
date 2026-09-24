@@ -41,6 +41,9 @@ typedef struct {
     int port;             /* listen port [DEFAULT_PORT] */
     int workers;          /* prefork slow-path pool size; 0 = fork-per-connection [8] */
     const char *docroot;  /* static file root ["./www"] */
+    const char *views;    /* optional static pages root: a subdirectory of
+                             docroot page URLs resolve in first, then docroot
+                             (e.g. "hub" -> <docroot>/hub) [NULL] */
     const char *cgi_bin;  /* CGI script directory ["./cgi-bin"] */
     const char *access_log; /* combined-format access log ["./logs/access.log"] */
     const char *htpasswd; /* Basic Auth file; NULL = auth off [NULL] */
@@ -67,6 +70,12 @@ int agenthttpd_route(const char *method, const char *path,
  * Returns 0 on success, -1 on duplicate name / full table (96). */
 int agenthttpd_tool(const char *name, const char *desc, const char *params_json,
                     ToolFn fn, void *data);
+
+/* Profile allow-list predicate (HARNESS_TOOLS_ALLOW). A host that embeds the
+ * library should call this before agenthttpd_tool to skip a demo tool
+ * gracefully (profile trim is never a fatal registration error). MCP tools
+ * (names containing "__") always return allowed. */
+int agenthttpd_tool_allowed(const char *name);
 
 /* Register an exec tool: `command` runs via /bin/sh -c with the raw JSON
  * tool-call arguments on stdin and stdout as the tool result (capped at

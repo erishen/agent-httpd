@@ -49,6 +49,22 @@ static void mcp_digest_tools(const McpServerCfg *s, const char *resp);
 
 /* ---- config --------------------------------------------------------- */
 
+/* Profile allow-list: MCP_ALLOW="id1,id2" restricts which configured MCP
+ * servers get spawned and registered; unset/empty allows everything. Lets
+ * each hosting example expose only the servers its task needs (e.g. invest
+ * keeps portfolio-check/pse-review without the echo demo stub). */
+static int mcp_allowed(const char *id) {
+    const char *allow = getenv("MCP_ALLOW");
+    if (!allow || !allow[0]) return 1;
+    char buf[1024];
+    set_str(buf, sizeof buf, allow);
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        trim_whitespace(tok);
+        if (strcmp(tok, id) == 0) return 1;
+    }
+    return 0;
+}
+
 /* Copy the next {...} from a JSON array (string/quote aware) into buf.
  * *pp advances past the object. Returns 1 on success, 0 at end/malformed. */
 static int cfg_next_obj(const char **pp, char *buf, size_t bufsz) {
@@ -130,6 +146,7 @@ static void cfg_add_server(const char *obj) {
         if (*ap == 't') s.approval = 1;
         else if (*ap == 'f') s.approval = 0;
     }
+    if (!mcp_allowed(s.id)) return; /* profile allow-list: never spawn/register */
     for (int i = 0; i < g_nservers; i++) {
         if (strcmp(g_servers[i].id, s.id) == 0) return;
     }
@@ -704,6 +721,7 @@ static void copy_json_value(const char *v, char *out, size_t outsz) {
 }
 
 static void mcp_digest_tools(const McpServerCfg *s, const char *resp) {
+    if (s && !mcp_allowed(s->id)) return; /* belt-and-braces */
     resp = json_body(resp); /* tolerate server startup noise on the pipe */
     const char *res = resp ? jfind_value(resp, "result") : NULL;
     if (!res || *res != '{') {
@@ -768,8 +786,8 @@ have_tool:;
         McpToolInfo *t = &g_tools[g_ntools];
         set_str(t->mcp_name, sizeof t->mcp_name, mcp_name);
         set_str(t->server_id, sizeof t->server_id, s->id);
-        set_str(t->tool_name, sizeof t->tool_name, name);
-        set_str(t->desc, sizeof t->desc, desc[0] ? desc : t->mcp_name);
+        set_str_utf8(t->tool_name, sizeof t->tool_name, name);
+        set_str_utf8(t->desc, sizeof t->desc, desc[0] ? desc : t->mcp_name);
         /* keep inputSchema.properties, not the whole schema */
         if (iv && *iv == '{') {
             const char *props = jfind_value(iv, "properties");

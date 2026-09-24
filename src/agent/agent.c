@@ -659,12 +659,46 @@ static int agent_retryable(int up_err) {
     if (up_err == UP_ERR_EMPTY) return 1; /* gateway glitch; a retry re-asks */
     if (up_err >= UP_ERR_HTTP_BASE) {
         int st = up_err - UP_ERR_HTTP_BASE;
-        return st == 429 || st >= 500;
+        /* 400: normally a permanent bad request, but the pooled free-tier
+         * gateway transiently 400s on a subset of providers (context /
+         * validation limits on the strictest in the failover chain). It is
+         * cheap and bounded to retry; a genuinely malformed request still
+         * surfaces on the last attempt. */
+        return st == 400 || st == 429 || st >= 500;
     }
     return up_err > 0 && up_err != 22 && up_err != 127;
 }
 
 /* ---- the loop ---------------------------------------------------------- */
+
+/* Free-tier providers routinely attach a stray tool_call onto a round that
+ * already streamed the final answer — the ReAct loop then keeps "working"
+ * (round N/8 spinners that never clear until the cap) long after the user
+ * saw the reply. Rule: if a round streamed real content AND every tool_call
+ * it offers is a byte-identical repeat of a call already executed in this
+ * same request, trust the content and stop. A novel call (different name or
+ * args — e.g. a deliberate pse-review(provider="deepseek") re-run) still
+ * executes, so legitimate follow-ups are not blocked. */
+#define EXEC_SIG_MAX 64
+#define EXEC_SIG_LEN 512
+
+static int exec_sig_seen(char *sigs[], int n, const RoundCall *c) {
+    char buf[EXEC_SIG_LEN];
+    snprintf(buf, sizeof buf, "%s(%s)", c->name.p ? c->name.p : "?",
+             c->args.p ? c->args.p : "");
+    for (int i = 0; i < n; i++)
+        if (sigs[i] && strcmp(sigs[i], buf) == 0) return 1;
+    return 0;
+}
+
+static void exec_sig_record(char *sigs[], int *n, const RoundCall *c) {
+    if (*n >= EXEC_SIG_MAX) return;
+    char buf[EXEC_SIG_LEN];
+    snprintf(buf, sizeof buf, "%s(%s)", c->name.p ? c->name.p : "?",
+             c->args.p ? c->args.p : "");
+    sigs[*n] = strdup(buf);
+    if (sigs[*n]) (*n)++;
+}
 
 const char *agent_system_default(void) {
     return
@@ -677,6 +711,8 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
                             const char *system_base, const char *system_extra,
                             int max_rounds, sbuf *capture) {
     sbuf msgs = {0};
+    char *exec_sigs[EXEC_SIG_MAX] = {0};
+    int n_exec = 0;
     int gateway_mode = (strcmp(agent_tool_source(), "gateway") == 0);
     msgs_system(&msgs, system_base, system_extra);
     for (int i = 0; i < req->n_history; i++) {
@@ -741,17 +777,14 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
                 backoff_ms = (attempt == 1) ? AGENT_BACKOFF_MS_1 : AGENT_BACKOFF_MS_2;
             }
             METRICS_INC(chat_upstream_retries_total);
-            if (out->ok) {
+            /* Transient hiccup retries are silent: the user only hears about
+             * upstream trouble when every attempt fails (agent_emit_upstream_error)
+             * or when the backoff is long and actionable (rate limiting). */
+            if (out->ok && up_err == UP_ERR_HTTP_BASE + 429) {
                 char note[96];
-                if (up_err == UP_ERR_HTTP_BASE + 429) {
-                    snprintf(note, sizeof note,
-                             "rate limited by upstream, retrying in %.0fs (attempt %d/%d)",
-                             backoff_ms / 1000.0, attempt + 1, AGENT_UPSTREAM_ATTEMPTS);
-                } else {
-                    snprintf(note, sizeof note,
-                             "upstream hiccup, retrying in %.1fs (attempt %d/%d)",
-                             backoff_ms / 1000.0, attempt + 1, AGENT_UPSTREAM_ATTEMPTS);
-                }
+                snprintf(note, sizeof note,
+                         "rate limited by upstream, retrying in %.0fs (attempt %d/%d)",
+                         backoff_ms / 1000.0, attempt + 1, AGENT_UPSTREAM_ATTEMPTS);
                 sse_event(out, "note", note);
             }
             for (int s = 0; s < backoff_ms && out->ok; s += 100) {
@@ -762,6 +795,22 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
             if (out->ok) agent_emit_upstream_error(out, up_err);
             round_free(&rs);
             break;
+        }
+        /* Stray-repeat guard: the round already streamed the answer, so if
+         * every tool_call it proposes is an identical repeat of one executed
+         * earlier in this request, stop instead of looping through the cap. */
+        if (rs.saw_content && rs.n_calls > 0) {
+            int all_repeat = 1;
+            for (int i = 0; i < rs.n_calls; i++) {
+                if (!exec_sig_seen(exec_sigs, n_exec, &rs.calls[i])) {
+                    all_repeat = 0;
+                    break;
+                }
+            }
+            if (all_repeat) {
+                round_free(&rs);
+                break;
+            }
         }
         /* no tool calls -> the final answer already streamed; done */
         if (!out->ok || rs.n_calls == 0) {
@@ -808,6 +857,7 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
                            rs.calls[i].args.p,
                            req->session_id[0] ? req->session_id : NULL,
                            &results[i]);
+            exec_sig_record(exec_sigs, &n_exec, &rs.calls[i]);
         }
 
         if (out->ok) {
@@ -818,6 +868,7 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
         if (!out->ok) break;
     }
     free(msgs.p);
+    for (int i = 0; i < n_exec; i++) free(exec_sigs[i]);
 }
 
 void agent_run_ex(ChatOut *out, const ChatRequest *req,

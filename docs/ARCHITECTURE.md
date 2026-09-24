@@ -51,10 +51,11 @@ main()
  ├─ rate_limit_init()      # MAP_SHARED 计数表 (fork 前建立)
  ├─ agent_init()           # 并发槽管道信号量 (fd 需被继承)
  ├─ session_prune_old()    # 30 天会话清理
- ├─ router_sync_all()      # llm-router 目录同步 → skills/router/ + .data/mcp-servers-router.json
+ ├─ router_sync_all()      # llm-router 目录同步 → skills/router/ + .data/mcp-servers-router.json + 暂存 /v1/tools 目录
  ├─ skills_init()          # SKILL.md 扫描 (src/core/framework.c:375)
  ├─ tools_init()           # 内置 7 工具注册 (src/core/framework.c:376)
  ├─ mcp_init()             # 每个 MCP server 起一次性子进程做 tools/list (src/core/framework.c:377)
+ ├─ router_register_tools()# 暂存的 router 工具注册为本地代理 (本地内建优先同名) (src/core/framework.c:379)
  ├─ create_server_socket() + create_server_socket6()   # IPv4 + IPv6 双监听
  ├─ 可选 create_fastcgi_listener(-F)
  └─ start_worker_pool(8)   # 成功 → event_loop(); 失败 → 回退 fork-per-connection
@@ -339,8 +340,11 @@ docker compose (三服务):
   入口路径一份语义。
 - agent 子树（llm/pse/agent/tools/skills/session/mcp/chatio/minijson）是
   **闭环**，只依赖 httpd.h 的类型和 chatio 的信封，不反向侵入 HTTP 层。
-- `router.c` 只在启动/SIGHUP 时跑（同步 llm-router 目录到本地 skills/MCP
-  配置），不在请求路径上。
+- `router.c` 的同步/注册（`router_sync_all` / `router_register_tools`）只在
+  启动/SIGHUP 时跑：把 llm-router 目录落到本地 skills/MCP 配置，并把
+  `/v1/tools` 目录（跳过 `mcp:*` 与本地同名内建）注册为 POST
+  `/v1/tools/invoke` 的代理工具。注册后代理工具的**执行**在请求路径上——
+  模型每次调用它都会走一次网关往返；本地内建同名工具优先，不绕网关。
 
 ## 12. 阅读路线建议
 

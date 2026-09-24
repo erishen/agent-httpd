@@ -81,9 +81,36 @@ const char *tools_schema_json(void) {
     return g_schema_cache ? g_schema_cache : "[]";
 }
 
+/* Profile allow-list: HARNESS_TOOLS_ALLOW="a,b" restricts the agent tool
+ * registry (builtins + DSL `tool` + MCP tools all flow through
+ * tools_register); unset/empty allows everything. The OpenAI schema and the
+ * DSL `tools()` readout are built from the same table, so a profile can slim
+ * the whole surface an example exposes. */
+int tools_register_allowed(const char *name) {
+    if (!name) return 0;
+    if (strstr(name, "__")) return 1; /* MCP tools are gated by MCP_ALLOW */
+    const char *allow = getenv("HARNESS_TOOLS_ALLOW");
+    if (!allow || !allow[0]) return 1;
+    char buf[1024];
+    set_str(buf, sizeof buf, allow);
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        trim_whitespace(tok);
+        if (strcmp(tok, name) == 0) return 1;
+    }
+    return 0;
+}
+
+int agenthttpd_tool_allowed(const char *name) {
+    return tools_register_allowed(name);
+}
+
 int tools_register(const char *name, const char *desc, const char *params_json,
                    ToolFn fn, void *data) {
     if (!name || !fn || g_ntools >= TOOL_MAX) return -1;
+    if (!tools_register_allowed(name)) {
+        fprintf(stderr, "[tools] skip (profile) %s\n", name);
+        return -1;
+    }
     for (int i = 0; i < g_ntools; i++) {
         if (strcmp(g_tools[i].name, name) == 0) return -1;
     }

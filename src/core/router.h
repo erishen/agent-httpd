@@ -16,11 +16,21 @@
  *   GET /v1/skills  - skill library list; bodies fetched per-skill and
  *                     materialized under skills/router/<name>/SKILL.md so
  *                     the local skills index + skill-run tool pick them up.
+ *   GET /v1/tools   - builtin/conditional tool catalog. router_sync_all()
+ *                     stashes it; router_register_tools() then registers each
+ *                     (minus mcp:* duplicates and names already taken by a
+ *                     local builtin) as a proxy tool that POSTs to
+ *                     /v1/tools/invoke. Must run after tools_init()/mcp_init().
  *
- * Both only happen when ROUTER_API_URL (fallback: LLM_API_URL) actually
+ * All only happen when ROUTER_API_URL (fallback: LLM_API_URL) actually
  * answers like a router; otherwise the call degrades to a silent no-op so
  * a direct-to-provider LLM_API_URL keeps working untouched.
  */
 void router_sync_all(void);
+
+/* Register the tool catalog stashed by router_sync_all() as local proxy
+ * tools. Call once after tools_init()/mcp_init(), pre-fork. Safe to call
+ * again after a SIGHUP resync (duplicates are dropped). */
+void router_register_tools(void);
 
 #endif /* ROUTER_H */

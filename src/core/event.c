@@ -448,6 +448,7 @@ int event_loop(int server_fd4, int server_fd6, int fcgi_fd) {
             router_sync_all();
             skills_init();
             mcp_init();
+            router_register_tools();
             printf("Catalog resync done: %d skill(s), %d tool(s), %d mcp server(s).\n",
                    skills_count(), tools_count(), mcp_server_count());
             fflush(stdout);

@@ -161,7 +161,12 @@ int process_request(HttpRequest *request, HttpResponse *response, int client_fd)
         }
     } else {
         /* Static files are read-only; writer methods were 405'd above, so
-         * only GET/HEAD reach this branch. */
+         * only GET/HEAD reach this branch. A configured "views" directory is
+         * tried first (page shells), then the document root (shared bundles
+         * and everything else). handle_views_file: 0 served / -1 refused /
+         * 1 absent. */
+        int v = handle_views_file(request, response);
+        if (v != 1) return 0;
         handle_static_file(request, response);
     }
     return 0;
