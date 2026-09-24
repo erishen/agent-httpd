@@ -400,13 +400,14 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     /* Registration closes here: routes and tools are pre-fork snapshots. */
     g_framework_started = 1;
 
-    int server_fd = create_server_socket(c.port);
+    int server_fd = create_server_socket(c.bind_host, c.port);
     if (server_fd < 0) {
         if (g_log_fp) fclose(g_log_fp);
         return 1;
     }
-    /* IPv6 is best-effort: a host without a usable v6 stack just serves v4. */
-    int server_fd6 = create_server_socket6(c.port);
+    /* IPv6 is best-effort: a host without a usable v6 stack (or a bind_host
+     * that is an IPv4 literal) just serves v4. */
+    int server_fd6 = create_server_socket6(c.bind_host, c.port);
     if (server_fd6 < 0) {
         fprintf(stderr, "IPv6 listener unavailable: serving IPv4 only\n");
     }
@@ -430,8 +431,8 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
                 g_vite_upstream_port);
     }
     printf("AgentHTTPD server started on port %d\n", c.port);
-    printf("Listening: IPv4 0.0.0.0:%d%s\n", c.port,
-           server_fd6 >= 0 ? " + IPv6 [::]" : " (IPv6 unavailable)");
+    printf("Listening: IPv4 %s:%d%s\n", c.bind_host ? c.bind_host : "0.0.0.0",
+           c.port, server_fd6 >= 0 ? " + IPv6 [::]" : " (IPv6 unavailable)");
     printf("Web root: %s\n", g_web_root_real);
     printf("CGI bin: %s\n", g_cgi_bin_real);
     printf("Log file: %s\n", g_log_path);

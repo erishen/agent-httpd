@@ -39,6 +39,8 @@
 
 typedef struct {
     int port;             /* listen port [DEFAULT_PORT] */
+    const char *bind_host; /* listen address; NULL = 0.0.0.0 (all interfaces)
+                             [NULL] */
     int workers;          /* prefork slow-path pool size; 0 = fork-per-connection [8] */
     const char *docroot;  /* static file root ["./www"] */
     const char *views;    /* optional static pages root: a subdirectory of
