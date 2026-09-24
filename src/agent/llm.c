@@ -44,6 +44,7 @@
 #include "pse.h"
 #include "skills.h"
 #include "session.h"
+#include "sqlite_tool.h"
 
 #define CHAT_DEFAULT_TIMEOUT 60
 
@@ -430,6 +431,13 @@ int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
                 const char *sys_extra_env = getenv("LLM_SYSTEM_EXTRA");
                 if (sys_extra_env && sys_extra_env[0]) {
                     sb_str(&extra, sys_extra_env);
+                    sb_str(&extra, "\n\n");
+                }
+                /* native SQLite: introspected schema + data discipline ride
+                 * along whenever SQLITE_DB is configured (cached by mtime) */
+                const char *sqlite_extra = sqlite_system_extra();
+                if (sqlite_extra && sqlite_extra[0]) {
+                    sb_str(&extra, sqlite_extra);
                     sb_str(&extra, "\n\n");
                 }
                 session_render_extra(&sess, &extra);

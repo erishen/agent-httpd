@@ -43,7 +43,11 @@ GC = $(if $(filter $(UNAME_S),Linux),$(GC_LINUX),$(GC_DARWIN))
 # including .c lives in.
 INCDIRS = -I src -I src/core -I src/http -I src/cgi -I src/security -I src/agent
 CFLAGS = -Wall -Wextra -Werror -O2 $(INCDIRS) $(CFLAGS_EXTRA)
-LDFLAGS = $(LDFLAGS_EXTRA) -pthread
+# libsqlite3 for the native SQL tools (src/agent/sqlite_tool.c): macOS ships
+# the dylib in the SDK; Linux needs libsqlite3-dev (container build installs
+# it in the lume-build stage). The static container link (-static in
+# LDFLAGS_EXTRA) pulls libsqlite3.a so the final image stays dependency-free.
+LDFLAGS = $(LDFLAGS_EXTRA) -pthread -lsqlite3
 TARGET = bin/agent-httpd
 # Object/dependency files live in build/ so src/ holds sources only.
 BUILD_DIR = build
@@ -57,12 +61,14 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
        src/cgi/cgi.c src/cgi/fastcgi.c src/cgi/vite.c \
        src/security/auth.c src/security/ratelimit.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
-       src/agent/tools.c src/agent/skills.c src/agent/session.c
+       src/agent/tools.c src/agent/skills.c src/agent/session.c \
+       src/agent/sqlite_tool.c
 HDRS = src/httpd.h src/agenthttpd.h src/internal.h \
        src/core/minijson.h src/core/metrics.h src/core/router.h \
        src/http/chatio.h \
        src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
-       src/agent/tools.h src/agent/skills.h src/agent/session.h
+       src/agent/tools.h src/agent/skills.h src/agent/session.h \
+       src/agent/sqlite_tool.h
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 INSTALL_DIR = /usr/local/bin
 
