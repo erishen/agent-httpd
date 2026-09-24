@@ -10,6 +10,7 @@
  * shared between the server's translation units lives here. */
 
 #include <stddef.h>
+#include <limits.h>
 #include <stdio.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -26,8 +27,8 @@
 #define FDPASS_MAX_N 64
 
 /* ---- configuration globals (defined in main.c) ---- */
-extern char g_web_root_real[MAX_PATH_SIZE]; /* realpath(WEB_ROOT) */
-extern char g_views_real[MAX_PATH_SIZE];    /* realpath(views); "" = off */
+extern char g_web_root_real[PATH_MAX]; /* realpath(WEB_ROOT) */
+extern char g_views_real[PATH_MAX];    /* realpath(views); "" = off */
 
 /* Bounded string set: always NUL-terminates; see util.c. */
 void set_str(char *dst, size_t dst_size, const char *src);
@@ -38,7 +39,7 @@ void set_str_utf8(char *dst, size_t dst_size, const char *src);
  * (byte clipping a multi-byte sequence mangles the JSON envelope that is
  * forwarded upstream). Returns strlen(s) when it fits whole. See util.c. */
 size_t utf8_valid_prefix(const char *s, size_t max);
-extern char g_cgi_bin_real[MAX_PATH_SIZE];  /* realpath(CGI_BIN) */
+extern char g_cgi_bin_real[PATH_MAX];  /* realpath(CGI_BIN) */
 extern int g_server_port;                   /* -p, feeds CGI SERVER_PORT */
 extern int g_no_directory_listing;          /* -n: return 404 for dir requests */
 extern int g_vite_upstream_port;            /* -v: dev Vite port to proxy /@, /react, /src to */

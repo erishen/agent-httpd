@@ -18,6 +18,10 @@ ifeq ($(UNAME_S),Linux)
     # src/core/framework.c:355/359 遇 -Werror 直接红, 和 lume/Makefile
     # 的 -D_GNU_SOURCE 是同一个坑的两半。
     CFLAGS_EXTRA += -Wno-format-truncation -Wno-stringop-truncation
+    # glibc _FORTIFY_SOURCE (Ubuntu 默认注入): realpath/getcwd 等带 _chk
+    # 检查的 libc 调用会校验调用方缓冲是否 >= PATH_MAX。显式开启让本地
+    # Linux 构建与 CI 行为一致, 避免只在 GitHub runner 上才崩。
+    CFLAGS_EXTRA += -D_FORTIFY_SOURCE=2
 endif
 ifeq ($(UNAME_S),Darwin)
     # crypt(3) is in libc; no <crypt.h> header, no extra link flag.

@@ -13,6 +13,7 @@
  */
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -38,9 +39,9 @@
 
 /* ---- configuration globals (moved from main.c; extern in internal.h) ---- */
 
-char g_web_root_real[MAX_PATH_SIZE];
-char g_views_real[MAX_PATH_SIZE];
-char g_cgi_bin_real[MAX_PATH_SIZE];
+char g_web_root_real[PATH_MAX];
+char g_views_real[PATH_MAX];
+char g_cgi_bin_real[PATH_MAX];
 int g_server_port = 0;
 int g_no_directory_listing = 0;
 int g_vite_upstream_port = 0;
