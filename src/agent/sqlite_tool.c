@@ -16,6 +16,7 @@
  * prompt (called from llm.c, cached by db mtime).
  */
 
+#include <ctype.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,6 +83,70 @@ static const char *validate_read(const char *sql, char *body, size_t n) {
         (b[6] != ' ' && b[6] != '\t' && b[6] != '\n' && b[6] != '\r'))
         return "only SELECT statements are allowed";
     return NULL;
+}
+
+/* ---- write guardrails (port of tools/mcp-sqlite-safe.py guard()) -------- */
+
+/* keyword appears at s with a word boundary on both sides */
+static int kw_at(const char *s, const char *w) {
+    size_t n = strlen(w);
+    return strncasecmp(s, w, n) == 0 &&
+           !(isalnum((unsigned char)s[n]) || s[n] == '_');
+}
+
+static int kw_anywhere(const char *s, const char *w) {
+    size_t n = strlen(w);
+    for (const char *p = s; (p = strcasestr(p, w)); p += n) {
+        int left_ok = (p == s) ||
+                      !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
+        if (left_ok && !(isalnum((unsigned char)p[n]) || p[n] == '_')) return 1;
+    }
+    return 0;
+}
+
+/* Return an error message if the statement must not run, else NULL.
+ * Semantics mirror the archived MCP server (tools/mcp-sqlite-safe.py):
+ *   - dangerous DDL rejected: DROP/ALTER/TRUNCATE/VACUUM/ATTACH/DETACH/
+ *     REINDEX/PRAGMA/GRANT/REVOKE/COPY
+ *   - any statement mentioning the portfolio mirror table is rejected
+ *   - allowed: INSERT / UPDATE / DELETE (UPDATE/DELETE must carry WHERE)
+ *     and CREATE TABLE for a new table
+ * body receives the comment-stripped SQL for prepare. */
+static const char *validate_write(const char *sql, char *body, size_t n) {
+    const char *t = sql;
+    while (*t == ' ' || *t == '\t' || *t == '\r' || *t == '\n') t++;
+    if (!*t) return "empty SQL";
+    size_t len = strlen(t);
+    if (t[len - 1] == ';') len--;
+    if (memchr(t, ';', len)) return "multiple statements are not allowed";
+    strip_comments(t, body, n);
+    char *b = body;
+    while (*b == ' ' || *b == '\t' || *b == '\r' || *b == '\n') b++;
+
+    static const char *const dangerous[] = {
+        "drop", "alter", "truncate", "vacuum", "attach", "detach",
+        "reindex", "pragma", "grant", "revoke", "copy", NULL };
+    for (int i = 0; dangerous[i]; i++) {
+        if (kw_at(b, dangerous[i]))
+            return "dangerous statement rejected (DROP/ALTER/TRUNCATE/…)";
+    }
+    if (kw_anywhere(b, "portfolio"))
+        return "rejected — the portfolio mirror table is read-only";
+
+    if (kw_at(b, "insert") || kw_at(b, "update") || kw_at(b, "delete")) {
+        if ((kw_at(b, "update") || kw_at(b, "delete")) &&
+            !kw_anywhere(b, "where"))
+            return "UPDATE/DELETE must include a WHERE clause";
+        return NULL;
+    }
+    if (strncasecmp(b, "create", 6) == 0 &&
+        (b[6] == ' ' || b[6] == '\t' || b[6] == '\n' || b[6] == '\r')) {
+        if (strncasecmp(b + 7, "table", 5) == 0 &&
+            (b[12] == ' ' || b[12] == '\t' || b[12] == '\n' || b[12] == '\r'))
+            return NULL;
+        return "only CREATE TABLE DDL is allowed (new tables only)";
+    }
+    return "only INSERT / UPDATE / DELETE / CREATE TABLE allowed";
 }
 
 static void json_cell(sqlite3_stmt *st, int col, sbuf *out) {
@@ -189,6 +254,64 @@ static void tool_sql_query(void *data, const char *args,
     if (truncated) sb_str(result, " … (rows truncated at 200)");
     sqlite3_finalize(st);
     sqlite3_close(db);
+}
+
+static void tool_sql_write(void *data, const char *args,
+                           const char *session_id, sbuf *result) {
+    (void)data;
+    (void)session_id;
+    if (!sqlite_db_path()) {
+        sb_str(result, "sql_write: SQLITE_DB not set — no local database");
+        return;
+    }
+    char query[SQL_MAX] = "";
+    const char *v = jfind_value(args, "query");
+    if (v && *v == '"') {
+        const char *p = v;
+        jread_string(&p, query, sizeof query);
+    }
+    if (!query[0]) {
+        sb_str(result, "sql_write: missing query");
+        return;
+    }
+    char body[SQL_MAX];
+    const char *err = validate_write(query, body, sizeof body);
+    if (err) {
+        sb_str(result, "sql_write: ");
+        sb_str(result, err);
+        return;
+    }
+    sqlite3 *db;
+    if (sqlite3_open_v2(sqlite_db_path(), &db, SQLITE_OPEN_READWRITE, NULL)
+            != SQLITE_OK) {
+        sb_str(result, "sql_write: cannot open database for writing");
+        return;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, body, -1, &st, NULL) != SQLITE_OK) {
+        sb_str(result, "sql_write: ");
+        sb_str(result, sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return;
+    }
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        sb_str(result, "sql_write: ");
+        sb_str(result, sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return;
+    }
+    int is_ddl = strncasecmp(body, "create", 6) == 0;
+    int ch = sqlite3_changes(db);
+    sqlite3_close(db);
+    if (is_ddl) {
+        sb_str(result, "ok: statement executed (table created)");
+    } else {
+        char ok[96];
+        snprintf(ok, sizeof ok, "ok: %d row(s) affected", ch);
+        sb_str(result, ok);
+    }
 }
 
 static void tool_sql_tables(void *data, const char *args,
@@ -365,7 +488,11 @@ const char *sqlite_system_extra(void) {
     snprintf(intro, sizeof intro,
              "以下是本地 SQLite 数据模型（text2sql 用）:\n%s\n\n"
              "SQL 写作与回答纪律（必须遵守）:\n"
-             "1. 只用 sql_query 工具查数，SQL 必须是单条只读 SELECT；禁止写操作、DDL 与多语句。\n"
+             "1. 查数用 sql_query（单条只读 SELECT）。建分析表/写入用 sql_write"
+             "（仅 INSERT/UPDATE/DELETE 且 UPDATE/DELETE 必须带 WHERE，或新建"
+             " CREATE TABLE）；portfolio 镜像表只读，账本改动必须走"
+             " portfolio_add / portfolio_remove 类型化工具，禁止 DROP/ALTER/"
+             "PRAGMA 等危险语句与多语句。\n"
              "2. 聚合列务必加别名，如 AS revenue / month / cnt；查询务必加 LIMIT（上限 200 行，常见 20）。\n"
              "3. 日期/时间比较前先看列的实际格式；涉及\"最新/最近\"必须读表中该列的真实最大值，禁止硬编码或猜测日期。\n"
              "4. 回答只陈述查询结果中出现的数字，绝不编造或外推；引用日期只能用返回行里的值。\n"
@@ -403,6 +530,14 @@ void sqlite_tools_init(void) {
         "refused.",
         "{\"query\":{\"type\":\"string\",\"description\":\"single SELECT statement\"}}",
         tool_sql_query, NULL);
+    tools_register("sql_write",
+        "Run a single write statement against the local SQLite database: "
+        "INSERT / UPDATE / DELETE (UPDATE/DELETE must carry a WHERE clause) or "
+        "CREATE TABLE for a new table. DROP/ALTER/TRUNCATE/VACUUM/ATTACH/"
+        "PRAGMA/GRANT/REVOKE and any write touching the portfolio mirror table "
+        "are rejected.",
+        "{\"query\":{\"type\":\"string\",\"description\":\"single write statement\"}}",
+        tool_sql_write, NULL);
     tools_register("sql_tables",
         "List the table names in the local SQLite database.",
         "{}", tool_sql_tables, NULL);
