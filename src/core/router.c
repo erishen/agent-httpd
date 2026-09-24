@@ -359,6 +359,7 @@ static void sync_mcps(void) {
         free(json);
         return;
     }
+    fchmod(fileno(f), 0600);  /* 私密配置:不随 umask 落 0644 */
     fputs("[\n", f);
     int wrote = 0;
     for (;;) {
