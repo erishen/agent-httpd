@@ -112,12 +112,17 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response,
 
 /* ---- http.c ---- */
 int parse_request(const char *raw_request, HttpRequest *request);
-/* Create the IPv4 listening TCP socket (SO_REUSEADDR, backlog 128). */
-int create_server_socket(int port);
+/* Create the IPv4 listening TCP socket (SO_REUSEADDR, backlog 128).
+ * host == NULL binds INADDR_ANY (0.0.0.0), matching the historical default;
+ * a non-NULL dotted-quad address (e.g. "127.0.0.1") restricts the listener
+ * to that interface. Returns -1 when host is invalid or bind fails. */
+int create_server_socket(const char *host, int port);
 /* Create the IPv6 listening socket bound to :: with IPV6_V6ONLY (so it does
- * not also swallow IPv4; the v4 listener above owns those). Returns -1 when
- * the host has no usable IPv6 stack, letting the caller serve IPv4 only. */
-int create_server_socket6(int port);
+ * not also swallow IPv4; the v4 listener above owns those). host == NULL
+ * binds in6addr_any; a non-NULL IPv6 literal restricts the listener.
+ * Returns -1 when the host has no usable IPv6 stack (or the host is not a
+ * v6 address), letting the caller serve IPv4 only. */
+int create_server_socket6(const char *host, int port);
 
 /* ---- worker.c (start_worker_pool declared in httpd.h) ---- */
 /* Reap the pool's workers and release its dispatch/token fds after the

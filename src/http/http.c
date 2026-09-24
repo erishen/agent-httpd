@@ -55,7 +55,7 @@ static void send_continue(int client_fd) {
     (void)w; /* SIGPIPE ignored; a vanished client just won't send the body */
 }
 
-int create_server_socket(int port) {
+int create_server_socket(const char *host, int port) {
     int server_fd;
     struct sockaddr_in server_addr;
     int opt = 1;
@@ -79,7 +79,13 @@ int create_server_socket(int port) {
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
+    if (host == NULL) {
+        server_addr.sin_addr.s_addr = INADDR_ANY; /* historical default */
+    } else if (inet_pton(AF_INET, host, &server_addr.sin_addr) != 1) {
+        fprintf(stderr, "bind: invalid IPv4 address '%s'\n", host);
+        close(server_fd);
+        return -1;
+    }
     server_addr.sin_port = htons(port);
 
     if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
@@ -100,9 +106,11 @@ int create_server_socket(int port) {
 /* IPv6 twin of create_server_socket(). Bound to :: with IPV6_V6ONLY so it
  * accepts only IPv6 (the v4 listener owns IPv4); the explicit v6only avoids
  * the platform-dependent dual-stack default where :: also swallows v4 and the
- * v4 bind then fails with EADDRINUSE. Returns -1 when the host has no IPv6
- * stack so the caller can keep serving IPv4 only. */
-int create_server_socket6(int port) {
+ * v4 bind then fails with EADDRINUSE. host == NULL binds in6addr_any; a
+ * non-NULL literal (e.g. "::1") restricts the listener to that address.
+ * Returns -1 when the host has no IPv6 stack (or the host is not an IPv6
+ * address) so the caller can keep serving IPv4 only. */
+int create_server_socket6(const char *host, int port) {
     int server_fd;
     struct sockaddr_in6 server_addr;
     int opt = 1;
@@ -131,7 +139,14 @@ int create_server_socket6(int port) {
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin6_family = AF_INET6;
-    server_addr.sin6_addr = in6addr_any;
+    if (host == NULL) {
+        server_addr.sin6_addr = in6addr_any;
+    } else if (inet_pton(AF_INET6, host, &server_addr.sin6_addr) != 1) {
+        fprintf(stderr, "bind6: '%s' is not an IPv6 address (v6 listener off)\n",
+                host);
+        close(server_fd);
+        return -1;
+    }
     server_addr.sin6_port = htons(port);
 
     if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
