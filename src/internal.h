@@ -27,9 +27,12 @@
 
 /* ---- configuration globals (defined in main.c) ---- */
 extern char g_web_root_real[MAX_PATH_SIZE]; /* realpath(WEB_ROOT) */
+extern char g_views_real[MAX_PATH_SIZE];    /* realpath(views); "" = off */
 
 /* Bounded string set: always NUL-terminates; see util.c. */
 void set_str(char *dst, size_t dst_size, const char *src);
+/* set_str clipped to the longest valid UTF-8 prefix (never a partial char). */
+void set_str_utf8(char *dst, size_t dst_size, const char *src);
 
 /* Longest bytes of s that form a valid UTF-8 prefix and fit within max
  * (byte clipping a multi-byte sequence mangles the JSON envelope that is
@@ -100,6 +103,8 @@ int parse_range(const char *header, off_t size, off_t *start, off_t *len);
 int handle_directory(const char *real_path, const char *request_path,
                      HttpResponse *response);
 int handle_static_file(const HttpRequest *request, HttpResponse *response);
+/* Views-root static: 0 served / -1 refused / 1 absent -> try docroot. */
+int handle_views_file(const HttpRequest *request, HttpResponse *response);
 
 /* ---- cgi.c ---- */
 int execute_cgi(const HttpRequest *request, HttpResponse *response,

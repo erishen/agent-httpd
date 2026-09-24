@@ -31,6 +31,11 @@ static char *session_path(const char *id, char *out, size_t sz) {
     return out;
 }
 
+/* set_str copies at most size-1 bytes; for UTF-8 text that can land mid-way
+ * through a multi-byte character and persist an invalid sequence into the
+ * JSON sessions we save (and later inject into prompts / send upstream).
+ * set_str_utf8 trims back to the last complete character (see util.c). */
+
 /* Session IDs are opaque identifiers minted by session_id_new (hex-only).
  * Anything else arriving in a request body is suspect: '.'/'/' characters
 *  could turn the id into a path traversal against the sessions dir.
@@ -271,7 +276,7 @@ void session_append(Session *s, const char *role, const char *content) {
         s->n_msgs--;
     }
     set_str(s->msgs[s->n_msgs].role, sizeof s->msgs[0].role, role);
-    set_str(s->msgs[s->n_msgs].content, sizeof s->msgs[0].content, content);
+    set_str_utf8(s->msgs[s->n_msgs].content, sizeof s->msgs[0].content, content);
     s->n_msgs++;
 }
 
@@ -281,13 +286,13 @@ int session_fact_set(Session *s, const char *key, const char *val) {
     set_str(v, sizeof v, val ? val : "");
     for (int i = 0; i < s->n_facts; i++) {
         if (strcmp(s->facts[i].key, key) == 0) {
-            set_str(s->facts[i].val, sizeof s->facts[0].val, v);
+            set_str_utf8(s->facts[i].val, sizeof s->facts[0].val, v);
             return 0;
         }
     }
     if (s->n_facts >= SESSION_FACTS_MAX) return -1;
-    set_str(s->facts[s->n_facts].key, sizeof s->facts[0].key, key);
-    set_str(s->facts[s->n_facts].val, sizeof s->facts[0].val, v);
+    set_str_utf8(s->facts[s->n_facts].key, sizeof s->facts[0].key, key);
+    set_str_utf8(s->facts[s->n_facts].val, sizeof s->facts[0].val, v);
     s->n_facts++;
     return 0;
 }
@@ -338,12 +343,21 @@ void session_render_extra(const Session *s, sbuf *out) {
         }
     }
     if (s->n_msgs) {
-        sb_str(out, "\nRecent exchange:");
-        for (int i = 0; i < s->n_msgs; i++) {
+        /* Cap the injected history: it rides the system prompt on EVERY
+         * round of EVERY request, so an unbounded dump inflates each
+         * upstream call (and can push past a provider's context budget).
+         * Most-recent first, at most 4 messages, each trimmed to 1200
+         * UTF-8-safe chars. */
+        int shown = 0;
+        sb_str(out, "\nRecent exchange (most recent first):");
+        int first = s->n_msgs > 4 ? s->n_msgs - 4 : 0;
+        for (int i = s->n_msgs - 1; i >= first && shown < 4; i--, shown++) {
             sb_chr(out, '\n');
             sb_str(out, s->msgs[i].role);
             sb_str(out, ": ");
-            sb_str(out, s->msgs[i].content);
+            char buf[1201];
+            set_str_utf8(buf, sizeof buf, s->msgs[i].content);
+            sb_str(out, buf);
         }
     }
 }

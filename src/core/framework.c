@@ -39,6 +39,7 @@
 /* ---- configuration globals (moved from main.c; extern in internal.h) ---- */
 
 char g_web_root_real[MAX_PATH_SIZE];
+char g_views_real[MAX_PATH_SIZE];
 char g_cgi_bin_real[MAX_PATH_SIZE];
 int g_server_port = 0;
 int g_no_directory_listing = 0;
@@ -341,6 +342,23 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     if (!realpath(c.docroot, g_web_root_real)) {
         strncpy(g_web_root_real, c.docroot, sizeof(g_web_root_real) - 1);
     }
+    /* Optional pages root under the document root ("views"): page URLs are
+     * served from here first, then the document root picks up whatever they
+     * lack (shared bundles etc.). It is a docroot subdirectory, so an
+     * absolute-ish "hub" just means <docroot>/hub. Empty = feature off. */
+    g_views_real[0] = '\0';
+    if (c.views && c.views[0]) {
+        char views_full[MAX_PATH_SIZE];
+        if (c.views[0] == '/') {
+            snprintf(views_full, sizeof(views_full), "%s", c.views);
+        } else {
+            snprintf(views_full, sizeof(views_full), "%s/%s",
+                     g_web_root_real, c.views);
+        }
+        if (!realpath(views_full, g_views_real)) {
+            strncpy(g_views_real, views_full, sizeof(g_views_real) - 1);
+        }
+    }
     if (!realpath(c.cgi_bin, g_cgi_bin_real)) {
         strncpy(g_cgi_bin_real, c.cgi_bin, sizeof(g_cgi_bin_real) - 1);
     }
@@ -375,6 +393,9 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     skills_init();
     tools_init();
     mcp_init();
+    /* Proxy tools for the router's builtin catalog; after the local
+     * registry exists so local builtins win name collisions. */
+    router_register_tools();
 
     /* Registration closes here: routes and tools are pre-fork snapshots. */
     g_framework_started = 1;

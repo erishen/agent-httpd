@@ -81,6 +81,16 @@ size_t utf8_valid_prefix(const char *s, size_t max) {
     return end;
 }
 
+/* set_str bounded to a UTF-8-safe prefix: never leaves a partial multi-byte
+ * character in dst (plain set_str + a fixed SKILL_DESC_MAX/TOOL_DESC_MAX cap
+ * truncated mid-char and persisted invalid bytes into catalogs/JSON/prompts). */
+void set_str_utf8(char *dst, size_t dst_size, const char *src) {
+    if (dst_size == 0) return;
+    size_t n = src ? utf8_valid_prefix(src, dst_size - 1) : 0;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 void trim_whitespace(char *s) {
     char *start = s;
     while (*start && isspace((unsigned char)*start)) start++;

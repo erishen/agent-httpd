@@ -139,6 +139,18 @@ m_dsize=$(curl -s -o /dev/null -w "%{size_download}" "$BASE/js/fix-mid.bin")
 check "sub-threshold static file not truncated ($m_fsize)" "$m_fsize" "$m_dsize"
 rm -f www/js/fix-mid.bin
 
+# extensionless URLs fall back to a ".html" twin (like the implicit
+# "/" -> "/index.html"); a missing twin or a path with an extension stays 404.
+printf '<!doctype html><title>about</title>\nabout page\n' > www/fix-about.html
+check "extensionless -> .html (200)" "200" "$(status "$BASE/fix-about")"
+check "extensionless -> .html content-type" "text/html" \
+    "$(curl -s -o /dev/null -w "%{content_type}" "$BASE/fix-about")"
+check "extensionless -> .html body" "1" \
+    "$(curl -s "$BASE/fix-about" | grep -c "about page")"
+check "missing extensionless twin stays 404" "404" "$(status "$BASE/fix-nope")"
+check "path with extension does not fall back" "404" "$(status "$BASE/fix-about.txt")"
+rm -f www/fix-about.html
+
 head_line=$(curl -s -I "$BASE/" | head -1)
 head=$(echo "$head_line" | grep -c "200 OK")
 head_has_body=$(curl -s -I "$BASE/" | grep -c "<!DOCTYPE")

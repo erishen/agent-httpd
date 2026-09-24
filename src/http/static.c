@@ -356,18 +356,23 @@ static int accepts_gzip(const char *s) {
     return star_q > 0;                    /* explicit wildcard only */
 }
 
-int handle_static_file(const HttpRequest *request, HttpResponse *response) {
-    char decoded_path[MAX_PATH_SIZE];
-    char real_path[MAX_PATH_SIZE];
-
-    /* request->path may still carry a query string (e.g. "/?x=1");
-     * resolve_within strips it, but the directory/index logic below needs
-     * the bare path, so cut it off here. */
+/* Resolve the request URL inside root_real without touching the response.
+ * Returns 0 and fills real_path when a file (or its "/index.html" /
+ * "<path>.html" mapping) resolves inside the root; -1 when the path is
+ * refused or absent here. Keeping this side-effect free lets handlers chain
+ * roots: the "views" dir first, then the document root.
+ *
+ * request->path may still carry a query string (e.g. "/?x=1");
+ * resolve_within strips it, but the directory/index logic below needs the
+ * bare path, so it is cut off before decoding. */
+static int resolve_static_path(const HttpRequest *request, const char *root_real,
+                               char *real_path, size_t real_size) {
     char path_only[MAX_PATH_SIZE];
     snprintf(path_only, sizeof(path_only), "%s", request->path);
     char *qm = strchr(path_only, '?');
     if (qm) *qm = '\0';
 
+    char decoded_path[MAX_PATH_SIZE];
     url_decode(decoded_path, path_only);
 
     if (strcmp(decoded_path, "/") == 0) {
@@ -380,26 +385,50 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
 
     /* Dot-prefixed path components are refused outright (404, not 403 -
      * existence is not disclosed): editor state, .env, VCS metadata or any
-     * other dotfile that ends up inside the docroot must not be reachable
-     * over HTTP. */
-    if (path_has_dot_component(decoded_path)) {
-        response->status_code = 404;
-        strcpy(response->status_text, "Not Found");
+     * other dotfile that ends up inside a root must not be reachable over
+     * HTTP. */
+    if (path_has_dot_component(decoded_path))
         return -1;
-    }
 
-    if (!resolve_within(g_web_root_real, decoded_path, real_path, sizeof(real_path))) {
-        response->status_code = 404;
-        strcpy(response->status_text, "Not Found");
-        return -1;
+    if (!resolve_within(root_real, decoded_path, real_path, real_size)) {
+        /* Implicit ".html": an extensionless path falls back to "<path>.html"
+         * (same idea as the / -> /index.html rule above), so /items serves
+         * www/items.html. Only tried when the exact file is absent and the
+         * final component carries no extension - anything with a dot (or a
+         * missing .html twin) stays absent. resolve_within() runs realpath(),
+         * so it already proves the twin exists and is inside the root. */
+        const char *base = strrchr(decoded_path, '/');
+        base = base ? base + 1 : decoded_path;
+        char html_decoded[MAX_PATH_SIZE + 6]; /* +5 for ".html" + NUL */
+        int have_html = 0;
+        if (*base != '\0' && strchr(base, '.') == NULL) {
+            snprintf(html_decoded, sizeof(html_decoded), "%s.html", decoded_path);
+            have_html = resolve_within(root_real, html_decoded,
+                                       real_path, real_size) != NULL;
+        }
+        if (!have_html)
+            return -1;
     }
+    return 0;
+}
 
+/* Serve an already-resolved static path (real_path inside some root): stat,
+ * directory/index handling, gzip sibling negotiation, ETag/304 conditional
+ * requests, byte ranges, and the mem/stream split at MAX_MEM_BODY_SIZE.
+ * Returns 0 with the response filled; -1 after an error was set. */
+static int serve_resolved_static(const HttpRequest *request, HttpResponse *response,
+                                 const char *real_path) {
     struct stat st;
     if (stat(real_path, &st) < 0) {
         response->status_code = 404;
         strcpy(response->status_text, "Not Found");
         return -1;
     }
+
+    char path_only[MAX_PATH_SIZE];
+    snprintf(path_only, sizeof(path_only), "%s", request->path);
+    char *qm = strchr(path_only, '?');
+    if (qm) *qm = '\0';
 
     if (S_ISDIR(st.st_mode)) {
         const char *slash = strrchr(path_only, '/');
@@ -553,4 +582,31 @@ int handle_static_file(const HttpRequest *request, HttpResponse *response) {
     format_http_date(response->last_modified, sizeof(response->last_modified), st.st_mtime);
     set_str(response->cache_control, sizeof(response->cache_control), STATIC_CACHE_CONTROL);
     return 0;
+}
+
+int handle_static_file(const HttpRequest *request, HttpResponse *response) {
+    char real_path[MAX_PATH_SIZE];
+    if (resolve_static_path(request, g_web_root_real, real_path, sizeof(real_path)) != 0) {
+        response->status_code = 404;
+        strcpy(response->status_text, "Not Found");
+        return -1;
+    }
+    return serve_resolved_static(request, response, real_path);
+}
+
+/* Optional front-of-docroot static root. When g_views_real is configured the
+ * URL is tried here FIRST with the full static semantics (index.html,
+ * extensionless .html, dotfile refusal, gzip/ETag/range): pages live under
+ * the views dir while the shared bundles (app.js / app.css / …) stay in the
+ * document root, so a request either lands here or falls back there.
+ *
+ * Returns 0 = served, -1 = resolved in views but refused (403 for an
+ * unreadable file etc. - surface it, do NOT fall back), 1 = not in views at
+ * all, try the document root. */
+int handle_views_file(const HttpRequest *request, HttpResponse *response) {
+    char real_path[MAX_PATH_SIZE];
+    if (g_views_real[0] == '\0') return 1;
+    if (resolve_static_path(request, g_views_real, real_path, sizeof(real_path)) != 0)
+        return 1;
+    return serve_resolved_static(request, response, real_path) == 0 ? 0 : -1;
 }

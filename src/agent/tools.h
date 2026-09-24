@@ -37,6 +37,12 @@ typedef struct {
  * skill-run/remember/recall). Call once in the parent before forks. */
 void tools_init(void);
 
+/* Profile allow-list predicate (HARNESS_TOOLS_ALLOW). MCP tools (names
+ * containing "__") answer "allowed" — they are gated by MCP_ALLOW instead.
+ * Exposed so the DSL bridge can skip a demo tool gracefully instead of
+ * treating the trim as a hard registration failure. */
+int tools_register_allowed(const char *name);
+
 /* Append a dynamic tool (used by the MCP layer). Returns 0 on success,
  * -1 when the table is full / name duplicated. */
 int tools_register(const char *name, const char *desc, const char *params_json,

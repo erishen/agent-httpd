@@ -12,6 +12,12 @@ ifeq ($(UNAME_S),Linux)
     # _GNU_SOURCE: strcasestr 等非 POSIX 扩展; 必须在 CFLAGS 里定义
     # (内部头里定义会晚于首个系统头, glibc features.h 已锁死特性集)
     CFLAGS_EXTRA += -D_GNU_SOURCE
+    # gcc12 新警告族 (format-truncation/stringop-truncation): 由 glibc 的
+    # __builtin 导向产生, macOS clang 不存在这两族 -> 只豁免 Linux。
+    # 不豁免则 lume 容器 (debian/gcc12) 编 libagenthttpd.a 在
+    # src/core/framework.c:355/359 遇 -Werror 直接红, 和 lume/Makefile
+    # 的 -D_GNU_SOURCE 是同一个坑的两半。
+    CFLAGS_EXTRA += -Wno-format-truncation -Wno-stringop-truncation
 endif
 ifeq ($(UNAME_S),Darwin)
     # crypt(3) is in libc; no <crypt.h> header, no extra link flag.

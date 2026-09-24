@@ -211,7 +211,7 @@ agent-httpd/
 │   ├── httpd.h          # shared structs/declarations (HTTP, FCGI server/client reuse)
 │   ├── internal.h       # private cross-module declarations
 │   ├── core/            # engine layer: main.c (CLI front end) · framework.c (public API impl)
-│   │                    #   event.c (master loop) · worker.c (prefork pool) · router.c (llm-router sync)
+│   │                    #   event.c (master loop) · worker.c (prefork pool) · router.c (llm-router sync + tool proxies)
 │   │                    #   metrics.c (shared counters) · minijson.c · util.c
 │   ├── http/            # protocol layer: http.c (parse/serialize/keep-alive) · http_parse.c
 │   │                    #   http_resp.c · http_log.c · http_route.c (dispatch) · static.c (traversal
@@ -367,8 +367,14 @@ Notes:
   (wall-clock budget for the whole sync, default 10s, 0 = unlimited — a
   half-dead upstream tightens each curl's `--max-time` to the remaining
   budget and skips the rest past the wall: a stale catalog is acceptable,
-  a stalled boot is not); in-container log rotation reads
-  `LOG_ROTATE_SECONDS` (default 86400, 0 = off) / `LOG_ROTATE_KEEP` (default 7)
+  a stalled boot is not). The sync also fetches `GET /v1/tools` and, after
+  local tool/MCP registration, registers each entry (minus `mcp:*` aliases
+  and names already taken by a local builtin) as a proxy tool whose handler
+  POSTs `{"name","args"}` to `POST /v1/tools/invoke`, so the router's
+  builtin/conditional tools (calc, query_exchange_rate, system_info, …) are
+  callable from our own ReAct loop; local builtins win name collisions.
+  in-container log rotation reads `LOG_ROTATE_SECONDS` (default 86400, 0 =
+  off) / `LOG_ROTATE_KEEP` (default 7)
 - **LLM config lives in the project-root `.env`**: `cp .env.example .env`,
   fill in `LLM_API_KEY`, and you're on a real model (any OpenAI-compatible
   endpoint: OpenAI / DeepSeek / local Ollama); both the httpd and react
