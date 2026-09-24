@@ -418,11 +418,18 @@ int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
                         }
                     }
                 }
-                /* skills index + session memory ride along as system_extra */
+                /* skills index + session memory ride along as system_extra;
+                 * LLM_SYSTEM_EXTRA is an env injection point so deployments can
+                 * append per-scenario guidance (schema, data discipline, etc.) */
                 sbuf extra = {0};
                 const char *idx = skills_index_text();
                 if (idx && idx[0]) {
                     sb_str(&extra, idx);
+                    sb_str(&extra, "\n\n");
+                }
+                const char *sys_extra_env = getenv("LLM_SYSTEM_EXTRA");
+                if (sys_extra_env && sys_extra_env[0]) {
+                    sb_str(&extra, sys_extra_env);
                     sb_str(&extra, "\n\n");
                 }
                 session_render_extra(&sess, &extra);
