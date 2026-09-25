@@ -20,10 +20,14 @@ const char *sqlite_system_extra(void);
  *   with a message in `err`.
  * sqlite_query_json: 0 on success, `out` receives a JSON array of row maps
  *   (at most ROW_CAP rows, "[]" for empty results).
- * sqlite_write_exec: 0 on success with `*affected` = rows changed (0 for DDL). */
-int sqlite_query_json(const char *db, const char *sql, sbuf *out,
-                      char *err, size_t errsz);
-int sqlite_write_exec(const char *db, const char *sql, int *affected,
-                      char *err, size_t errsz);
+ * sqlite_write_exec: 0 on success with `*affected` = rows changed (0 for DDL).
+ * Both take optional `?` bind parameters: `params`[0..nparams) are bound to
+ * placeholders 1..n in order (a NULL entry binds SQL NULL). Values never
+ * enter the SQL text, so the read/write guardrails check the statement
+ * skeleton only and injection via parameter values is impossible. */
+int sqlite_query_json(const char *db, const char *sql, const char **params,
+                      int nparams, sbuf *out, char *err, size_t errsz);
+int sqlite_write_exec(const char *db, const char *sql, const char **params,
+                      int nparams, int *affected, char *err, size_t errsz);
 
 #endif /* AGENT_SQLITE_TOOL_H */
