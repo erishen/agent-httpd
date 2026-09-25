@@ -314,6 +314,84 @@ static void tool_sql_write(void *data, const char *args,
     }
 }
 
+/* ---- DSL-level helpers (callable from Lume's sql_query/sql_write) ------- */
+
+int sqlite_query_json(const char *db, const char *sql, sbuf *out,
+                      char *err, size_t errsz) {
+    const char *path = db && db[0] ? db : sqlite_db_path();
+    if (!path || !path[0]) {
+        snprintf(err, errsz, "no database (set SQLITE_DB or pass a path)");
+        return 1;
+    }
+    if (!sql || !sql[0]) {
+        snprintf(err, errsz, "empty SQL");
+        return 1;
+    }
+    char body[SQL_MAX];
+    const char *verr = validate_read(sql, body, sizeof body);
+    if (verr) {
+        snprintf(err, errsz, "%s", verr);
+        return 1;
+    }
+    sqlite3 *sq = NULL;
+    if (sqlite3_open_v2(path, &sq, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        snprintf(err, errsz, "cannot open '%s' read-only", path);
+        if (sq) sqlite3_close(sq);
+        return 1;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
+        snprintf(err, errsz, "%s", sqlite3_errmsg(sq));
+        sqlite3_close(sq);
+        return 1;
+    }
+    dump_rows(st, out, NULL);
+    sqlite3_finalize(st);
+    sqlite3_close(sq);
+    return 0;
+}
+
+int sqlite_write_exec(const char *db, const char *sql, int *affected,
+                      char *err, size_t errsz) {
+    const char *path = db && db[0] ? db : sqlite_db_path();
+    if (!path || !path[0]) {
+        snprintf(err, errsz, "no database (set SQLITE_DB or pass a path)");
+        return 1;
+    }
+    if (!sql || !sql[0]) {
+        snprintf(err, errsz, "empty SQL");
+        return 1;
+    }
+    char body[SQL_MAX];
+    const char *verr = validate_write(sql, body, sizeof body);
+    if (verr) {
+        snprintf(err, errsz, "%s", verr);
+        return 1;
+    }
+    sqlite3 *sq = NULL;
+    if (sqlite3_open_v2(path, &sq, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        snprintf(err, errsz, "cannot open '%s' for writing", path);
+        if (sq) sqlite3_close(sq);
+        return 1;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
+        snprintf(err, errsz, "%s", sqlite3_errmsg(sq));
+        sqlite3_close(sq);
+        return 1;
+    }
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        snprintf(err, errsz, "%s", sqlite3_errmsg(sq));
+        sqlite3_close(sq);
+        return 1;
+    }
+    *affected = sqlite3_changes(sq);
+    sqlite3_close(sq);
+    return 0;
+}
+
 static void tool_sql_tables(void *data, const char *args,
                             const char *session_id, sbuf *result) {
     (void)data;
