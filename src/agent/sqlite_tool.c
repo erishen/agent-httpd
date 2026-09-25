@@ -316,8 +316,26 @@ static void tool_sql_write(void *data, const char *args,
 
 /* ---- DSL-level helpers (callable from Lume's sql_query/sql_write) ------- */
 
-int sqlite_query_json(const char *db, const char *sql, sbuf *out,
-                      char *err, size_t errsz) {
+/* Bind ? placeholders; a NULL entry binds SQL NULL. Text binding is enough
+ * because SQLite column affinity converts numbers for numeric comparison. */
+static int bind_params(sqlite3_stmt *st, const char **params, int nparams,
+                       char *err, size_t errsz) {
+    for (int i = 0; i < nparams; i++) {
+        int rc = params[i]
+                     ? sqlite3_bind_text(st, i + 1, params[i], -1, SQLITE_TRANSIENT)
+                     : sqlite3_bind_null(st, i + 1);
+        if (rc != SQLITE_OK) {
+            sqlite3 *sq = sqlite3_db_handle(st);
+            snprintf(err, errsz, "bind param %d: %s", i + 1,
+                     sqlite3_errmsg(sq));
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int sqlite_query_json(const char *db, const char *sql, const char **params,
+                      int nparams, sbuf *out, char *err, size_t errsz) {
     const char *path = db && db[0] ? db : sqlite_db_path();
     if (!path || !path[0]) {
         snprintf(err, errsz, "no database (set SQLITE_DB or pass a path)");
@@ -345,14 +363,19 @@ int sqlite_query_json(const char *db, const char *sql, sbuf *out,
         sqlite3_close(sq);
         return 1;
     }
+    if (bind_params(st, params, nparams, err, errsz)) {
+        sqlite3_finalize(st);
+        sqlite3_close(sq);
+        return 1;
+    }
     dump_rows(st, out, NULL);
     sqlite3_finalize(st);
     sqlite3_close(sq);
     return 0;
 }
 
-int sqlite_write_exec(const char *db, const char *sql, int *affected,
-                      char *err, size_t errsz) {
+int sqlite_write_exec(const char *db, const char *sql, const char **params,
+                      int nparams, int *affected, char *err, size_t errsz) {
     const char *path = db && db[0] ? db : sqlite_db_path();
     if (!path || !path[0]) {
         snprintf(err, errsz, "no database (set SQLITE_DB or pass a path)");
@@ -377,6 +400,11 @@ int sqlite_write_exec(const char *db, const char *sql, int *affected,
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
         snprintf(err, errsz, "%s", sqlite3_errmsg(sq));
+        sqlite3_close(sq);
+        return 1;
+    }
+    if (bind_params(st, params, nparams, err, errsz)) {
+        sqlite3_finalize(st);
         sqlite3_close(sq);
         return 1;
     }
