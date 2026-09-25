@@ -551,9 +551,13 @@ static int http_status_code(const char *hdr) {
 }
 
 /* scheme://host[:port] of a URL (its origin), for resolving relative
- * redirects. */
+ * redirects. -Wformat-truncation is a GCC-only warning group: clang rejects
+ * the diagnostic pragma under -Werror (-Wunknown-warning-option), so emit
+ * it for real GCC only. */
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
 static void url_origin(const char *url, char *out, size_t outsz) {
     const char *s = strstr(url, "://");
     if (!s) { snprintf(out, outsz, "%s", "http://"); return; }
@@ -565,6 +569,9 @@ static void url_origin(const char *url, char *out, size_t outsz) {
     memcpy(out, url, n);
     out[n] = '\0';
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /* Resolve a redirect Location against `base` into an absolute URL in `out`.
  * Handles absolute, protocol-relative (//host) and origin-relative (/path)
@@ -597,7 +604,9 @@ static void resolve_redirect(const char *base, const char *loc,
     }
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 
 #define TOOL_FETCH_MAX_HOPS 5
 #define TOOL_FETCH_READ_MAX (TOOL_FETCH_MAX + 4096)
