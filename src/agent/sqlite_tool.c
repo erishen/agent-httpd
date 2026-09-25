@@ -388,6 +388,7 @@ int sqlite_write_exec(const char *db, const char *sql, int *affected,
         return 1;
     }
     *affected = sqlite3_changes(sq);
+    if (strncasecmp(body, "create", 6) == 0) *affected = 0; /* DDL has no row count */
     sqlite3_close(sq);
     return 0;
 }
