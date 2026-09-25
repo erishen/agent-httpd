@@ -251,11 +251,21 @@ int agenthttpd_tool(const char *name, const char *desc, const char *params_json,
 
 /* ---- lifecycle ---- */
 
+/* Session retention: prune transcripts older than SESSION_TTL_DAYS
+ * (default 30, 0 disables the sweep). Memory (memory.json) is never
+ * pruned — it is the long-lived fact store. */
+static double session_ttl_days(void) {
+    const char *e = getenv("SESSION_TTL_DAYS");
+    if (!e || !*e) return 30.0;
+    double d = atof(e);
+    return d > 0 ? d : 30.0;
+}
+
 static void *session_prune_thread(void *arg) {
     (void)arg;
     for (;;) {
         sleep(24 * 60 * 60);
-        session_prune_old(30.0);
+        session_prune_old(session_ttl_days());
     }
     return NULL;
 }
@@ -382,7 +392,7 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     agent_init();
     /* Startup hygiene: drop session transcripts older than 30 days, then
      * keep doing it daily for the lifetime of the process. */
-    session_prune_old(30.0);
+    session_prune_old(session_ttl_days());
     pthread_t prune_tid;
     if (pthread_create(&prune_tid, NULL, session_prune_thread, NULL) == 0) {
         pthread_detach(prune_tid);
@@ -434,6 +444,26 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     printf("AgentHTTPD server started on port %d\n", c.port);
     printf("Listening: IPv4 %s:%d%s\n", c.bind_host ? c.bind_host : "0.0.0.0",
            c.port, server_fd6 >= 0 ? " + IPv6 [::]" : " (IPv6 unavailable)");
+    /* Privacy guard: an instance bound to a non-loopback address with no
+     * Basic Auth is reachable by any host that can reach the port — /chat,
+     * /dsl and the SQL data behind them included. Warn once at startup;
+     * localhost-only binds and auth-enabled configs stay silent. */
+    {
+        const char *bind = c.bind_host ? c.bind_host : "0.0.0.0";
+        int loopback = (strcmp(bind, "127.0.0.1") == 0 ||
+                        strcmp(bind, "localhost") == 0 ||
+                        strcmp(bind, "::1") == 0 ||
+                        strcmp(bind, "::") == 0);
+        if (!loopback && (!c.htpasswd || !c.htpasswd[0])) {
+            fprintf(stderr,
+                    "WARNING: listening on %s without Basic Auth "
+                    "(htpasswd unset).\n"
+                    "Anyone who can reach this port can read /chat, /dsl "
+                    "and SQL data, and trigger writes.\n"
+                    "For public deploys set htpasswd = env(\"HTPASSWD_FILE\") "
+                    "or terminate with nginx Basic Auth.\n", bind);
+        }
+    }
     printf("Web root: %s\n", g_web_root_real);
     printf("CGI bin: %s\n", g_cgi_bin_real);
     printf("Log file: %s\n", g_log_path);
