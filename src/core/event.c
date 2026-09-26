@@ -304,9 +304,14 @@ static void conn_readable(Conn *c) {
         fast_serve(c, &req, &resp, hdr_len, 1);
         return;
     }
-    if (!check_basic_auth(req.authorization)) {
+    /* /logout 豁免 Basic Auth：登出/切账号端点必须能在无凭据或旧凭据场景下
+     * 可达（它自身只把 realm 计数 +1，无敏感数据）。 */
+    int auth_ok = is_logout_path(req.path) || check_basic_auth(req.authorization);
+    if (!auth_ok) {
         set_error_response(&resp, 401, "Unauthorized");
-        resp.auth_realm = g_auth_realm;
+        /* realm 用 auth_realm_current()：计数 N>0 时 "<realm>#N"，浏览器旧凭据
+         * 缓存桶按 (origin,realm) 分桶，realm 一变旧缓存失效 → 重新弹框。 */
+        resp.auth_realm = auth_realm_current();
         fast_serve(c, &req, &resp, hdr_len, 1);
         return;
     }

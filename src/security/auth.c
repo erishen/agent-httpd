@@ -13,6 +13,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <time.h>
 
 #ifdef HAVE_CRYPT_H
 #include <crypt.h>
@@ -27,10 +28,91 @@ extern char *crypt(const char *key, const char *setting);
 
 char g_auth_file[MAX_PATH_SIZE] = "";
 char g_auth_realm[128] = DEFAULT_AUTH_REALM;
-/* Basic Auth 最近一次校验通过的用户名（仅 g_auth_file 非空时由 check_basic_auth
- * 写入；校验失败/认证关闭时清空）。供 lumed DSL 的 req map 读取，实现
- * "按账号区分内容"。进程内单请求处理模型下安全：每个 worker 串行处理请求。 */
-char g_auth_user[64] = "";
+
+/* ---- 登出 / 切换账号支持（AUTH_REALM_FILE）----
+ * 浏览器 Basic Auth 凭据按 origin 缓存且基本不看 realm：登出后浏览器会静默
+ * 重发旧凭据，旧账号仍有效 → 直接 200，永远切不了用户。realm 轮换（计数 N
+ * 使 401 挑战变 "<realm>#N"）只在 401 发生时才有意义 —— 所以核心是 auth 门
+ * 的登出拒绝记录：/logout 把「刚登出用户名|时间戳」写入 AUTH_REALM_FILE 第 2 行，
+ * 该用户 30 秒内的请求被拒（消费式：只拦一次即清除，30s 后自动放行，用户
+ * 可以重新登录）。计数与记录都落文件而非进程内存，prefork 各进程天然一致。 */
+static char g_realm_file[MAX_PATH_SIZE] = "";
+static char g_realm_rotated[128] = "";
+
+static void realm_file_lazy_init(void) {
+    const char *e = getenv("AUTH_REALM_FILE");
+    if (e && e[0]) snprintf(g_realm_file, sizeof(g_realm_file), "%s", e);
+}
+
+static int realm_file_read(int *out_n) {
+    FILE *f = fopen(g_realm_file, "r");
+    if (!f) { *out_n = 0; return -1; }
+    int n = 0;
+    if (fscanf(f, "%d", &n) != 1) n = 0;
+    *out_n = n;
+    fclose(f);
+    return 0;
+}
+
+/* 当前 401 挑战应使用的 realm：计数 N>0 时返回 "<realm>#N"，否则原值。 */
+const char *auth_realm_current(void) {
+    static int inited = 0;
+    if (!inited) { inited = 1; realm_file_lazy_init(); }
+    int n = 0;
+    if (!g_realm_file[0] || realm_file_read(&n) != 0 || n <= 0)
+        return g_auth_realm;
+    snprintf(g_realm_rotated, sizeof(g_realm_rotated), "%s#%d",
+             g_auth_realm, n);
+    return g_realm_rotated;
+}
+
+/* 计数 +1 落盘；user 非空时同时写第 2 行「user|epoch」登出记录（该用户 30s 内
+ * 的登录被 check_basic_auth 拒绝，浏览器被迫弹框而不是静默重登旧账号）。
+ * 未配置 env 或不可写 → -1。 */
+int auth_logout_realm_bump(const char *user) {
+    static int inited = 0;
+    if (!inited) { inited = 1; realm_file_lazy_init(); }
+    if (!g_realm_file[0]) return -1;
+    int n = 0;
+    if (realm_file_read(&n) == 0) n++;
+    else n = 1;
+    FILE *w = fopen(g_realm_file, "w");
+    if (!w) return -1;
+    fprintf(w, "%d\n", n);
+    if (user && user[0])
+        fprintf(w, "%s|%ld\n", user, (long)time(NULL));
+    fclose(w);
+    return n;
+}
+
+/* 用户是否处于 30s 登出拒绝窗口内（AUTH_REALM_FILE 第 2 行记录）。 */
+/* 登出记录的一次性消费：AUTH_REALM_FILE 第 2 行 "user|epoch" 与 user 匹配
+ * 且未过期(<30s)时清除该记录并返回 1 —— 调用方应拒绝本次请求（401），
+ * 使浏览器的缓存凭据被拒一次、登录框重新弹出。已过期记录静默清除。
+ * 只拦一次：之后手动重新登录同一账号立即放行（不会卡死）。
+ * prefork 各 worker 共享同一份文件；并发消费最多多一个 401，无害。 */
+static int auth_logout_consume(const char *user) {
+    static int inited = 0;
+    if (!inited) { inited = 1; realm_file_lazy_init(); }
+    if (!g_realm_file[0] || !user || !user[0]) return 0;
+    FILE *f = fopen(g_realm_file, "r");
+    if (!f) return 0;
+    char line1[32] = "", line2[160] = "";
+    int has1 = fgets(line1, sizeof(line1), f) != NULL; /* line 1: counter */
+    int has2 = fgets(line2, sizeof(line2), f) != NULL; /* line 2: user|epoch */
+    fclose(f);
+    if (!has2) return 0;
+    char lu[64] = "";
+    long ts = 0;
+    if (sscanf(line2, "%63[^|]|%ld", lu, &ts) != 2 || strcmp(lu, user) != 0)
+        return 0;
+    /* 清除第 2 行（保留计数）：过期或新鲜都清除，但只拦截新鲜的 */
+    int n = 0;
+    if (has1) sscanf(line1, "%d", &n);
+    FILE *w = fopen(g_realm_file, "w");
+    if (w) { fprintf(w, "%d\n", n); fclose(w); }
+    return (long)time(NULL) - ts < 30; /* 新鲜 → 拦这次；过期 → 放行 */
+}
 #define HTPASSWD_MAX_ENTRIES 64
 
 struct htpasswd_entry {
@@ -173,27 +255,33 @@ int load_htpasswd(const char *path) {
     return 0;
 }
 
+/* /logout 路径识别：登出端点必须豁免 Basic Auth（见 auth.c 文件头注释：
+ * 旧凭据场景下 401 门会把它挡掉，无法登出切账号）。path 可能带 query。 */
+int is_logout_path(const char *path) {
+    const char *p = path;
+    while (*p && *p != '?') p++;
+    return (int)(p - path) == 7 && strncmp(path, "/logout", 7) == 0;
+}
+
 int check_basic_auth(const char *header_value) {
-    if (!g_auth_file[0]) { g_auth_user[0] = '\0'; return 1; } /* auth disabled */
+    if (!g_auth_file[0]) return 1; /* auth disabled */
     if (!header_value || strncasecmp(header_value, "Basic ", 6) != 0) {
-        g_auth_user[0] = '\0';
         return 0;
     }
     char creds[256 + 128 + 2];
     b64_decode(header_value + 6, creds, sizeof(creds));
     char *colon = strchr(creds, ':');
-    if (!colon) { g_auth_user[0] = '\0'; return 0; }
+    if (!colon) return 0;
     *colon = '\0';
     const char *pass = colon + 1;
+    /* 登出拒绝窗口：该用户刚 /logout（30s 内、一次性）→ 拒绝本次，使浏览器的
+     * 缓存凭据被 401 一次、登录框重新弹出（realm 已轮换，旧桶失效）。 */
+    if (auth_logout_consume(creds))
+        return 0;
     for (int i = 0; i < g_htpasswd_count; i++) {
         if (strcmp(creds, g_htpasswd[i].user) == 0) {
-            int ok = secret_matches(pass, g_htpasswd[i].secret);
-            /* 校验通过才记录用户名；失败不保留上次值（防跨请求串用）。 */
-            g_auth_user[0] = '\0';
-            if (ok) snprintf(g_auth_user, sizeof(g_auth_user), "%s", creds);
-            return ok;
+            return secret_matches(pass, g_htpasswd[i].secret);
         }
     }
-    g_auth_user[0] = '\0';
     return 0;
 }

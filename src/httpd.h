@@ -140,14 +140,22 @@ typedef struct {
  * are skipped so a malformed file can never turn into "allow all". */
 extern char g_auth_file[MAX_PATH_SIZE];
 extern char g_auth_realm[128];
-/* Username of the most recent Basic-Auth success (set by check_basic_auth;
- * empty when auth is disabled or the request is anonymous/denied). Exposed so
- * lumed route handlers can read it via req["user"] and serve per-account
- * content. */
-extern char g_auth_user[64];
 int load_htpasswd(const char *path);
 /* Verify one Authorization: header value. Returns 1 when valid. */
 int check_basic_auth(const char *header_value);
+/* /logout exemption: true when this request path is the logout endpoint
+ * (which must stay reachable without/with stale credentials so a client
+ * can actually log out and switch users). */
+int is_logout_path(const char *path);
+/* 401 挑战 realm 轮换（登出/切账号）: AUTH_REALM_FILE env 指向计数文件。
+ * auth_realm_current() 返回当前应用于 WWW-Authenticate 的 realm 值
+ * （计数 N>0 时 "<realm>#N"，否则原 g_auth_realm）；
+ * auth_logout_realm_bump(user) 计数 +1 落盘，user 非空时同时写第 2 行
+ * 「user|epoch」登出记录（该用户 30s 内的请求被 check_basic_auth 拒一次，
+ * 浏览器缓存凭据被 401 打穿 → 重新弹登录框，可切账号）。未配置 env 或不可写
+ * 返回 -1。 */
+const char *auth_realm_current(void);
+int auth_logout_realm_bump(const char *user);
 
 /* Per-IP rate limiting (token bucket, shared memory across workers).
  * g_rate_limit_rps == 0 disables. rate_limit_init() must run once in the
