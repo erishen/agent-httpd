@@ -23,6 +23,7 @@ extern char *crypt(const char *key, const char *setting);
 #endif
 
 #include "internal.h"
+#include "bcrypt.h"
 
 char g_auth_file[MAX_PATH_SIZE] = "";
 char g_auth_realm[128] = DEFAULT_AUTH_REALM;
@@ -101,6 +102,13 @@ static int secret_matches(const char *supplied, const char *stored) {
                          (strlen(stored) == 13 && strspn(stored, "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") == 13);
     if (!stored_is_hash) {
         return ct_eq(supplied, stored); /* plaintext (incl. {SHA}-style) */
+    }
+    /* bcrypt ($2a$/$2b$/$2y$/$2x$): macOS/BSD libc crypt(3) only implements
+     * legacy DES (and glibc crypt lacks bcrypt too), so verify with the
+     * bundled portable implementation. Other hash schemes keep the crypt(3)
+     * path ($5$/$6$ on glibc). */
+    if (bcrypt_is_hash(stored)) {
+        return bcrypt_verify(supplied, stored);
     }
 #ifdef HAVE_CRYPT
     const char *got = crypt(supplied, stored);

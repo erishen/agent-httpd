@@ -175,10 +175,26 @@ int main(void) {
     CHECK(check_basic_auth(hdr) == 0);
     unsetenv("AGENTHTTPD_ALLOW_WEAK_AUTH");
 
+    /* ---- bcrypt ($2y$, htpasswd -B): portable verify path ---- */
+    /* htpasswd -B on macOS emits $2y$; libc crypt(3) can never verify it
+     * (DES-only on macOS, no bcrypt in glibc), so auth.c must fall back to
+     * the bundled bcrypt_verify(). Real vector: password admin123. */
+    write_htpasswd("bcrypt",
+                   "admin:$2y$05$Y5kyTRNmGmleUf6Htnklq..AbXM/5ujHUpQDpx9s8l6BTra273EHK\n");
+    set_auth_file("bcrypt");
+    CHECK(load_htpasswd(g_auth_file) == 0);
+    make_basic("admin", "admin123", hdr, sizeof hdr);
+    CHECK(check_basic_auth(hdr) == 1);
+    make_basic("admin", "admin124", hdr, sizeof hdr);
+    CHECK(check_basic_auth(hdr) == 0);
+    /* Wrong scheme on the same entry still never matches. */
+    CHECK(check_basic_auth("Bearer YWxpY2U6") == 0);
+
     snprintf(g_auth_file, sizeof g_auth_file, "/tmp/ah_test_plain");
     unlink(g_auth_file);
     set_auth_file("mixed"); unlink(g_auth_file);
     set_auth_file("des");   unlink(g_auth_file);
+    set_auth_file("bcrypt"); unlink(g_auth_file);
 
     printf(failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;
