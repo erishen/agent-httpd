@@ -811,3 +811,6 @@ HTTP/agent 面", 这个 C 架构赢——赢在 Next 换不来的无 GC、零拷
 ## 许可
 
 MIT —— 见 [LICENSE](LICENSE)。前端依赖保留各自许可 (React、Vite、Tailwind 均为 MIT)。
+
+## 相关文章
+- [agent-httpd：让 AI 一路写到 C](https://erishen.cn/agent_httpd/)

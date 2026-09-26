@@ -1140,6 +1140,9 @@ that Next can't swap in.
 - [x] URL routing (react-router client-side routing + SSR deep links; C-side `/react/` forwarding)
 - [~] SSL/HTTPS support — **evaluated, not done**: production convention is to terminate TLS at nginx/load balancers (this repo's docker-compose does exactly that); integrating OpenSSL into a teaching server would bloat the code and derail the focus
 
+## Related Articles
+- [agent-httpd: Taking AI All the Way Down to C](https://erishen.cn/agent_httpd-en/)
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The bundled front-end dependencies keep their
