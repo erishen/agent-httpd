@@ -140,6 +140,11 @@ typedef struct {
  * are skipped so a malformed file can never turn into "allow all". */
 extern char g_auth_file[MAX_PATH_SIZE];
 extern char g_auth_realm[128];
+/* Username of the most recent Basic-Auth success (set by check_basic_auth;
+ * empty when auth is disabled or the request is anonymous/denied). Exposed so
+ * lumed route handlers can read it via req["user"] and serve per-account
+ * content. */
+extern char g_auth_user[64];
 int load_htpasswd(const char *path);
 /* Verify one Authorization: header value. Returns 1 when valid. */
 int check_basic_auth(const char *header_value);
