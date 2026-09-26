@@ -26,7 +26,10 @@ extern char *crypt(const char *key, const char *setting);
 
 char g_auth_file[MAX_PATH_SIZE] = "";
 char g_auth_realm[128] = DEFAULT_AUTH_REALM;
-
+/* Basic Auth 最近一次校验通过的用户名（仅 g_auth_file 非空时由 check_basic_auth
+ * 写入；校验失败/认证关闭时清空）。供 lumed DSL 的 req map 读取，实现
+ * "按账号区分内容"。进程内单请求处理模型下安全：每个 worker 串行处理请求。 */
+char g_auth_user[64] = "";
 #define HTPASSWD_MAX_ENTRIES 64
 
 struct htpasswd_entry {
@@ -163,20 +166,26 @@ int load_htpasswd(const char *path) {
 }
 
 int check_basic_auth(const char *header_value) {
-    if (!g_auth_file[0]) return 1; /* auth disabled */
+    if (!g_auth_file[0]) { g_auth_user[0] = '\0'; return 1; } /* auth disabled */
     if (!header_value || strncasecmp(header_value, "Basic ", 6) != 0) {
+        g_auth_user[0] = '\0';
         return 0;
     }
     char creds[256 + 128 + 2];
     b64_decode(header_value + 6, creds, sizeof(creds));
     char *colon = strchr(creds, ':');
-    if (!colon) return 0;
+    if (!colon) { g_auth_user[0] = '\0'; return 0; }
     *colon = '\0';
     const char *pass = colon + 1;
     for (int i = 0; i < g_htpasswd_count; i++) {
         if (strcmp(creds, g_htpasswd[i].user) == 0) {
-            return secret_matches(pass, g_htpasswd[i].secret);
+            int ok = secret_matches(pass, g_htpasswd[i].secret);
+            /* 校验通过才记录用户名；失败不保留上次值（防跨请求串用）。 */
+            g_auth_user[0] = '\0';
+            if (ok) snprintf(g_auth_user, sizeof(g_auth_user), "%s", creds);
+            return ok;
         }
     }
+    g_auth_user[0] = '\0';
     return 0;
 }
