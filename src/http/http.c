@@ -438,13 +438,21 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
         set_error_response(&response, 429, "Too Many Requests");
         response.retry_after = 1;
         keep_alive_force_close = 1;
-    } else if (!check_basic_auth(request.authorization)) {
+    } else if (!(is_logout_path(request.path) ||
+                 check_basic_auth(request.authorization))) {
         /* 401 challenge. The relay path above answers only when the backend
          * replied; auth runs first, so the backend never sees
          * unauthenticated traffic either. After a 401 the connection is not
-         * reusable with certainty (pipelined body state), so close it. */
+         * reusable with certainty (pipelined body state), so close it.
+         * /logout is exempt from Basic Auth (logout/switch-user must stay
+         * reachable with missing/stale credentials; it only bumps the realm
+         * counter, carries no sensitive data). auth_realm_current(): when the
+         * realm rotation counter N>0 the challenge realm becomes
+         * "<realm>#N" - browsers bucket their Basic-Auth credential cache by
+         * (origin, realm), so the old bucket is invalidated and the browser
+         * re-prompts instead of silently reusing the cached user. */
         set_error_response(&response, 401, "Unauthorized");
-        response.auth_realm = g_auth_realm;
+        response.auth_realm = auth_realm_current();
         keep_alive_force_close = 1;        } else {
             /* Expect: 100-continue (RFC 9110 10.1.1): the client holds the
              * body until granted. The stall happens in the body read below,

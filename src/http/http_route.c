@@ -87,6 +87,43 @@ int process_request(HttpRequest *request, HttpResponse *response, int client_fd)
         return 0;
     }
 
+    /* Logout / switch-user endpoint: bump the Basic-Auth realm rotation
+     * counter (AUTH_REALM_FILE). Exempt from the 401 gate (see
+     * is_logout_path in http.c / event.c). Safe to call without
+     * credentials: it carries no data, only invalidates the browser's
+     * cached Basic-Auth credential bucket by changing the challenge realm.
+     * When AUTH_REALM_FILE is unset (local dev) the bump no-ops and the
+     * response says so. */
+    if (is_logout_path(request->path)) {
+        /* 解码当前请求附带的凭据用户名（浏览器静默重发缓存凭据时非空）：
+         * 该用户将被写入 30s 一次性拒绝记录，随后的重登请求 401 一次 →
+         * 浏览器重新弹框，可切账号。无凭据登出（无浏览器缓存）时 cu 为空，
+         * 只 bump realm 计数。 */
+        char cu[128] = "";
+        if (request->authorization[0] &&
+            strncasecmp(request->authorization, "Basic ", 6) == 0) {
+            b64_decode(request->authorization + 6, cu, sizeof(cu));
+            char *colon = strchr(cu, ':');
+            if (colon) *colon = '\0';
+            if (!cu[0]) cu[0] = '\0';
+        }
+        int n = auth_logout_realm_bump(cu);
+        char out[128];
+        int len;
+        if (n > 0)
+            len = snprintf(out, sizeof(out),
+                           "{\"ok\":true,\"realm\":%d,\"user\":\"%s\"}\n", n, cu);
+        else
+            len = snprintf(out, sizeof(out),
+                           "{\"ok\":false,\"detail\":\"AUTH_REALM_FILE unset or unwritable\"}\n");
+        response->status_code = 200;
+        strcpy(response->status_text, "OK");
+        strcpy(response->content_type, "application/json");
+        response->body = strdup(out);
+        response->body_length = len;
+        return 0;
+    }
+
     /* Operations endpoint: Prometheus text format snapshot of the shared
      * counter table (see src/core/metrics.c). Same gate position as /health —
      * behind rate-limit/auth, ride-alive on the fast path. */
