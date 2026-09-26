@@ -4,7 +4,7 @@ import { Link } from "react-router";
 function NotFound() {
   return (
     <section className="rounded-2xl border border-edge bg-surface p-10 text-center shadow-xl shadow-black/20">
-      <div className="bg-gradient-to-r from-sky-400 to-fuchsia-400 bg-clip-text text-6xl font-extrabold text-transparent">
+      <div className="bg-linear-to-r from-sky-400 to-fuchsia-400 bg-clip-text text-6xl font-extrabold text-transparent">
         404
       </div>
       <p className="mt-3 text-sm text-slate-400">

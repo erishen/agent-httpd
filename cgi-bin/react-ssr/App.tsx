@@ -72,7 +72,7 @@ function Layout({ nodeVersion, mode }: { nodeVersion: string; mode: RenderMode }
           >
             <code className="text-amber-300">agent-httpd</code>
             <span className="mx-1 text-slate-500">&#215;</span>
-            <span className="bg-gradient-to-r from-sky-400 to-violet-400 bg-clip-text text-transparent">
+            <span className="bg-linear-to-r from-sky-400 to-violet-400 bg-clip-text text-transparent">
               React
             </span>
           </Link>
@@ -194,7 +194,7 @@ function Home({ params, method, serverTime, nodeVersion }: AppProps) {
         <p className="mb-3 text-xs font-bold uppercase tracking-[0.35em] text-accent">
           Server-side React &middot; {React.version}
         </p>
-        <h1 className="mt-0 bg-gradient-to-r from-sky-400 via-violet-400 to-fuchsia-400 bg-clip-text text-4xl font-extrabold leading-tight text-transparent">
+        <h1 className="mt-0 bg-linear-to-r from-sky-400 via-violet-400 to-fuchsia-400 bg-clip-text text-4xl font-extrabold leading-tight text-transparent">
           React Router &#215; AgentHTTPD
         </h1>
         <p className="mt-2 text-slate-400">
