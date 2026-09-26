@@ -59,7 +59,7 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
        src/http/http.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
        src/http/http_route.c src/http/static.c src/http/chatio.c \
        src/cgi/cgi.c src/cgi/fastcgi.c src/cgi/vite.c \
-       src/security/auth.c src/security/ratelimit.c \
+       src/security/auth.c src/security/ratelimit.c src/security/bcrypt.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
        src/agent/tools.c src/agent/skills.c src/agent/session.c \
        src/agent/sqlite_tool.c
@@ -68,7 +68,7 @@ HDRS = src/httpd.h src/agenthttpd.h src/internal.h \
        src/http/chatio.h \
        src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
        src/agent/tools.h src/agent/skills.h src/agent/session.h \
-       src/agent/sqlite_tool.h
+       src/agent/sqlite_tool.h src/security/bcrypt.h
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 INSTALL_DIR = /usr/local/bin
 
@@ -210,7 +210,7 @@ test-unit: all
 	./tests/t_vite
 	$(CC) -Wall -Wextra -O2 -pthread $(INCDIRS) tests/test_fcgi_stream.c src/cgi/fastcgi.c $(GC) -o tests/t_fcgi
 	./tests/t_fcgi
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_auth.c src/security/auth.c -o tests/t_auth
+	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_auth.c src/security/auth.c src/security/bcrypt.c -o tests/t_auth
 	./tests/t_auth
 	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_minijson.c src/core/minijson.c -o tests/t_json
 	./tests/t_json
