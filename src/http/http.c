@@ -723,7 +723,8 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
         } else if (llm_is_chat_route(request.path, request.method)) {
             llm_handle_chat(&request, &response, client_fd);
         } else if (strncmp(request.path, "/react", 6) == 0 &&
-            (request.path[6] == '\0' || request.path[6] == '/')) {
+            (request.path[6] == '\0' || request.path[6] == '/' ||
+             request.path[6] == '?')) {  /* query keeps relay: fcgi splits it */
             if (g_react_sock[0]) {
                 const char *ip = client_ip;
                 int fcgi_body_bytes = 0;
