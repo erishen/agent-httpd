@@ -191,6 +191,17 @@ fast & slow paths / agent stack / security depth) see the
   back), fail-closed (malformed lines skipped, all-invalid refuses to start),
   401s carry a WWW-Authenticate challenge, CGI gets the login via `REMOTE_USER`,
   the gate covers the whole site including `/react/` forwarding
+- **Logout / account switching**: `AUTH_REALM_FILE` (env, optional) enables a
+  `/logout` endpoint — it bumps a realm-rotation counter (the 401 challenge
+  realm becomes `<realm>#N`, invalidating the browser's cached Basic-Auth
+  credential bucket so it re-prompts) and optionally writes a one-shot 30s
+  deny record for the logged-out user so stale cached credentials cannot
+  silently log back in. `/logout` itself is exempt from the 401 gate.
+- **Public-path exemption**: `AUTH_PUBLIC_PATHS` (env, `;`-separated list)
+  lets credential-free frontend resources (e.g. an `/accounts` switch page)
+  bypass the 401 gate — without it, the switch page itself prompts after
+  logout, deadlocking account switching. Segment-boundary prefix match:
+  `/accounts` covers `/accounts/list` but not `/accounting`.
 - **Per-IP rate limiting (-l)**: token-bucket counting on a shared-memory
   table, fork/worker-pool modes enforce the same quota; IPv4 and IPv6 peers
   both key independently, and a trusted reverse proxy's `X-Forwarded-For` can
