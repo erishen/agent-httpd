@@ -306,7 +306,7 @@ static void conn_readable(Conn *c) {
     }
     /* /logout 豁免 Basic Auth：登出/切账号端点必须能在无凭据或旧凭据场景下
      * 可达（它自身只把 realm 计数 +1，无敏感数据）。 */
-    int auth_ok = is_logout_path(req.path) || check_basic_auth(req.authorization);
+    int auth_ok = is_logout_path(req.path) || is_public_path(req.path) || check_basic_auth(req.authorization);
     if (!auth_ok) {
         set_error_response(&resp, 401, "Unauthorized");
         /* realm 用 auth_realm_current()：计数 N>0 时 "<realm>#N"，浏览器旧凭据

@@ -439,6 +439,7 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
         response.retry_after = 1;
         keep_alive_force_close = 1;
     } else if (!(is_logout_path(request.path) ||
+                 is_public_path(request.path) ||
                  check_basic_auth(request.authorization))) {
         /* 401 challenge. The relay path above answers only when the backend
          * replied; auth runs first, so the backend never sees
