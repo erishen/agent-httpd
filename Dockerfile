@@ -13,12 +13,14 @@
 # ---------- 阶段 1: C 服务器 ----------
 FROM debian:bookworm-slim AS c-build
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libc6-dev libcrypt-dev make \
+    && apt-get install -y --no-install-recommends gcc libc6-dev libcrypt-dev libsqlite3-dev make \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Makefile ./
 COPY src/ src/
-# Makefile 按平台区分 -lcrypt/-DHAVE_CRYPT_H, Linux 容器内自动带上
+# Makefile 按平台区分 -lcrypt/-DHAVE_CRYPT_H, Linux 容器内自动带上;
+# libsqlite3-dev 提供 sqlite_tool.c 的 <sqlite3.h> 与 -lsqlite3 链接库
+# (漏装会让 c-build 阶段 'make all' 报 sqlite3.h 缺失, CI 红)。
 RUN make all
 
 # ---------- 阶段 2: 原生语言 CGI 动物园 (容器内编译, 非宿主机二进制) ----------
@@ -70,7 +72,7 @@ FROM node:20-bookworm-slim
 #       lightgbm/xgboost 要 libgomp.so.1, python-magic 要 libmagic.so.1,
 #       slim 镜像都不自带 (缺了会在 import 阶段直接 OSError)。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 ruby php-cgi default-jre-headless curl make git ca-certificates libgomp1 libmagic1 \
+    && apt-get install -y --no-install-recommends python3 ruby php-cgi default-jre-headless curl make git ca-certificates libgomp1 libmagic1 libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 # uv: 两个 MCP 桥 (portfolio-check / pse-review) 都以 `uv run` 驱动各自的
 # Python 项目。从 astral 官方镜像拷二进制, 免在 slim 镜像里装 pip
