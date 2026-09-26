@@ -263,6 +263,37 @@ int is_logout_path(const char *path) {
     return (int)(p - path) == 7 && strncmp(path, "/logout", 7) == 0;
 }
 
+/* AUTH_PUBLIC_PATHS（env，";" 分隔）公共路径豁免：这些路径无敏感数据
+ * （账号切换页 + 凭据校验端点），必须无认证可达 —— 否则登出后切账号页
+ * 本身弹框，形成死锁。段边界前缀匹配："/accounts" 命中 "/accounts" 与
+ * "/accounts/list"，不命中 "/accounting"（下一字符须为 '\0' 或 '/'）。
+ * 与 is_logout_path 同构，由 event.c / http.c 的 auth 门并列调用。 */
+static char g_public_paths[MAX_PATH_SIZE * 2] = "";
+
+static void public_paths_lazy_init(void) {
+    const char *e = getenv("AUTH_PUBLIC_PATHS");
+    if (e && e[0])
+        snprintf(g_public_paths, sizeof(g_public_paths), "%s", e);
+}
+
+int is_public_path(const char *path) {
+    static int inited = 0;
+    if (!inited) { inited = 1; public_paths_lazy_init(); }
+    if (!g_public_paths[0] || !path) return 0;
+    const char *p = path;
+    while (*p && *p != '?') p++; /* 只比到 '?' 为止，支持带 query */
+    for (const char *s = g_public_paths; *s; ) {
+        const char *sep = strchr(s, ';');
+        size_t len = sep ? (size_t)(sep - s) : strlen(s);
+        size_t plen = (size_t)(p - path);
+        if (len > 0 && plen >= len && strncmp(s, path, len) == 0 &&
+            (path[len] == '\0' || path[len] == '/'))
+            return 1;
+        s += (sep ? (size_t)(sep - s) : len) + 1;
+    }
+    return 0;
+}
+
 int check_basic_auth(const char *header_value) {
     if (!g_auth_file[0]) return 1; /* auth disabled */
     if (!header_value || strncasecmp(header_value, "Basic ", 6) != 0) {

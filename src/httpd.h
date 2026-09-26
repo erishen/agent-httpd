@@ -147,6 +147,11 @@ int check_basic_auth(const char *header_value);
  * (which must stay reachable without/with stale credentials so a client
  * can actually log out and switch users). */
 int is_logout_path(const char *path);
+/* AUTH_PUBLIC_PATHS env (";" 分隔前缀列表) 公共路径豁免: 命中的请求路径在
+ * Basic-Auth 门前放行（如 /accounts 切账号页等无敏感数据前端资源, 登出后
+ * 必须无认证可达, 否则切账号页自身弹框形成死锁）。与 is_logout_path 同构,
+ * 由 event.c / http.c 的 auth 门并列调用。 */
+int is_public_path(const char *path);
 /* 401 挑战 realm 轮换（登出/切账号）: AUTH_REALM_FILE env 指向计数文件。
  * auth_realm_current() 返回当前应用于 WWW-Authenticate 的 realm 值
  * （计数 N>0 时 "<realm>#N"，否则原 g_auth_realm）；
