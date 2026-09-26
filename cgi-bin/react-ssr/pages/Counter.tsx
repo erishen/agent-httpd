@@ -16,7 +16,7 @@ function Counter() {
         buttons below only work after hydration — click proof that the listener
         is attached client-side.
       </p>
-      <div className="mt-6 bg-gradient-to-br from-sky-400 to-violet-400 bg-clip-text text-7xl font-extrabold text-transparent">
+      <div className="mt-6 bg-linear-to-br from-sky-400 to-violet-400 bg-clip-text text-7xl font-extrabold text-transparent">
         {count}
       </div>
       <div className="mt-6 flex items-center justify-center gap-3">
