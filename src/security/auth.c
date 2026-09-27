@@ -286,8 +286,13 @@ int is_public_path(const char *path) {
         const char *sep = strchr(s, ';');
         size_t len = sep ? (size_t)(sep - s) : strlen(s);
         size_t plen = (size_t)(p - path);
+        /* 段边界取在条目匹配结束处 path[len]：为 '\0'（该条目即整条路径，
+         * 如 "/" 精确匹配根）、'/'（其子路径）或 '?'（同一路径带 query）。
+         * 用 plen 做位置会让 "/" 条目误放行一切（strncmp 前缀恒真 + 路径
+         * 末字符恒 '\0'），必须用 len。 */
+        char next = (len < MAX_PATH_SIZE) ? path[len] : '\0';
         if (len > 0 && plen >= len && strncmp(s, path, len) == 0 &&
-            (path[len] == '\0' || path[len] == '/'))
+            (next == '\0' || next == '/' || next == '?'))
             return 1;
         s += (sep ? (size_t)(sep - s) : len) + 1;
     }
