@@ -55,6 +55,9 @@ typedef struct {
     const char *react_socket; /* resident React SSR backend to relay /react/ to [NULL] */
     int vite_upstream_port; /* DEV ONLY: Vite proxy upstream; 0 = off [0] */
     int no_directory_listing; /* 1 = directory requests answer 404 [0] */
+    int spa;                  /* 1 = static 404 (GET + Accept: text/html) falls
+                                 back to docroot/index.html — SPA history-mode
+                                 routing (React Router etc.) [0] */
 } agenthttpd_config;
 
 /* ---- registration (call before agenthttpd_run; closed after) ---- */

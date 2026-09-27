@@ -42,6 +42,7 @@ size_t utf8_valid_prefix(const char *s, size_t max);
 extern char g_cgi_bin_real[PATH_MAX];  /* realpath(CGI_BIN) */
 extern int g_server_port;                   /* -p, feeds CGI SERVER_PORT */
 extern int g_no_directory_listing;          /* -n: return 404 for dir requests */
+extern int g_spa_fallback;                  /* static 404 -> docroot/index.html */
 extern int g_vite_upstream_port;            /* -v: dev Vite port to proxy /@, /react, /src to */
 extern char g_react_sock[MAX_PATH_SIZE];    /* -R: resident React backend */
 
