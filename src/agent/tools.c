@@ -162,6 +162,13 @@ static int tool_str_arg(const char *args, const char *key, char *out,
     return jread_string(&v, out, outsz) ? 0 : -1;
 }
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#ifndef M_E
+#define M_E 2.71828182845904523536
+#endif
+
 /* ---- calc: recursive-descent arithmetic ---------------------------- */
 
 typedef struct {
@@ -198,6 +205,42 @@ static double calc_primary(CalcP *c) {
         }
         c->s = end;
         return v;
+    }
+    /* identifiers: function calls f(expr) or named constants (pi, e) */
+    if (isalpha((unsigned char)*c->s)) {
+        char name[32];
+        int n = 0;
+        while (isalpha((unsigned char)*c->s) && n < (int)sizeof(name) - 1) {
+            name[n++] = *c->s++;
+        }
+        name[n] = '\0';
+        for (int i = 0; i < n; i++) name[i] = (char)tolower((unsigned char)name[i]);
+        calc_ws(c);
+        if (*c->s == '(') {
+            c->s++;
+            double a = calc_expr(c);
+            calc_ws(c);
+            if (*c->s != ')') {
+                c->err = 1;
+                return 0;
+            }
+            c->s++;
+            if (strcmp(name, "sqrt") == 0) return sqrt(a);
+            if (strcmp(name, "cbrt") == 0) return cbrt(a);
+            if (strcmp(name, "abs")  == 0) return fabs(a);
+            if (strcmp(name, "ln")   == 0) return log(a);
+            if (strcmp(name, "log")  == 0) return log10(a);
+            if (strcmp(name, "exp")  == 0) return exp(a);
+            if (strcmp(name, "sin")  == 0) return sin(a);
+            if (strcmp(name, "cos")  == 0) return cos(a);
+            if (strcmp(name, "tan")  == 0) return tan(a);
+            c->err = 1;
+            return 0;
+        }
+        if (strcmp(name, "pi") == 0) return M_PI;
+        if (strcmp(name, "e")  == 0) return M_E;
+        c->err = 1;
+        return 0;
     }
     c->err = 1;
     return 0;
@@ -857,7 +900,7 @@ void tools_init(void) {
         "Get the server's current local date and time.", "{}",
         tool_get_time, NULL);
     tools_register("calc",
-        "Evaluate an arithmetic expression (+ - * / % ^ and parentheses).",
+        "Evaluate an arithmetic expression. Supports + - * / % ^ and parentheses, plus functions sqrt,cbrt,abs,ln,log,exp,sin,cos,tan and constants pi,e (e.g. sqrt(8)+sqrt(18)-sqrt(32)).",
         "{\"expression\":{\"type\":\"string\",\"description\":\"e.g. (2+3)*7\"}}",
         tool_calc, NULL);
     tools_register("read_file",
