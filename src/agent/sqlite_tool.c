@@ -26,6 +26,7 @@
 
 #include "minijson.h"
 #include "tools.h"
+#include "db_layer.h"
 
 #define SQL_MAX 8192
 #define ROW_CAP 200
@@ -69,7 +70,7 @@ static void strip_comments(const char *sql, char *buf, size_t n) {
 
 /* Return an error message if the statement must not run, else NULL.
  * body receives the comment-stripped SQL for prepare. */
-static const char *validate_read(const char *sql, char *body, size_t n) {
+const char *db_validate_read(const char *sql, char *body, size_t n) {
     const char *t = sql;
     while (*t == ' ' || *t == '\t' || *t == '\r' || *t == '\n') t++;
     if (!*t) return "empty SQL";
@@ -112,7 +113,7 @@ static int kw_anywhere(const char *s, const char *w) {
  *   - allowed: INSERT / UPDATE / DELETE (UPDATE/DELETE must carry WHERE)
  *     and CREATE TABLE for a new table
  * body receives the comment-stripped SQL for prepare. */
-static const char *validate_write(const char *sql, char *body, size_t n) {
+const char *db_validate_write(const char *sql, char *body, size_t n) {
     const char *t = sql;
     while (*t == ' ' || *t == '\t' || *t == '\r' || *t == '\n') t++;
     if (!*t) return "empty SQL";
@@ -231,7 +232,7 @@ static void tool_sql_query(void *data, const char *args,
         return;
     }
     char body[SQL_MAX];
-    const char *err = validate_read(query, body, sizeof body);
+    const char *err = db_validate_read(query, body, sizeof body);
     if (err) {
         sb_str(result, "sql_query: ");
         sb_str(result, err);
@@ -275,7 +276,7 @@ static void tool_sql_write(void *data, const char *args,
         return;
     }
     char body[SQL_MAX];
-    const char *err = validate_write(query, body, sizeof body);
+    const char *err = db_validate_write(query, body, sizeof body);
     if (err) {
         sb_str(result, "sql_write: ");
         sb_str(result, err);
@@ -346,7 +347,7 @@ int sqlite_query_json(const char *db, const char *sql, const char **params,
         return 1;
     }
     char body[SQL_MAX];
-    const char *verr = validate_read(sql, body, sizeof body);
+    const char *verr = db_validate_read(sql, body, sizeof body);
     if (verr) {
         snprintf(err, errsz, "%s", verr);
         return 1;
@@ -386,7 +387,7 @@ int sqlite_write_exec(const char *db, const char *sql, const char **params,
         return 1;
     }
     char body[SQL_MAX];
-    const char *verr = validate_write(sql, body, sizeof body);
+    const char *verr = db_validate_write(sql, body, sizeof body);
     if (verr) {
         snprintf(err, errsz, "%s", verr);
         return 1;

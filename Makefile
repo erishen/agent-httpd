@@ -43,11 +43,31 @@ GC = $(if $(filter $(UNAME_S),Linux),$(GC_LINUX),$(GC_DARWIN))
 # including .c lives in.
 INCDIRS = -I src -I src/core -I src/http -I src/cgi -I src/security -I src/agent
 CFLAGS = -Wall -Wextra -Werror -O2 $(INCDIRS) $(CFLAGS_EXTRA)
-# libsqlite3 for the native SQL tools (src/agent/sqlite_tool.c): macOS ships
+# libsqlite3 for the native SQL tools (src/agent/sqlite_tool.c / src/agent/db_layer.c): macOS ships
 # the dylib in the SDK; Linux needs libsqlite3-dev (container build installs
 # it in the lume-build stage). The static container link (-static in
 # LDFLAGS_EXTRA) pulls libsqlite3.a so the final image stays dependency-free.
 LDFLAGS = $(LDFLAGS_EXTRA) -pthread -lsqlite3
+
+# ---- 数据库驱动插件(编译期开关,默认关闭 = 零依赖零体积) ----
+#   WITH_PG=1     → 编译 PostgreSQL 后端(db_layer.c 的 HAVE_LIBPQ)并链接
+#                   libpq(需 pg_config 在 PATH; 路径取自 pg_config)
+#   WITH_MYSQL=1  → 编译 MySQL 后端并链接 libmysqlclient(需 mysql_config
+#                  在 PATH; 路径取自 mysql_config)
+WITH_PG ?= 0
+WITH_MYSQL ?= 0
+ifeq ($(WITH_PG),1)
+    PQ_INC := $(shell pg_config --includedir 2>/dev/null)
+    PQ_LIB := $(shell pg_config --libdir 2>/dev/null)
+    CFLAGS_EXTRA += -DHAVE_LIBPQ -I$(PQ_INC)
+    LDFLAGS += -L$(PQ_LIB) -lpq
+endif
+ifeq ($(WITH_MYSQL),1)
+    MYSQL_CFLAGS := $(shell mysql_config --cflags 2>/dev/null)
+    MYSQL_LIBS := $(shell mysql_config --libs 2>/dev/null) -L$(shell brew --prefix 2>/dev/null)/lib
+    CFLAGS_EXTRA += -DHAVE_MYSQL $(MYSQL_CFLAGS)
+    LDFLAGS += $(MYSQL_LIBS)
+endif
 TARGET = bin/agent-httpd
 # Object/dependency files live in build/ so src/ holds sources only.
 BUILD_DIR = build
@@ -62,13 +82,13 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
        src/security/auth.c src/security/ratelimit.c src/security/bcrypt.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
        src/agent/tools.c src/agent/skills.c src/agent/session.c \
-       src/agent/sqlite_tool.c
+       src/agent/sqlite_tool.c src/agent/db_layer.c
 HDRS = src/httpd.h src/agenthttpd.h src/internal.h \
        src/core/minijson.h src/core/metrics.h src/core/router.h \
        src/http/chatio.h \
        src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
        src/agent/tools.h src/agent/skills.h src/agent/session.h \
-       src/agent/sqlite_tool.h src/security/bcrypt.h
+       src/agent/sqlite_tool.h src/agent/db_layer.h src/security/bcrypt.h
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 INSTALL_DIR = /usr/local/bin
 
