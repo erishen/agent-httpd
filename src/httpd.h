@@ -64,6 +64,13 @@ extern int g_cgi_body_tmp_threshold;
 extern int g_cgi_timeout_seconds;
 extern int g_request_timeout_seconds;
 
+/* Dynamic route captures (":name" path segments). Populated by the
+ * framework route matcher (framework.c); route handlers read them (lume
+ * exposes them as req.params). Zeroed/unused for literal routes. */
+#define HTTP_PATH_PARAMS_MAX 8
+#define HTTP_PATH_PARAM_NAME_MAX 64
+#define HTTP_PATH_PARAM_VALUE_MAX 128
+
 typedef struct {
     char method[16];
     char path[MAX_PATH_SIZE];
@@ -88,6 +95,9 @@ typedef struct {
     int te_unsupported; /* a request transfer coding we cannot frame */
     int body_too_large; /* Content-Length exceeded MAX_REQUEST_SIZE (413) */
     char *body;
+    char path_param_names[HTTP_PATH_PARAMS_MAX][HTTP_PATH_PARAM_NAME_MAX];
+    char path_param_values[HTTP_PATH_PARAMS_MAX][HTTP_PATH_PARAM_VALUE_MAX];
+    int path_param_count; /* captures stored in the arrays above */
 } HttpRequest;
 
 typedef struct {

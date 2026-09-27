@@ -81,10 +81,30 @@ int agenthttpd_route(const char *method, const char *path,
     return 0;
 }
 
+/* Route pattern kinds, in dispatch priority order:
+ *   0 = literal (exact path match)
+ *   1 = dynamic (":name" segments; captured into the request)
+ *   2 = prefix ("*" suffix, unchanged)
+ * The priority is what keeps a literal route such as /api/me from being
+ * shadowed by a dynamic one like /api/:id. */
+static int route_kind(const char *pattern) {
+    size_t plen = strlen(pattern);
+    if (plen && pattern[plen - 1] == '*') return 2;
+    if (memchr(pattern, ':', plen)) return 1;
+    return 0;
+}
+
 /* Exact match, or prefix match when the pattern ends with '*'. The request
  * path may still carry a query string (see the /health check in
- * process_request), so comparison stops at '?'. */
-static int route_path_matches(const char *pattern, const char *path) {
+ * process_request), so comparison stops at '?'.
+ *
+ * Dynamic ':name' segments match exactly one path segment (never '/'),
+ * are URL-decoded, and are captured into request->path_param_* — literals
+ * and captures may be mixed in a single pattern ("/api/stage/:id/quiz").
+ * A literal pattern that also equals the path short-circuits before any
+ * segment walk; captures are only written for patterns that actually match. */
+static int route_path_matches(const char *pattern, const char *path,
+                              HttpRequest *request) {
     char clean[MAX_PATH_SIZE];
     const char *q = strchr(path, '?');
     size_t n = q ? (size_t)(q - path) : strlen(path);
@@ -95,19 +115,62 @@ static int route_path_matches(const char *pattern, const char *path) {
     if (plen && pattern[plen - 1] == '*') {
         return strncmp(clean, pattern, plen - 1) == 0;
     }
-    return strcmp(clean, pattern) == 0;
+    if (strcmp(clean, pattern) == 0) return 1;
+    if (!memchr(pattern, ':', plen)) return 0;
+
+    /* Segment-wise match with capture. */
+    const char *pp = pattern, *cp = clean;
+    int got = 0;
+    for (;;) {
+        const char *pe = strchr(pp, '/');
+        const char *ce = strchr(cp, '/');
+        size_t pl = pe ? (size_t)(pe - pp) : strlen(pp);
+        size_t cl = ce ? (size_t)(ce - cp) : strlen(cp);
+        if (pl > 1 && pp[0] == ':' && request &&
+            request->path_param_count < HTTP_PATH_PARAMS_MAX) {
+            size_t nlen = pl - 1;
+            if (nlen >= HTTP_PATH_PARAM_NAME_MAX) nlen = HTTP_PATH_PARAM_NAME_MAX - 1;
+            memcpy(request->path_param_names[request->path_param_count], pp + 1, nlen);
+            request->path_param_names[request->path_param_count][nlen] = '\0';
+            char seg[HTTP_PATH_PARAM_VALUE_MAX];
+            size_t sl = cl >= sizeof seg - 1 ? sizeof seg - 1 : cl;
+            memcpy(seg, cp, sl);
+            seg[sl] = '\0';
+            char decoded[HTTP_PATH_PARAM_VALUE_MAX];
+            url_decode(decoded, seg);
+            strncpy(request->path_param_values[request->path_param_count],
+                    decoded, HTTP_PATH_PARAM_VALUE_MAX - 1);
+            request->path_param_values[request->path_param_count]
+                [HTTP_PATH_PARAM_VALUE_MAX - 1] = '\0';
+            request->path_param_count++;
+            got++;
+        } else if (pl == cl && strncmp(pp, cp, pl) == 0) {
+            got++;
+        } else {
+            return 0;
+        }
+        if (!pe && !ce) return got > 0; /* both ended: matched iff captured */
+        if (!pe || !ce) return 0;        /* segment count mismatch */
+        pp = pe + 1;
+        cp = ce + 1;
+    }
 }
 
 /* Returns 1 when a registered route handled the request (response filled),
- * 0 when nothing matched (or the handler fell through with -1). */
+ * 0 when nothing matched (or the handler fell through with -1).
+ * Three passes in priority order: literal, then dynamic, then prefix. */
 int framework_route_dispatch(HttpRequest *request, HttpResponse *response) {
-    for (int i = 0; i < g_route_count; i++) {
-        const FrameworkRoute *r = &g_routes[i];
-        if (strcmp(r->method, "*") != 0 && strcmp(r->method, request->method) != 0) {
-            continue;
+    for (int pass = 0; pass < 3; pass++) {
+        for (int i = 0; i < g_route_count; i++) {
+            const FrameworkRoute *r = &g_routes[i];
+            if (strcmp(r->method, "*") != 0 && strcmp(r->method, request->method) != 0) {
+                continue;
+            }
+            if (route_kind(r->path) != pass) continue;
+            request->path_param_count = 0; /* captures are per-try */
+            if (!route_path_matches(r->path, request->path, request)) continue;
+            return r->fn(request, response) == 0 ? 1 : 0;
         }
-        if (!route_path_matches(r->path, request->path)) continue;
-        return r->fn(request, response) == 0 ? 1 : 0;
     }
     return 0;
 }
