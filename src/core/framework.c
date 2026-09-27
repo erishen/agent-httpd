@@ -376,6 +376,22 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
 
     g_log_fp = fopen(g_log_path, "a");
     if (!g_log_fp) {
+        /* 常见原因是日志目录不存在(默认 ./logs/):mkdir -p 建中间目录
+         * 后重试一次,避免每次启动都打 warning 且丢访问日志。 */
+        char tmp[1024];
+        if (strlen(g_log_path) < sizeof tmp) {
+            strcpy(tmp, g_log_path);
+            for (char *c = tmp + 1; *c; c++) {
+                if (*c == '/') {
+                    *c = '\0';
+                    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) break;
+                    *c = '/';
+                }
+            }
+        }
+        g_log_fp = fopen(g_log_path, "a");
+    }
+    if (!g_log_fp) {
         fprintf(stderr, "warning: cannot open access log %s (continuing without logging)\n",
                 g_log_path);
     } else {
