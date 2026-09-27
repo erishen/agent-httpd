@@ -587,6 +587,17 @@ static int serve_resolved_static(const HttpRequest *request, HttpResponse *respo
 int handle_static_file(const HttpRequest *request, HttpResponse *response) {
     char real_path[MAX_PATH_SIZE];
     if (resolve_static_path(request, g_web_root_real, real_path, sizeof(real_path)) != 0) {
+        /* SPA history-mode fallback: 静态资源 404 且客户端要 HTML(GET +
+         * Accept: text/html)时,回退到 docroot/index.html 交给前端路由
+         * (React Router 等);其余(API 404、非 HTML 请求、HEAD)仍 404。 */
+        if (g_spa_fallback &&
+            strcmp(request->method, "GET") == 0 &&
+            strstr(request->accept, "text/html") != NULL) {
+            char index_path[MAX_PATH_SIZE + 16];
+            snprintf(index_path, sizeof(index_path), "%s/index.html",
+                     g_web_root_real);
+            return serve_resolved_static(request, response, index_path);
+        }
         response->status_code = 404;
         strcpy(response->status_text, "Not Found");
         return -1;

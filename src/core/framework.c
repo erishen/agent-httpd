@@ -44,6 +44,7 @@ char g_views_real[PATH_MAX];
 char g_cgi_bin_real[PATH_MAX];
 int g_server_port = 0;
 int g_no_directory_listing = 0;
+int g_spa_fallback = 0; /* SPA history-mode fallback (read by static.c) */
 int g_vite_upstream_port = 0;
 char g_react_sock[MAX_PATH_SIZE];
 /* g_log_fp is defined in http.c alongside the log writers. */
@@ -312,6 +313,7 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
 
     g_server_port = c.port;
     g_no_directory_listing = c.no_directory_listing ? 1 : 0;
+    g_spa_fallback = c.spa ? 1 : 0;
     g_vite_upstream_port = c.vite_upstream_port;
     if (c.react_socket) {
         strncpy(g_react_sock, c.react_socket, sizeof(g_react_sock) - 1);
