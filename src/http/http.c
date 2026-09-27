@@ -142,8 +142,9 @@ int create_server_socket6(const char *host, int port) {
     if (host == NULL) {
         server_addr.sin6_addr = in6addr_any;
     } else if (inet_pton(AF_INET6, host, &server_addr.sin6_addr) != 1) {
-        fprintf(stderr, "bind6: '%s' is not an IPv6 address (v6 listener off)\n",
-                host);
+        /* 不打印:调用方(framework.c)已在失败时统一说明
+         * "IPv6 listener unavailable: serving IPv4 only"——
+         * bind_host 是 IPv4 字面量(127.0.0.1)时这里会多打一行噪音。 */
         close(server_fd);
         return -1;
     }
