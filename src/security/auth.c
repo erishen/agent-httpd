@@ -252,6 +252,31 @@ int load_htpasswd(const char *path) {
         fprintf(stderr, "htpasswd: no valid entries in %s\n", path);
         return -1;
     }
+    /* Platform capability probe: $5$/$6$ entries verify through libcrypt,
+     * which macOS/BSD only implements as legacy DES — there those entries
+     * reject valid credentials *silently* (fail-closed, but confusing: the
+     * admin sees 401s for a correct password). Probe once at load time and
+     * say so loudly. bcrypt entries are unaffected: the bundled verifier is
+     * portable across platforms. */
+    int has_crypt_sha = 0;
+    for (int i = 0; i < g_htpasswd_count && !has_crypt_sha; i++)
+        has_crypt_sha = (strncmp(g_htpasswd[i].secret, "$5$", 3) == 0 ||
+                         strncmp(g_htpasswd[i].secret, "$6$", 3) == 0);
+    if (has_crypt_sha) {
+#ifdef HAVE_CRYPT
+        const char *probe = crypt("probe", "$6$probeSalt1");
+        if (!probe || strncmp(probe, "$6$", 3) != 0)
+            fprintf(stderr,
+                    "htpasswd: this platform's crypt(3) cannot verify $6$ "
+                    "hashes (macOS/BSD libcrypt is DES-only) - $5$/$6$ "
+                    "entries will always be DENIED here. Use bcrypt instead: "
+                    "`htpasswd -bnB user pass` (portable, bundled verifier).\n");
+#else
+        fprintf(stderr,
+                "htpasswd: built without crypt(3) - $5$/$6$ entries will "
+                "always be DENIED; use bcrypt ($2a$/$2b$/$2y$).\n");
+#endif
+    }
     return 0;
 }
 
