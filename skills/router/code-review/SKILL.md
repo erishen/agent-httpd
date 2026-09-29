@@ -1,3 +1,8 @@
+---
+name: code-review
+description: 审查代码文件并输出结构化审查报告（问题列表 + 严重度 + 建议）
+---
+
 
 # Code Review 技能
 

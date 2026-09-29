@@ -14,6 +14,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #ifdef HAVE_CRYPT_H
 #include <crypt.h>
@@ -122,6 +123,9 @@ struct htpasswd_entry {
 
 static struct htpasswd_entry g_htpasswd[HTPASSWD_MAX_ENTRIES];
 static int g_htpasswd_count = 0;
+/* 热重载：记录上次 load 的文件 mtime；管理端在线增删账号后重写 htpasswd，
+ * 下一个请求在 check_basic_auth 入口检测到 mtime 变化即重新 load。 */
+static time_t g_htpasswd_mtime = 0;
 
 void b64_decode(const char *in, char *out, size_t out_size) {
     static int8_t T[256];
@@ -277,6 +281,10 @@ int load_htpasswd(const char *path) {
                 "always be DENIED; use bcrypt ($2a$/$2b$/$2y$).\n");
 #endif
     }
+    struct stat st;
+    g_htpasswd_mtime = 0;
+    if (stat(path, &st) == 0) g_htpasswd_mtime = st.st_mtime;
+
     return 0;
 }
 
@@ -324,8 +332,22 @@ int is_public_path(const char *path) {
     return 0;
 }
 
+/* htpasswd 热重载：mtime 变化（管理端在线增删账号）时重新加载。
+ * 文件暂不可读时 load 失败会保留旧表（fopen 失败先 return，count 未清空），
+ * 不会把认证门打成"全拒"或"全放"。 */
+static void htpasswd_reload_if_changed(void) {
+    struct stat st;
+    if (stat(g_auth_file, &st) != 0) return;
+    if (st.st_mtime != g_htpasswd_mtime) {
+        if (load_htpasswd(g_auth_file) < 0) {
+            fprintf(stderr, "htpasswd: reload failed, keeping previous table\n");
+        }
+    }
+}
+
 int check_basic_auth(const char *header_value) {
     if (!g_auth_file[0]) return 1; /* auth disabled */
+    htpasswd_reload_if_changed();
     if (!header_value || strncasecmp(header_value, "Basic ", 6) != 0) {
         return 0;
     }
