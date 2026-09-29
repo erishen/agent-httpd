@@ -1,3 +1,8 @@
+---
+name: rust-review
+description: 按 Rust 团队惯例审查代码质量
+---
+
 
 对用户给出的 Rust 代码进行审查，按以下清单逐项检查并给出具体修改建议：
 

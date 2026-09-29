@@ -1,3 +1,8 @@
+---
+name: post-comment
+description: 在 WordPress 站点随机挑一篇已发布文章并提交一条评论（测试站内评论/互动）。站点地址通过 ERISHEN_BASE 环境变量配置（默认 https://example.com，需改为你的站点）。用户说「帮我找篇文章评论一下」之类时使用
+---
+
 
 # Post Comment 技能（WordPress）
 

@@ -1,3 +1,8 @@
+---
+name: hot-news-post
+description: 基于热点新闻生成合规的小红书/抖音营销文案。先抓新闻建 RAG grounding，再调 llamaindex-pse hot-news 流水线（Planner+Specialist+Evaluator+确定性合规 verify_fn）产出图文，内置违禁词/平台格式/AI标注/事实对照核查。适合「帮我写个小红书热点文案」「就 XX 热点发条抖音」。
+---
+
 
 # 热点营销文案（Hot News Post）
 
