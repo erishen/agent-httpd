@@ -123,9 +123,11 @@ struct htpasswd_entry {
 
 static struct htpasswd_entry g_htpasswd[HTPASSWD_MAX_ENTRIES];
 static int g_htpasswd_count = 0;
-/* 热重载：记录上次 load 的文件 mtime；管理端在线增删账号后重写 htpasswd，
- * 下一个请求在 check_basic_auth 入口检测到 mtime 变化即重新 load。 */
-static time_t g_htpasswd_mtime = 0;
+/* 热重载：记录上次 load 的文件 mtime（纳秒级）；管理端在线增删账号后重写
+ * htpasswd，下一个请求在 check_basic_auth 入口检测到 mtime 变化即重新 load。
+ * 秒级比较在"同秒内连续写"时会漏触发（管理端快速重置密码/增删账号），
+ * 必须比较纳秒：Linux 用 st_mtim，macOS/BSD 用 st_mtimespec。 */
+static struct timespec g_htpasswd_mtime = {0, 0};
 
 void b64_decode(const char *in, char *out, size_t out_size) {
     static int8_t T[256];
@@ -282,8 +284,15 @@ int load_htpasswd(const char *path) {
 #endif
     }
     struct stat st;
-    g_htpasswd_mtime = 0;
-    if (stat(path, &st) == 0) g_htpasswd_mtime = st.st_mtime;
+    g_htpasswd_mtime.tv_sec = 0;
+    g_htpasswd_mtime.tv_nsec = 0;
+    if (stat(path, &st) == 0) {
+#ifdef __APPLE__
+        g_htpasswd_mtime = st.st_mtimespec;
+#else
+        g_htpasswd_mtime = st.st_mtim;
+#endif
+    }
 
     return 0;
 }
@@ -338,7 +347,13 @@ int is_public_path(const char *path) {
 static void htpasswd_reload_if_changed(void) {
     struct stat st;
     if (stat(g_auth_file, &st) != 0) return;
-    if (st.st_mtime != g_htpasswd_mtime) {
+#ifdef __APPLE__
+    struct timespec cur = st.st_mtimespec;
+#else
+    struct timespec cur = st.st_mtim;
+#endif
+    if (cur.tv_sec != g_htpasswd_mtime.tv_sec ||
+        cur.tv_nsec != g_htpasswd_mtime.tv_nsec) {
         if (load_htpasswd(g_auth_file) < 0) {
             fprintf(stderr, "htpasswd: reload failed, keeping previous table\n");
         }
