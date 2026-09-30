@@ -160,7 +160,10 @@ static long parse_headers(const char *raw_request, long len, HttpRequest *reques
 }
 
 int parse_request(const char *raw_request, HttpRequest *request) {
-    memset(request, 0, sizeof(HttpRequest));
+    /* The caller zeroes the request before filling connection-level fields
+     * (remote_addr is populated from the accepted socket before parsing).
+     * Zeroing here would wipe those pre-filled fields, so parse_headers
+     * only writes the fields it parses and the rest stays caller-initialized. */
     long len = strnlen(raw_request, MAX_REQUEST_SIZE);
     return parse_headers(raw_request, len, request) < 0 ? -1 : 0;
 }
