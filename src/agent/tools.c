@@ -82,6 +82,41 @@ const char *tools_schema_json(void) {
     return g_schema_cache ? g_schema_cache : "[]";
 }
 
+/* Build the "tools" array containing ONLY the named tools (per-request
+ * allow-list from the chat body). Names absent from the registry are simply
+ * skipped; unknown names therefore expose nothing. Caller frees. */
+char *tools_schema_json_filtered(const char *const *names, int n) {
+    sbuf b = {0};
+    sb_chr(&b, '[');
+    int emitted = 0;
+    for (int i = 0; i < g_ntools; i++) {
+        int hit = 0;
+        for (int j = 0; j < n; j++) {
+            if (names[j] && strcmp(g_tools[i].name, names[j]) == 0) {
+                hit = 1;
+                break;
+            }
+        }
+        if (!hit) continue;
+        if (emitted) sb_chr(&b, ',');
+        emitted = 1;
+        sb_str(&b, "{\"type\":\"function\",\"function\":{\"name\":");
+        sb_json_str(&b, g_tools[i].name);
+        sb_str(&b, ",\"description\":");
+        sb_json_str(&b, g_tools[i].desc);
+        sb_str(&b, ",\"parameters\":{\"type\":\"object\",\"properties\":");
+        sb_str(&b, tool_params_or_empty(&g_tools[i]));
+        sb_str(&b, ",\"required\":[]}}}");
+    }
+    sb_chr(&b, ']');
+    if (b.oom) {
+        free(b.p);
+        return strdup("[]");
+    }
+    char *fresh = b.p ? b.p : strdup("[]");
+    return fresh;
+}
+
 /* Profile allow-list: HARNESS_TOOLS_ALLOW="a,b" restricts the agent tool
  * registry (builtins + DSL `tool` + MCP tools all flow through
  * tools_register); unset/empty allows everything. The OpenAI schema and the

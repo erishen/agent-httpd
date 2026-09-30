@@ -56,6 +56,11 @@ const ToolDef *tools_get(int i);
  * only). */
 const char *tools_schema_json(void);
 
+/* JSON "tools" array restricted to the given allow-list (per-request tool
+ * filter). Returns a malloc'd string; caller frees. An empty list yields
+ * "[]" (no tools visible to the model). */
+char *tools_schema_json_filtered(const char *const *names, int n);
+
 /* Execute tool `name` with its RAW (unparsed) JSON arguments. session_id
  * may be NULL (remember/recall then write the global memory pool).
  * Appends plain text to `result`; returns 0 on success, -1 on unknown

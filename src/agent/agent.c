@@ -720,7 +720,24 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
     }
     msgs_role_text(&msgs, "user", req->message);
 
+    /* Per-request tool allow-list: when the chat body pins an explicit
+     * "tools" array, the model sees ONLY those tools (schema filtered here).
+     * This lets scenarios like paper generation forbid the per-question
+     * checker and force the batch tool, instead of relying on prompt text. */
+    char *filtered_schema = NULL;
+    const char *tools_json = gateway_mode ? NULL : tools_schema_json();
+    if (!gateway_mode && req->n_tools > 0) {
+        /* req->tools is a row-major char[32][65] array; build a transient
+         * pointer array for the filtered schema (a cast to char** would
+         * treat the first bytes as a pointer and hang in strcmp). */
+        const char *ptrs[AGENT_MAX_TOOL_FILTER];
+        for (int j = 0; j < req->n_tools; j++) ptrs[j] = req->tools[j];
+        filtered_schema = tools_schema_json_filtered(ptrs, req->n_tools);
+        tools_json = filtered_schema;
+    }
+
     int rounds = max_rounds > 0 ? max_rounds : agent_max_rounds();
+    if (req->n_rounds > 0 && req->n_rounds < 64) rounds = req->n_rounds;
     for (int round = 1; round <= rounds && out->ok; round++) {
         if (round > 1) {
             char note[48];
@@ -739,7 +756,7 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
             up_err = 0;
             finish = NULL;
             rc = agent_round(out, &msgs,
-                             gateway_mode ? NULL : tools_schema_json(),
+                             tools_json,
                              NULL, capture, &rs, &finish, &up_err);
             /* A gateway can answer HTTP 200 with a clean EOF and zero
              * payload bytes (observed on agnes: empty SSE body, no error
@@ -869,6 +886,7 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
     }
     free(msgs.p);
     for (int i = 0; i < n_exec; i++) free(exec_sigs[i]);
+    free(filtered_schema);
 }
 
 void agent_run_ex(ChatOut *out, const ChatRequest *req,

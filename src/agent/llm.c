@@ -68,6 +68,36 @@ static int chat_parse_body(const char *body, ChatRequest *cr) {
         p = jws(p + 1);
         if (strcmp(key, "message") == 0) {
             if (!jread_string(&p, cr->message, sizeof cr->message)) return -1;
+        } else if (strcmp(key, "rounds") == 0) {
+            /* optional per-request round cap (0/absent = server default) */
+            int v = 0;
+            while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
+            if (v < 1 || v > 64) return -1;
+            cr->n_rounds = v;
+        } else if (strcmp(key, "tools") == 0) {
+            /* optional per-request tool allow-list: only these tools are
+             * exposed to the model this turn (schema filtered in agent.c) */
+            if (*p != '[') return -1;
+            p++;
+            cr->n_tools = 0;
+            for (;;) {
+                p = jws(p);
+                if (*p == ']') {
+                    p++;
+                    break;
+                }
+                if (*p == ',') {
+                    p++;
+                    continue;
+                }
+                if (*p != '"') return -1;
+                if (cr->n_tools >= AGENT_MAX_TOOL_FILTER) return -1;
+                if (!jread_string(&p, cr->tools[cr->n_tools],
+                                  AGENT_TOOL_NAME_MAX + 1)) return -1;
+                cr->n_tools++;
+                p = jws(p);
+                if (*p == ',') p++;
+            }
         } else if (strcmp(key, "history") == 0) {
             if (*p != '[') return -1;
             p++;

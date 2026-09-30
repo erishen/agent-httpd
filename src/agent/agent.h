@@ -62,6 +62,8 @@
 #define AGENT_MAX_HISTORY 12
 #define AGENT_HISTORY_MAX_CHARS 2000
 #define AGENT_SESSION_ID_MAX 64
+#define AGENT_MAX_TOOL_FILTER 32  /* per-request tool allow-list cap */
+#define AGENT_TOOL_NAME_MAX 64
 
 typedef struct {
     char message[AGENT_MAX_MESSAGE + 1];
@@ -69,6 +71,9 @@ typedef struct {
     char h_role[AGENT_MAX_HISTORY][16];
     char h_content[AGENT_MAX_HISTORY][AGENT_HISTORY_MAX_CHARS + 1];
     char session_id[AGENT_SESSION_ID_MAX + 1]; /* "" = no session */
+    int n_rounds;                                 /* 0 = server default rounds */
+    int n_tools;                                  /* 0 = expose all registered tools */
+    char tools[AGENT_MAX_TOOL_FILTER][AGENT_TOOL_NAME_MAX + 1]; /* optional allow-list */
 } ChatRequest;
 
 /* One tool_call accumulated from the streaming shards (raw argument TEXT is
