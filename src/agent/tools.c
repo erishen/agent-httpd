@@ -354,27 +354,53 @@ static void tool_calc(void *data, const char *args,
                           const char *session_id, sbuf *result) {
     (void)data;
     (void)session_id;
-    char expr[512];
+    char expr[8192];
     if (tool_str_arg(args, "expression", expr, sizeof expr) != 0) {
         sb_str(result, "error: missing string argument 'expression'");
         return;
     }
-    CalcP c = { expr, 0 };
-    double v = calc_expr(&c);
-    calc_ws(&c);
-    if (c.err || *c.s != '\0') {
-        sb_str(result, "error: cannot parse expression '");
-        sb_str(result, expr);
-        sb_str(result, "'");
-        return;
+    /* 支持一次提交多个表达式（换行或分号分隔），逐段求值，每行输出一个结果。
+     * 单个表达式时输出与旧版一致（单行数值），向后兼容陪练/判题的单值调用。
+     * 用途：出卷时可把整卷所有题面/答案表达式合并到【一次】calc 调用，
+     * 一次返回全部数字串，再交由 math_quiz_make_batch 整卷校验，避免逐题
+     * 串行 calc 把工具链拖到 30+ 次导致前端超时、卷子被截断。 */
+    char *p = expr;
+    int first = 1;
+    for (;;) {
+        char *sep = NULL;
+        for (char *q = p; *q; q++) {
+            if (*q == '\n' || *q == ';') { sep = q; break; }
+        }
+        char *eos = sep ? sep : p + strlen(p);
+        while (p < eos && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
+        while (eos > p && (eos[-1] == ' ' || eos[-1] == '\t' || eos[-1] == '\r')) eos--;
+        *eos = '\0';
+        if (*p != '\0') {
+            CalcP c = { p, 0 };
+            double v = calc_expr(&c);
+            calc_ws(&c);
+            if (c.err || *c.s != '\0') {
+                sb_str(result, "error: cannot parse expression '");
+                sb_str(result, p);
+                sb_str(result, "'");
+                return;
+            }
+            if (!(v == v) || v > 1e308 || v < -1e308) { /* NaN / overflow */
+                sb_str(result, "error: result out of range");
+                return;
+            }
+            char out[64];
+            snprintf(out, sizeof out, "%.12g", v);
+            if (!first) sb_str(result, "\n");
+            sb_str(result, out);
+            first = 0;
+        }
+        if (!sep) break;
+        p = sep + 1;
     }
-    if (!(v == v) || v > 1e308 || v < -1e308) { /* NaN / overflow */
-        sb_str(result, "error: result out of range");
-        return;
+    if (first) {
+        sb_str(result, "error: empty expression");
     }
-    char out[64];
-    snprintf(out, sizeof out, "%.12g", v);
-    sb_str(result, out);
 }
 
 /* ---- get_time ------------------------------------------------------- */
