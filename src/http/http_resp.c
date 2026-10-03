@@ -14,12 +14,28 @@
 #include "internal.h"
 #include "httpd.h"
 
+/* Copy a status phrase into response->status_text. Several call sites hand in
+ * response->status_text itself -- the keep-alive fill in http.c, fast_serve
+ * in event.c, and the FastCGI path -- so src and dst are one buffer. The
+ * straight strncpy this used to do was then an src == dst self-copy: UB that
+ * the normal build shrugs off but ASan rejects as strncpy-param-overlap.
+ * memmove tolerates the overlap, and the terminator is written by hand
+ * because a phrase long enough to fill the field would otherwise leave the
+ * 64-byte array open-ended. */
+static void copy_status_text(HttpResponse *response, const char *src) {
+    size_t cap = sizeof(response->status_text) - 1;
+    size_t n = strlen(src);
+    if (n > cap) n = cap;
+    memmove(response->status_text, src, n);
+    response->status_text[n] = '\0';
+}
+
 void set_error_response(HttpResponse *response, int status_code, const char *status_text) {
     char error_page[MAX_PATH_SIZE];
     snprintf(error_page, sizeof(error_page), "%s/error/%d.html", WEB_ROOT, status_code);
 
     response->status_code = status_code;
-    strncpy(response->status_text, status_text, sizeof(response->status_text) - 1);
+    copy_status_text(response, status_text);
     strcpy(response->content_type, "text/html");
 
     read_file_into_response(error_page, response);
