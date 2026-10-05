@@ -114,9 +114,21 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
     if (response->location[0]) {
         p += snprintf(p, end - p + 1, "Location: %s\r\n", response->location);
     }
+    if (response->set_cookie[0]) {
+        /* Set-Cookie is not an entity header, so it rides on 304/redirects
+         * too -- which is exactly what a login answer (302 + cookie) needs. */
+        p += snprintf(p, end - p + 1, "Set-Cookie: %s\r\n", response->set_cookie);
+    }
     if (response->status_code == 401 && response->auth_realm) {
         p += snprintf(p, end - p + 1, "WWW-Authenticate: Basic realm=\"%s\", charset=\"UTF-8\"\r\n",
                       response->auth_realm);
+    }
+    /* X-Auth-Login is a plain marker, deliberately not conditional on the
+     * status code: a 401 handler that also set a redirect Location is the
+     * only producer today, but keeping it unbound means a future non-401
+     * path cannot silently drop the signal. */
+    if (response->auth_login_hint[0]) {
+        p += snprintf(p, end - p + 1, "X-Auth-Login: %s\r\n", response->auth_login_hint);
     }
     if (response->status_code == 429 && response->retry_after > 0) {
         p += snprintf(p, end - p + 1, "Retry-After: %d\r\n", response->retry_after);

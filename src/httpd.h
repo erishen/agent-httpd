@@ -6,7 +6,7 @@
 #include <sys/socket.h> /* socklen_t + struct sockaddr */
 
 #define MAX_REQUEST_SIZE 65536
-#define MAX_RESPONSE_SIZE 65536
+#define MAX_RESPONSE_SIZE 262144
 #define MAX_PATH_SIZE 1024
 /* Product name only - no version. Used for the Server: header, error pages,
  * directory-listing footers and CGI SERVER_SOFTWARE, so the fingerprint is
@@ -84,6 +84,7 @@ typedef struct {
     char connection[32];
     char content_type[128];
     char authorization[512];
+    char cookie[1024]; /* raw Cookie: header value, unsplit */
     char if_none_match[256];
     char if_modified_since[64];
     char expect[32];
@@ -119,6 +120,14 @@ typedef struct {
     off_t stream_offset;
     /* 401 only: realm echoed in the WWW-Authenticate challenge. */
     const char *auth_realm;
+    /* 401 only: "1" when a session form is available, emitted as
+     * X-Auth-Login so scripted clients can follow Location: /login. */
+    char auth_login_hint[32];
+    /* Built-in /login (and any handler that needs it): one Set-Cookie value,
+     * already fully formatted including Path/HttpOnly/SameSite/Max-Age. Empty
+     * means no Set-Cookie header is emitted. The /login handler owns the whole
+     * line, so it can also express cookie deletion ("name=; Max-Age=0"). */
+    char set_cookie[256];
     /* 200 static-file responses: strong (size, mtime) validator echoed by
      * If-None-Match on the next request (304 body-less revalidation). */
     char etag[80];
@@ -153,10 +162,13 @@ extern char g_auth_realm[128];
 int load_htpasswd(const char *path);
 /* Verify one Authorization: header value. Returns 1 when valid. */
 int check_basic_auth(const char *header_value);
+/* Same check without a header: for callers that already hold the decoded pair. */
+int auth_check_credentials(const char *user, const char *pass);
 /* /logout exemption: true when this request path is the logout endpoint
  * (which must stay reachable without/with stale credentials so a client
  * can actually log out and switch users). */
 int is_logout_path(const char *path);
+int is_login_path(const char *path);
 /* AUTH_PUBLIC_PATHS env (";" 分隔前缀列表) 公共路径豁免: 命中的请求路径在
  * Basic-Auth 门前放行（如 /accounts 切账号页等无敏感数据前端资源, 登出后
  * 必须无认证可达, 否则切账号页自身弹框形成死锁）。与 is_logout_path 同构,
@@ -171,6 +183,50 @@ int is_public_path(const char *path);
  * 返回 -1。 */
 const char *auth_realm_current(void);
 int auth_logout_realm_bump(const char *user);
+
+/* Session-cookie auth, an alternative to (not a replacement for) Basic Auth.
+ * Enabled by AUTH_SESSION_FILE; with it unset every function below is a no-op
+ * that answers "not authenticated", so a deployment that never sets the env
+ * keeps exactly the old behaviour.
+ *
+ * Sessions are opaque server-side tokens mapped to a username:
+ *
+ *   <token> <user> <expiry_epoch>      one per line, 0600
+ *
+ * Line-based on purpose: auth.c has no JSON dependency and the file is only
+ * ever touched from C. The token is 64 bits of entropy in hex (32 chars),
+ * minted with the same rand() source the server already uses elsewhere; the
+ * value is a bearer -- possession of the cookie is sufficient, so it is
+ * HttpOnly (never visible to JS) and SameSite=Lax (never sent cross-origin).
+ * The password is never stored: verification happens against the htpasswd
+ * table at POST /login time and is then thrown away. */
+extern char g_session_cookie[64]; /* cookie name, default "lume_session" */
+/* AUTH_SESSION_FILE env. Empty disables the whole feature. */
+int auth_session_enabled(void);
+/* Resolve a raw Cookie: header value to a username. 1 on a valid,
+ * unexpired token (user_out filled, nulsafe); 0 otherwise. Expired entries
+ * are reaped lazily on the way through. */
+int auth_session_verify(const char *cookie_header, char *user_out, size_t out_size);
+/* Gate-only convenience: true when this Cookie: value carries a valid
+ * unexpired session. Ignores the username. */
+int auth_session_valid(const char *cookie_header);
+/* Mint a token for an already-verified user and write it. 1 on success. */
+int auth_session_create(const char *user, char *token_out, size_t out_size);
+/* Delete the token carried by this Cookie: header, if any. 0 otherwise. */
+int auth_session_delete(const char *cookie_header);
+/* Fully formatted Set-Cookie line for the given token (or empty string to
+ * clear it). Returns the Max-Age in seconds for callers that need it. */
+int auth_session_cookie_line(const char *token, char *out, size_t out_size);
+/* Turn the 401 HTML body into a parseable JSON body for machine routes.
+ * set_error_response() always answers with an HTML error page; an SPA doing
+ * fetch().json() on that body dies with 'Unexpected token "<", "<!DOCTYPE "
+ * ... is not valid JSON' and cannot recover. For /api/ the machine-readable
+ * body wins over the human page -- Location: /login plus X-Auth-Login: 1
+ * (already set by the caller) are how the client learns to redirect. Other
+ * paths keep the HTML page: a browser navigating there should see something
+ * readable. No-op when sessions are off, so Basic-only deployments are
+ * untouched. */
+void auth_401_as_json(HttpResponse *response, const char *path);
 
 /* Per-IP rate limiting (token bucket, shared memory across workers).
  * g_rate_limit_rps == 0 disables. rate_limit_init() must run once in the

@@ -439,8 +439,10 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
         set_error_response(&response, 429, "Too Many Requests");
         response.retry_after = 1;
         keep_alive_force_close = 1;
-    } else if (!(is_logout_path(request.path) ||
+    } else if (!(is_login_path(request.path) ||
+                 is_logout_path(request.path) ||
                  is_public_path(request.path) ||
+                 auth_session_valid(request.cookie) ||
                  check_basic_auth(request.authorization))) {
         /* 401 challenge. The relay path above answers only when the backend
          * replied; auth runs first, so the backend never sees
@@ -455,6 +457,18 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
          * re-prompts instead of silently reusing the cached user. */
         set_error_response(&response, 401, "Unauthorized");
         response.auth_realm = auth_realm_current();
+        /* Session 能力开启时额外给出 HTML 表单入口：浏览器跟随 Location: /login
+         * 直接落在登录页，无需再输 URL；X-Auth-Login 给脚本用。Basic-only
+         * 部署不设 AUTH_SESSION_FILE，这里保持完全不动。 */
+        if (auth_session_enabled()) {
+            snprintf(response.location, sizeof(response.location),
+                     "/login?back=%s", request.path);
+            snprintf(response.auth_login_hint,
+                     sizeof(response.auth_login_hint), "1");
+        }
+        /* /api/ clients do fetch().json(); the HTML error page would make
+         * them throw an unhelpful syntax error instead of reading the body. */
+        auth_401_as_json(&response, request.path);
         keep_alive_force_close = 1;        } else {
             /* Expect: 100-continue (RFC 9110 10.1.1): the client holds the
              * body until granted. The stall happens in the body read below,

@@ -246,6 +246,14 @@ test-keepalive: all
 	$(CC) $(CFLAGS) -I src tests/test_keepalive_pipeline.c -o tests/t_ka
 	./tests/t_ka
 
+# Session-cookie auth (AUTH_SESSION_FILE): /login minting, gate acceptance,
+# logout deletion, htpasswd-driven revocation, ?back= open-redirect guard,
+# plus a second instance started WITHOUT the env var to prove a Basic-only
+# deployment is byte-for-byte unchanged. Spawns its own server, so like
+# test-keepalive it is not folded into the fast targets.
+test-session: all
+	@sh scripts/session-auth-test.sh
+
 # Guard the Linux/GCC build without leaving macOS. glibc is the only place the
 # -Wstringop-truncation / -Wformat-truncation / -Wuse-after-free family shows
 # up (Apple clang stays silent on all three), and glibc is also the only place

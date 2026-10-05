@@ -15,6 +15,7 @@
 #endif
 
 #include "internal.h" /* g_auth_file, b64_decode, check_basic_auth, load_htpasswd */
+#include "httpd.h"    /* auth_session_create/verify/delete */
 
 static int failures = 0;
 
@@ -195,6 +196,80 @@ int main(void) {
     set_auth_file("mixed"); unlink(g_auth_file);
     set_auth_file("des");   unlink(g_auth_file);
     set_auth_file("bcrypt"); unlink(g_auth_file);
+
+    /* ---- session cookies: duplicate lume_session resolution ----
+     * A Cookie header may legally carry the same name more than once: cookies
+     * differing only in Path/Domain arrive as one line, and a logout that failed
+     * to delete the old copy leaves the stale one behind. Resolving only the
+     * first occurrence made the leftover shadow the live session, so the caller
+     * was served as the wrong user; on the live dashboard that meant
+     * /api/account/info kept answering role=client right after logging in as
+     * admin. Every occurrence has to be considered and the newest valid session
+     * has to win regardless of the order the browser happened to send them in. */
+    setenv("AGENTHTTPD_ALLOW_WEAK_AUTH", "1", 1);
+    write_htpasswd("sess", "alice:pw\nbob:pw\n");
+    set_auth_file("sess");
+    CHECK(load_htpasswd(g_auth_file) == 0);
+    setenv("AUTH_SESSION_FILE", "/tmp/ah_test_sessions", 1);
+    setenv("AUTH_SESSION_TTL_DAYS", "1", 1);
+    unlink("/tmp/ah_test_sessions");
+    {
+        char ta[64], tb[64], cookie[256], who[128] = "";
+        /* alice logs in first, bob second: tb is the newer session. */
+        CHECK(auth_session_create("alice", ta, sizeof ta) == 1);
+        CHECK(auth_session_create("bob", tb, sizeof tb) == 1);
+
+        snprintf(cookie, sizeof cookie, "lume_session=%s", ta);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 1);
+        CHECK(strcmp(who, "alice") == 0);
+
+        snprintf(cookie, sizeof cookie, "lume_session=%s", tb);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 1);
+        CHECK(strcmp(who, "bob") == 0);
+
+        /* Stale copy first must not shadow the newer live session. */
+        snprintf(cookie, sizeof cookie, "lume_session=%s; lume_session=%s", ta, tb);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 1);
+        CHECK(strcmp(who, "bob") == 0);
+
+        /* And the order is not a signal either: newest wins both ways round. */
+        snprintf(cookie, sizeof cookie, "lume_session=%s; lume_session=%s", tb, ta);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 1);
+        CHECK(strcmp(who, "bob") == 0);
+
+        /* Unrelated cookies interleaved must not confuse the scan. */
+        snprintf(cookie, sizeof cookie, "theme=dark; lume_session=%s; tz=UTC; lume_session=%s",
+                 ta, tb);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 1);
+        CHECK(strcmp(who, "bob") == 0);
+
+        /* A dead copy first must fall through to the live one instead of 401ing. */
+        snprintf(cookie, sizeof cookie,
+                 "lume_session=00000000000000000000000000000000; lume_session=%s", tb);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 1);
+        CHECK(strcmp(who, "bob") == 0);
+
+        /* Nothing resolvable -> no session, and the name must be exact. */
+        snprintf(cookie, sizeof cookie,
+                 "lume_session=00000000000000000000000000000000; lume_session=11111111111111111111111111111111");
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 0);
+        snprintf(cookie, sizeof cookie, "LUME_SESSION=%s", tb);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 0);
+        CHECK(auth_session_verify(NULL, who, sizeof who) == 0);
+        CHECK(auth_session_verify("", who, sizeof who) == 0);
+
+        /* Logout must revoke every copy it was handed, not just the first:
+         * otherwise one session stays live and the stale identity returns. */
+        snprintf(cookie, sizeof cookie, "lume_session=%s; lume_session=%s", ta, tb);
+        CHECK(auth_session_delete(cookie) == 1);
+        snprintf(cookie, sizeof cookie, "lume_session=%s", ta);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 0);
+        snprintf(cookie, sizeof cookie, "lume_session=%s", tb);
+        CHECK(auth_session_verify(cookie, who, sizeof who) == 0);
+        unlink("/tmp/ah_test_sessions");
+    }
+    unsetenv("AUTH_SESSION_FILE");
+    unlink("/tmp/ah_test_sessions");
 
     printf(failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

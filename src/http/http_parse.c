@@ -59,6 +59,12 @@ static void parse_header_line(const char *line, HttpRequest *request) {
     } else if (strncasecmp(line, "Authorization:", 14) == 0) {
         set_str(request->authorization, sizeof(request->authorization), line + 14);
         trim_whitespace(request->authorization);
+    } else if (strncasecmp(line, "Cookie:", 7) == 0) {
+        /* Session auth reads the raw value: auth.c splits on '; ' itself, so
+         * trimming the ends is all that is safe here (an interior ';' separates
+         * cookie pairs and must survive). */
+        set_str(request->cookie, sizeof(request->cookie), line + 7);
+        trim_whitespace(request->cookie);
     } else if (strncasecmp(line, "X-Forwarded-For:", 16) == 0) {
         set_str(request->x_forwarded_for, sizeof(request->x_forwarded_for), line + 17);
         trim_whitespace(request->x_forwarded_for);

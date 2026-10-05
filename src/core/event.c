@@ -304,14 +304,27 @@ static void conn_readable(Conn *c) {
         fast_serve(c, &req, &resp, hdr_len, 1);
         return;
     }
-    /* /logout 豁免 Basic Auth：登出/切账号端点必须能在无凭据或旧凭据场景下
-     * 可达（它自身只把 realm 计数 +1，无敏感数据）。 */
-    int auth_ok = is_logout_path(req.path) || is_public_path(req.path) || check_basic_auth(req.authorization);
+    /* /logout 与 /login 豁免 Basic Auth：登出/切账号端点必须能在无凭据或旧凭据
+     * 场景下可达（它自身只把 realm 计数 +1，无敏感数据），/login 是唯一入口。
+     * Session cookie 与 http.c 的 gate 同规则，两处必须一起改。 */
+    int auth_ok = is_login_path(req.path) || is_logout_path(req.path) ||
+                  is_public_path(req.path) || auth_session_valid(req.cookie) ||
+                  check_basic_auth(req.authorization);
     if (!auth_ok) {
         set_error_response(&resp, 401, "Unauthorized");
         /* realm 用 auth_realm_current()：计数 N>0 时 "<realm>#N"，浏览器旧凭据
          * 缓存桶按 (origin,realm) 分桶，realm 一变旧缓存失效 → 重新弹框。 */
         resp.auth_realm = auth_realm_current();
+        /* Session 能力开启时给出 HTML 表单入口（见 http.c 的同款分支）。
+         * back= 回带原始路径，让登录成功后回到用户实际想去的页面；snprintf
+         * 在超长时截断而不是丢弃，路径已受 MAX_PATH_SIZE 约束。 */
+        if (auth_session_enabled()) {
+            snprintf(resp.location, sizeof(resp.location), "/login?back=%s", req.path);
+            snprintf(resp.auth_login_hint, sizeof(resp.auth_login_hint), "1");
+        }
+        /* Same as the http.c gate: keep fetch().json() clients off the HTML
+         * error page. */
+        auth_401_as_json(&resp, req.path);
         fast_serve(c, &req, &resp, hdr_len, 1);
         return;
     }
