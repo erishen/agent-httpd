@@ -98,6 +98,23 @@ fi
 
 status() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
 
+# Pay the first-exec cost of a freshly written CGI fixture once, discarding
+# the result, before anything asserts on it.
+#
+# Every zz-*-test.cgi below is created by this script and requested for the
+# first time by the very assertion that is supposed to measure it. On macOS
+# that first exec of a brand-new file is far more expensive than every later
+# one, and under host load it has a long tail: measured directly, a trivial
+# bash script ran p50 5ms but max 1570ms, and through the handler the same
+# startup tail reached >3s. With CGI_TIMEOUT_SECONDS=3 (line 12, fixed by the
+# slow-CGI case) that first request got killed and the handler correctly
+# answered 504 with a 169-byte error page, which byte-count assertions then
+# misread as a streaming truncation. The spool/stream path was never at fault.
+#
+# One throwaway request per fixture removes the first-exec lottery without
+# touching the timeout budget the slow-CGI case depends on.
+warm_cgi() { curl -s -o /dev/null --max-time 20 "$1" >/dev/null 2>&1 || true; }
+
 static=$(status "$BASE/")
 check "static /" "200" "$static"
 
@@ -275,10 +292,17 @@ q_redir=$(status "$BASE/test?tab=x")
 check "dir redirect with query string" "301" "$q_redir"
 
 # CGI emitting >512KB (over the tmp-threshold) must arrive complete via the
-# streaming temp-file path, byte-for-byte.
+# streaming temp-file path, byte-for-byte. See warm_cgi() for why every
+# fixture is warmed before it is measured.
+#
+# Assert the status before the byte count so a future timeout names itself
+# instead of masquerading as a size mismatch.
 bigcgi="$PWD/cgi-bin/zz-big-test.cgi"
 printf '#!/bin/bash\necho "Content-Type: text/plain"\necho ""\nhead -c 600000 /dev/zero | tr "\\0" "x"\n' > "$bigcgi"
 chmod +x "$bigcgi"
+warm_cgi "$BASE/cgi-bin/zz-big-test.cgi"
+big_code=$(status "$BASE/cgi-bin/zz-big-test.cgi")
+check "CGI output 600000 answered 200 (not a 504 timeout)" "200" "$big_code"
 big_size=$(curl -s "$BASE/cgi-bin/zz-big-test.cgi" | wc -c | tr -d ' ')
 check "CGI output 600000 streamed complete" "600000" "$big_size"
 
@@ -300,6 +324,7 @@ check "slow CGI did not hang (took ${slow_elapsed}s)" "1" "$slow_fast"
 midcgi="$PWD/cgi-bin/zz-mid-test.cgi"
 printf '#!/bin/bash\necho "Content-Type: text/plain"\necho ""\nhead -c 700000 /dev/zero | tr "\\0" "y"\n' > "$midcgi"
 chmod +x "$midcgi"
+warm_cgi "$BASE/cgi-bin/zz-mid-test.cgi"
 mid_size=$(curl -s "$BASE/cgi-bin/zz-mid-test.cgi" | wc -c | tr -d ' ')
 check "CGI output 700000 complete (no 64KB truncation)" "700000" "$mid_size"
 
@@ -316,6 +341,7 @@ check "form.cgi shows escaped script tag" "1" "$xss_esc"
 redircgi="$PWD/cgi-bin/zz-redir-test.cgi"
 printf '#!/bin/bash\necho "Location: /test/"\necho "Content-Type: text/plain"\necho ""\necho moved\n' > "$redircgi"
 chmod +x "$redircgi"
+warm_cgi "$BASE/cgi-bin/zz-redir-test.cgi"
 redir_code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/cgi-bin/zz-redir-test.cgi")
 check "CGI Location -> 302" "302" "$redir_code"
 redir_loc=$(curl -s -o /dev/null -w "%{redirect_url}" "$BASE/cgi-bin/zz-redir-test.cgi")
@@ -327,6 +353,7 @@ check "CGI redirect still carries body" "1" "$redir_body"
 statuscgi="$PWD/cgi-bin/zz-status-test.cgi"
 printf '#!/bin/bash\necho "Status: 418 I am a teapot"\necho "Content-Type: text/plain"\necho ""\necho short and stout\n' > "$statuscgi"
 chmod +x "$statuscgi"
+warm_cgi "$BASE/cgi-bin/zz-status-test.cgi"
 teapot=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/cgi-bin/zz-status-test.cgi")
 check "CGI Status header honoured (418)" "418" "$teapot"
 teapot_body=$(curl -s "$BASE/cgi-bin/zz-status-test.cgi" | grep -c "short and stout")
@@ -339,6 +366,7 @@ check "CGI Status response has body" "1" "$teapot_body"
 chkcgi="$PWD/cgi-bin/zz-cachectl-test.cgi"
 printf '#!/bin/bash\necho "Content-Type: text/plain"\necho "Cache-Control: max-age=60"\necho ""\necho script policy\n' > "$chkcgi"
 chmod +x "$chkcgi"
+warm_cgi "$BASE/cgi-bin/zz-cachectl-test.cgi"
 check "CGI default cache policy is no-store" "1" \
     "$(curl -s -D - -o /dev/null "$BASE/cgi-bin/hello.cgi" | grep -ci '^cache-control: no-store')"
 check "CGI explicit Cache-Control is honoured, not overridden" "1" \
@@ -1109,16 +1137,37 @@ while [ "$i" -lt 30 ]; do
 done
 if [ "$xff6_ready" = "1" ]; then
     xff6_headers="/tmp/agent-httpd-rate-xff6.txt"
+    # Send a whole burst through ONE curl process. -l 3 is a one-second fixed
+    # window, so the burst must land inside a single window: a curl process per
+    # request put 8 spawns between the second-boundary wait and the last
+    # response, which on a loaded host straddled the boundary, reset the
+    # counter and hid the 429s (observed 200s=8 429s=0 of 8).
+    #
+    # --next is mandatory: with several URLs and no separator, curl reuses the
+    # FIRST URL's -H for every transfer (verified), which collapses both XFF
+    # values onto one quota and yields 3x200 + 5x429. Order stays strictly
+    # interleaved, so the expected 6x200 + 2x429 is unchanged.
+    # xff6_burst <out-file> <xff-a> <xff-b>
+    xff6_burst() {
+        _out="$1"; _a="$2"; _b="$3"
+        set --
+        i=0
+        while [ "$i" -lt 4 ]; do
+            [ "$i" -gt 0 ] && set -- "$@" --next
+            set -- "$@" -s --max-time 5 -o /dev/null -D - \
+                -H "X-Forwarded-For: $_a" "$RATE_XFF6_BASE/"
+            set -- "$@" --next
+            set -- "$@" -s --max-time 5 -o /dev/null -D - \
+                -H "X-Forwarded-For: $_b" "$RATE_XFF6_BASE/"
+            i=$((i + 1))
+        done
+        : > "$_out"
+        curl "$@" >> "$_out" 2>/dev/null
+    }
     # burst 1: IPv4 XFF values behind a trusted v6 proxy
     xff6_sec=$(date +%S)
     while [ "$(date +%S)" = "$xff6_sec" ]; do :; done
-    : > "$xff6_headers"
-    i=0
-    while [ "$i" -lt 4 ]; do
-        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 1.1.1.1" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
-        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 2.2.2.2" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
-        i=$((i + 1))
-    done
+    xff6_burst "$xff6_headers" "1.1.1.1" "2.2.2.2"
     xff6_200=$(grep -c '^HTTP/1.1 200' "$xff6_headers")
     xff6_429=$(grep -c '^HTTP/1.1 429' "$xff6_headers")
     check "rate-limit (xff6): v6-trusted proxy honours v4 XFF (200s=$xff6_200 429s=$xff6_429 of 8, limit 3)" "1" \
@@ -1126,13 +1175,7 @@ if [ "$xff6_ready" = "1" ]; then
     # burst 2: IPv6 XFF literals, bare and bracketed-with-port forms
     xff6_sec=$(date +%S)
     while [ "$(date +%S)" = "$xff6_sec" ]; do :; done
-    : > "$xff6_headers"
-    i=0
-    while [ "$i" -lt 4 ]; do
-        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: 2001:db8::1" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
-        curl -s -D - -o /dev/null --max-time 5 -H "X-Forwarded-For: [2001:db8::2]:443" "$RATE_XFF6_BASE/" >> "$xff6_headers" 2>/dev/null
-        i=$((i + 1))
-    done
+    xff6_burst "$xff6_headers" "2001:db8::1" "[2001:db8::2]:443"
     xff6b_200=$(grep -c '^HTTP/1.1 200' "$xff6_headers")
     xff6b_429=$(grep -c '^HTTP/1.1 429' "$xff6_headers")
     check "rate-limit (xff6): IPv6 XFF bare + [..]:port get distinct quotas (200s=$xff6b_200 429s=$xff6b_429 of 8, limit 3)" "1" \
