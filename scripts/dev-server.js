@@ -235,6 +235,23 @@ async function main() {
   } catch {
     /* best effort */
   }
+  // Internal Vite service only — the browser never connects here directly.
+  //
+  // This MUST be listening before the C backend is spawned. The backend
+  // proxies /react/* to this port and answers /health the moment it is up,
+  // so starting it first leaves a window where the backend reports healthy
+  // but every /react/ request gets 502 (connection refused). Under load that
+  // window is wide enough to swallow the browser's first SSR request.
+  httpServer.listen(VITE_PORT, "127.0.0.1", () => {
+    console.log(`AgentHTTPD HMR dev server:  http://localhost:${PORT}`);
+    console.log(`  SSR + HMR:   http://localhost:${PORT}/react/?name=Alice`);
+    console.log(`  CSR mode:    http://localhost:${PORT}/react/?mode=csr`);
+    console.log(`  Health:      http://localhost:${PORT}/health`);
+    console.log(`  Vite (internal): 127.0.0.1:${VITE_PORT} (proxied/tunnelled by C)`);
+    console.log("  Edit App.tsx / render.tsx / styles/main.css -> browser auto-reloads.");
+    console.log("  Client component edits hot-swap without a reload (react-refresh).");
+  });
+
   const backend = spawn(
     HTTPD_BIN,
     ["-p", String(PORT), "-n", "-v", String(VITE_PORT)],
@@ -264,17 +281,6 @@ async function main() {
       });
     };
     ping();
-  });
-
-  // Internal Vite service only — the browser never connects here directly.
-  httpServer.listen(VITE_PORT, "127.0.0.1", () => {
-    console.log(`AgentHTTPD HMR dev server:  http://localhost:${PORT}`);
-    console.log(`  SSR + HMR:   http://localhost:${PORT}/react/?name=Alice`);
-    console.log(`  CSR mode:    http://localhost:${PORT}/react/?mode=csr`);
-    console.log(`  Health:      http://localhost:${PORT}/health`);
-    console.log(`  Vite (internal): 127.0.0.1:${VITE_PORT} (proxied/tunnelled by C)`);
-    console.log("  Edit App.tsx / render.tsx / styles/main.css -> browser auto-reloads.");
-    console.log("  Client component edits hot-swap without a reload (react-refresh).");
   });
 
   const shutdown = () => {
