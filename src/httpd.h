@@ -8,6 +8,12 @@
 #define MAX_REQUEST_SIZE 65536
 #define MAX_RESPONSE_SIZE 262144
 #define MAX_PATH_SIZE 1024
+/* 目录列表缓冲用独立上限,不跟着 MAX_RESPONSE_SIZE 走:列表长度是「目录里
+ * 有多少条目」的函数,与单次响应的上限没有因果关系。两者耦合时,只要有人
+ * 为了别的目的调大响应上限(曾为容纳更长的 session token 从 64KB 调到
+ * 256KB),列表的条目上限就被动跟着涨,既放过了超大列表,也让依赖旧数值的
+ * 回归断言悄悄失效。列表保持 64KB,语义与测试断言都稳定。 */
+#define MAX_LISTING_SIZE 65536
 /* Product name only - no version. Used for the Server: header, error pages,
  * directory-listing footers and CGI SERVER_SOFTWARE, so the fingerprint is
  * consistent and reveals no release details (L1 hardening). */

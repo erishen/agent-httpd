@@ -235,6 +235,10 @@ check "directory listing" "200" "$listing"
 
 # regression: a listing that would overflow the 64KB page must stay bounded
 # instead of walking p past `end` (snprintf returns the would-be length).
+# The cap is MAX_LISTING_SIZE in src/httpd.h, and it is deliberately NOT
+# MAX_RESPONSE_SIZE: when the response limit was once raised to fit longer
+# session tokens, the listing buffer grew with it and this assertion silently
+# stopped testing anything.
 mkdir -p www/fixlist
 for i in $(seq 1 2000); do : > "www/fixlist/f$i"; done
 l_out="/tmp/fixlist_$$.out"

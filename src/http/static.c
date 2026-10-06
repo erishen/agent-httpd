@@ -191,7 +191,7 @@ int handle_directory(const char *real_path, const char *request_path, HttpRespon
         return -1;
     }
 
-    char listing[MAX_RESPONSE_SIZE];
+    char listing[MAX_LISTING_SIZE];
     char *p = listing;
     char *const end = listing + sizeof(listing) - 1;
     char escaped_name[MAX_PATH_SIZE];

@@ -469,7 +469,8 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
         /* /api/ clients do fetch().json(); the HTML error page would make
          * them throw an unhelpful syntax error instead of reading the body. */
         auth_401_as_json(&response, request.path);
-        keep_alive_force_close = 1;        } else {
+        keep_alive_force_close = 1;
+        } else {
             /* Expect: 100-continue (RFC 9110 10.1.1): the client holds the
              * body until granted. The stall happens in the body read below,
              * so grant here - just before it, and only when a body is
