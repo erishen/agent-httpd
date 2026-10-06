@@ -721,7 +721,9 @@ int auth_session_verify(const char *cookie_header, char *user_out, size_t out_si
                  * (observed on the live box: test's leftover cookie kept the
                  * dashboard on role=client right after logging in as admin). */
                 for (int i = 0; i < ntok; i++) {
-                    if (strcmp(tok, toks[i]) == 0) {
+                    /* constant-time compare, so picking the newest matching
+                     * session leaks no timing signal about the secret half */
+                    if (ct_eq(tok, toks[i])) {
                         snprintf(user_out, out_size, "%s", user);
                         found = 1;
                     }
