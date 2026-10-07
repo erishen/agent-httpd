@@ -740,7 +740,10 @@ void router_sync_all(void) {
     const char *bs = getenv("ROUTER_SYNC_BUDGET_SECONDS");
     int budget = bs ? atoi(bs) : ROUTER_SYNC_BUDGET_DEFAULT;
     g_sync_deadline = (budget > 0) ? time(NULL) + budget : 0;
-    printf("llm-router sync (base %s, budget %ds)\n", base,
+    /* Do NOT print the upstream base URL: it may carry an internal endpoint
+     * or a token-bearing host, and startup logs can be captured verbatim.
+     * Log only that a router sync was configured. */
+    printf("llm-router sync (base configured, budget %ds)\n",
            budget > 0 ? budget : 0);
     sync_mcps();
     sync_skills();
