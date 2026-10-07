@@ -157,7 +157,12 @@ fast & slow paths / agent stack / security depth) see the
   and react-ssr-server HTTP mode) emit the same set, the `Server` fingerprint
   is unified to `AgentHTTPD` and `X-Powered-By` is off; outbound error text is
   scrubbed (curl exit codes and `LLM_API_URL`-style hints go to the server
-  log only)
+  log only). The default `Content-Security-Policy` (`img-src 'self' data:`)
+  can be extended per deployment via `AGENTHTTPD_CSP_IMG_SRC` — a
+  space-separated list of origins appended to `img-src`, e.g.
+  `AGENTHTTPD_CSP_IMG_SRC="https://avatars.githubusercontent.com"` for
+  third-party avatar CDNs; CR/LF in the value is rejected (header-injection
+  guard) and falls back to the default policy
 - **React SSR in full TS + Tailwind + React Router + SSR/CSR switch**: the
   SSR source is TypeScript (tsc gate), styles are Tailwind CSS v4 inlined into
   the SSR `<head>`, client routing uses react-router v8 (SSR deep links +

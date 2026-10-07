@@ -163,13 +163,29 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
      * and inline base URIs. A Vite-built single-page app loads its own
      * bundle.js and issues same-origin fetches, so 'self' is sufficient;
      * if the app ever needs inline scripts/eval, relax script-src here.
-     * frame-ancestors 'none' is the modern replacement for X-Frame-Options. */
-    p += snprintf(p, end - p + 1,
-        "Content-Security-Policy: default-src 'self'; "
-        "script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
-        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
-        "object-src 'none'\r\n");
+     * frame-ancestors 'none' is the modern replacement for X-Frame-Options.
+     * Deployments that load third-party images (avatar CDNs, preview hosts)
+     * can extend img-src via AGENTHTTPD_CSP_IMG_SRC: a space-separated list
+     * of origins appended verbatim, e.g.
+     *   AGENTHTTPD_CSP_IMG_SRC="https://avatars.githubusercontent.com"
+     * A value containing CR/LF is rejected outright (header injection) and
+     * falls back to the default policy. */
+    const char *csp_img_extra = getenv("AGENTHTTPD_CSP_IMG_SRC");
+    if (csp_img_extra && *csp_img_extra && strpbrk(csp_img_extra, "\r\n") == NULL) {
+        p += snprintf(p, end - p + 1,
+            "Content-Security-Policy: default-src 'self'; "
+            "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: %s; font-src 'self'; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
+            "object-src 'none'\r\n", csp_img_extra);
+    } else {
+        p += snprintf(p, end - p + 1,
+            "Content-Security-Policy: default-src 'self'; "
+            "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
+            "object-src 'none'\r\n");
+    }
     /* Process-isolation + cross-origin resource guards (spectre-class
      * side channels, accidental cross-origin loads). */
     p += snprintf(p, end - p + 1, "Cross-Origin-Opener-Policy: same-origin\r\n");
