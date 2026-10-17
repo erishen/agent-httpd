@@ -26,8 +26,8 @@
 #include "mcp.h"
 #include "tools.h"
 
-#define MCP_RESP_MAX (1 << 20)       /* 1MB cap on any single response */
-#define MCP_BOOT_TIMEOUT 25          /* initialize + tools/list (seconds) */
+#define MCP_RESP_MAX (8 << 20)       /* 8MB cap on any single response (rea tools/list ~1.9MB) */
+#define MCP_BOOT_TIMEOUT 120         /* initialize + tools/list (seconds; rea 冷启动 40-90s) */
 #define MCP_CALL_TIMEOUT 900         /* tools/call (seconds, pse-review 最长约 11 分钟) */
 #define MCP_STRUC_MAX 8192           /* jq'd structuredContent cap */
 #define MCP_TEXT_MAX 512             /* per content[].text item cap */
@@ -735,25 +735,38 @@ static void mcp_digest_tools(const McpServerCfg *s, const char *resp) {
     }
     const char *q = jws(tools + 1);
     while (*q == '{' && g_ntools < MCP_TOOLS_MAX) {
-        char item[8192];
-        int depth = 0, in_str = 0;
+        /* 单工具条目缓冲: rea 的 compare_web_captures 达 75KB, 旧 64KB 会
+         * 在 index 129 处 break 截断整表 (open_binary 等后续工具全丢);
+         * 256KB 覆盖当前已知最大工具, 超限者 skip 不 break (见 have_tool). */
+        char item[262144];
+        int depth = 0, in_str = 0, overflow = 0;
         size_t n = 0;
-        for (const char *r = q; *r && n < sizeof item - 1; r++) {
+        for (const char *r = q; *r; r++) {
             if (in_str) {
-                if (*r == '\\' && r[1]) { item[n++] = *r; item[n++] = *++r; continue; }
+                if (*r == '\\' && r[1]) {
+                    if (n + 2 < sizeof item - 1) { item[n++] = *r; item[n++] = *++r; }
+                    continue;
+                }
                 if (*r == '"') in_str = 0;
             } else if (*r == '"') in_str = 1;
             else if (*r == '{') depth++;
             else if (*r == '}' && --depth == 0) {
-                item[n++] = *r;
-                item[n] = '\0';
+                if (n < sizeof item - 1) { item[n++] = *r; item[n] = '\0'; }
                 q = r + 1;
                 goto have_tool;
             }
-            item[n++] = *r;
+            if (n < sizeof item - 1) item[n++] = *r;
+            else overflow = 1;   /* 超出缓冲: 标记, 仍继续扫到条目闭合边界 */
         }
         break;
 have_tool:;
+        if (overflow) {
+            /* 单个超限工具: 跳过不注册 (条目内容不完整无法解析),
+             * 但继续解析后续工具, 避免一个大工具截断整张工具表. */
+            q = jws(q);
+            if (*q == ',') q = jws(q + 1);
+            continue;
+        }
         const char *nv = jfind_value(item, "name");
         const char *dv = jfind_value(item, "description");
         const char *iv = jfind_value(item, "inputSchema");
@@ -849,7 +862,7 @@ int mcp_init(void) {
      * start). Tools are sugar — past the budget the remaining servers are
      * skipped; a later SIGHUP resync re-registers them. 0 = unlimited. */
     const char *bs = getenv("MCP_INIT_BUDGET_SECONDS");
-    int budget = bs ? atoi(bs) : 30;
+    int budget = bs ? atoi(bs) : 240;
     time_t deadline = (budget > 0) ? time(NULL) + budget : 0;
     for (int i = 0; i < g_nservers; i++) {
         if (deadline && time(NULL) >= deadline) {

@@ -37,7 +37,7 @@
 
 #define MCP_SERVERS_MAX 12
 #define MCP_ARGS_MAX 24
-#define MCP_TOOLS_MAX 48
+#define MCP_TOOLS_MAX 256            /* rea 注册 170 个工具，48 不够 */
 
 typedef struct {
     char id[32];

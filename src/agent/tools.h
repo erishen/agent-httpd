@@ -18,9 +18,11 @@
  */
 
 #define TOOL_NAME_MAX 64
-#define TOOL_DESC_MAX 160
+#define TOOL_DESC_MAX 2048           /* rea 工具描述最长 1177 字符，160 截断过狠 */
 #define TOOL_PARAMS_MAX 4096
-#define TOOL_MAX 96
+/* 96 → 256: rea 有 170 个 MCP 工具, 旧上限只能注册前 96 个 (open_binary 在
+ * index 149 进不来); 与 MCP_TOOLS_MAX 对齐, 覆盖 MCP 全量工具注册. */
+#define TOOL_MAX 256
 
 typedef void (*ToolFn)(void *data, const char *args_json,
                        const char *session_id, sbuf *out);
