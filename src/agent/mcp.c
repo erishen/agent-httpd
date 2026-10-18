@@ -266,6 +266,33 @@ static int carries_response(const char *p, long id) {
     return 0;
 }
 
+/* Whether p contains a complete JSON value: brace-balanced and ending with
+ * the closing '}' of a top-level object (modulo trailing whitespace). JSON
+ * string escapes are skipped so braces inside strings don't skew the count.
+ * Multiple concatenated top-level objects (e.g. a response followed by a
+ * notification) are tolerated: the check passes once the accumulated text
+ * ends cleanly, which is exactly what the tolerant reader below needs. */
+static int json_complete(const char *p) {
+    const char *q = p + strlen(p);
+    while (q > p && (q[-1] == ' ' || q[-1] == '\t' || q[-1] == '\n' || q[-1] == '\r')) q--;
+    if (q == p || q[-1] != '}') return 0;
+    int depth = 0, in_str = 0;
+    for (const char *r = p; r < q; r++) {
+        if (in_str) {
+            if (*r == '\\' && r[1]) { r++; continue; }
+            if (*r == '"') in_str = 0;
+        } else if (*r == '"') {
+            in_str = 1;
+        } else if (*r == '{') {
+            depth++;
+        } else if (*r == '}') {
+            if (depth == 0) return 0;
+            depth--;
+        }
+    }
+    return depth == 0;
+}
+
 /* Read until the response whose accumulated payload contains `"id":<id>`
  * lands (newline-delimited JSON: the whole response arrives in one or two
  * reads; the accumulator is capped). Returns 1 got it, 0 on EOF/timeout/
@@ -295,7 +322,13 @@ static int mcpproc_read_response(McpProc *p, long id, int timeout_s,
         if (n == 0) break; /* EOF */
         sb_mem(&acc, chunk, (size_t)n);
         if (acc.oom || acc.len > MCP_RESP_MAX) break;
-        if (carries_response(acc.p, id)) {
+        /* A peer may place "id" near the start of a large response (e.g.
+         * fastmcp/serena: {"jsonrpc":"2.0","id":2,"result":{...30KB of
+         * tools...}}). carries_response alone would then stop after the
+         * first 8KB chunk, truncating the payload mid-JSON and dropping
+         * every tool after the fourth. Only treat the response as complete
+         * once the accumulated JSON value is balanced. */
+        if (carries_response(acc.p, id) && json_complete(acc.p)) {
             rc = 1;
             break;
         }
