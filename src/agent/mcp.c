@@ -572,6 +572,13 @@ static void jq_pretty_print(const char *json, sbuf *out) {
  * (must open with '{') hold. */
 static const char *json_body(const char *buf) {
     if (!buf) return NULL;
+    /* Prefer a real JSON-RPC frame: an MCP server (e.g. serena) may print
+     * tool-result text (bare JSON, braces included) to the pipe before the
+     * actual {"jsonrpc":...} response, so the first '{' can belong to that
+     * text rather than to the response. Only fall back to the first '{'
+     * when no frame prefix exists at all (tolerant of startup banners). */
+    const char *jr = strstr(buf, "{\"jsonrpc\"");
+    if (jr) return jr;
     return strchr(buf, '{');
 }
 
