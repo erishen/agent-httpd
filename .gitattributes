@@ -1,0 +1,28 @@
+# Normalize every text file to LF on checkout so line endings are byte-identical
+# across macOS / Linux / Windows. Without this, a Windows clone with
+# core.autocrlf=true would CRLF-mangle the sources. agent-httpd is POSIX-only
+# (no Windows build), but the committed tree should stay portable.
+* text=auto eol=lf
+
+# Compiled / compressed artifacts — always binary (no eol conversion, no diff).
+# .cgi is intentionally NOT listed: the repo mixes text CGI scripts with compiled
+# go/rust CGI binaries, and text=auto detects those per file via NUL bytes.
+*.gz     binary
+*.class  binary
+*.jar    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.eot    binary
+*.db     binary
+*.sqlite binary
+*.sqlite3 binary
+*.pem    binary
+*.crt    binary
+*.key    binary
+*.pdf    binary
