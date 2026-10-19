@@ -44,8 +44,27 @@ static const char *sqlite_db_path(void) {
     return g_db[0] ? g_db : NULL;
 }
 
+/* Busy timeout (ms) armed on every connection. Without it, sqlite3 fails
+ * immediately (default timeout 0) when another connection holds the write
+ * lock — under prefork workers that turns ordinary write contention into
+ * spurious "database is locked" errors. 5s covers retry storms on a single
+ * file; set LUME_SQLITE_BUSY_TIMEOUT_MS to override (0 restores the stock
+ * fail-fast behavior, clamped to [0, 60000]; unparseable falls back).
+ * Mirrors lume-core's src/builtins_sql.c (178501c). */
+static int sql_busy_timeout_ms(void) {
+    const char *e = getenv("LUME_SQLITE_BUSY_TIMEOUT_MS");
+    if (!e || !e[0]) return 5000;
+    char *end = NULL;
+    long v = strtol(e, &end, 10);
+    if (!end || *end != '\0' || v < 0) return 5000;
+    if (v > 60000) v = 60000;
+    return (int)v;
+}
+
 static int open_readonly(sqlite3 **out) {
-    return sqlite3_open_v2(sqlite_db_path(), out, SQLITE_OPEN_READONLY, NULL);
+    int rc = sqlite3_open_v2(sqlite_db_path(), out, SQLITE_OPEN_READONLY, NULL);
+    if (rc == SQLITE_OK) sqlite3_busy_timeout(*out, sql_busy_timeout_ms());
+    return rc;
 }
 
 /* Strip leading SQL comments so the statement-type check starts at real SQL. */
@@ -95,9 +114,20 @@ static int kw_at(const char *s, const char *w) {
            !(isalnum((unsigned char)s[n]) || s[n] == '_');
 }
 
+/* Case-insensitive substring search. strcasestr is a GNU/BSD extension and
+ * does not exist on Windows; strncasecmp is portable everywhere we build.
+ * Mirrors lume-core's src/builtins_sql.c (30fca2a). */
+static const char *ci_strstr(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    if (!n) return hay;
+    for (; *hay; hay++)
+        if (strncasecmp(hay, needle, n) == 0) return hay;
+    return NULL;
+}
+
 static int kw_anywhere(const char *s, const char *w) {
     size_t n = strlen(w);
-    for (const char *p = s; (p = strcasestr(p, w)); p += n) {
+    for (const char *p = s; (p = ci_strstr(p, w)) != NULL; p += n) {
         int left_ok = (p == s) ||
                       !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
         if (left_ok && !(isalnum((unsigned char)p[n]) || p[n] == '_')) return 1;
@@ -105,13 +135,73 @@ static int kw_anywhere(const char *s, const char *w) {
     return 0;
 }
 
+/* word boundary after a keyword: next char is neither alnum nor '_'
+ * (end-of-string counts as a boundary). Same predicate as kw_at's tail. */
+static int sql_break(unsigned char c) {
+    return !(isalnum(c) || c == '_');
+}
+
+/* Scan one identifier — bare [A-Za-z0-9_]+ or a simple "double-quoted"
+ * name (no embedded quotes; no caller needs SQL-standard doubling).
+ * Returns the position just past it, or NULL when nothing
+ * identifier-shaped sits at p. */
+static const char *sql_scan_ident(const char *p) {
+    if (*p == '"') {
+        const char *e = strchr(p + 1, '"');
+        return e ? e + 1 : NULL;
+    }
+    const char *s = p;
+    while (isalnum((unsigned char)*p) || *p == '_') p++;
+    return p > s ? p : NULL;
+}
+
+/* Return NULL when b is exactly ALTER TABLE <ident> ADD [COLUMN] <ident>
+ * <typedef>, else an error message. This is the only ALTER form allowed:
+ * DROP/RENAME COLUMN, ALTER COLUMN and table constraints all stay rejected.
+ * The typedef is charset-restricted to identifiers, numbers, spaces,
+ * parens and commas — enough for TEXT / INTEGER / REAL / VARCHAR(120) /
+ * DECIMAL(10,2), unable to smuggle a second statement or a string literal.
+ * Mirrors lume-core's src/builtins_sql.c (2490034). */
+static const char *sql_validate_alter_add(const char *b) {
+    const char *p = b + 5; /* past "alter" (kw_at already matched) */
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncasecmp(p, "table", 5) != 0 || !sql_break((unsigned char)p[5]))
+        return "only ALTER TABLE ... ADD COLUMN is allowed";
+    p += 5;
+    while (*p == ' ' || *p == '\t') p++;
+    p = sql_scan_ident(p);
+    if (!p) return "ALTER TABLE needs a table name";
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncasecmp(p, "add", 3) != 0 || !sql_break((unsigned char)p[3]))
+        return "only ALTER TABLE ... ADD COLUMN is allowed";
+    p += 3;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncasecmp(p, "column", 6) == 0 && sql_break((unsigned char)p[6])) {
+        p += 6;
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    p = sql_scan_ident(p);
+    if (!p) return "ALTER TABLE ADD needs a column name";
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p) return "ALTER TABLE ADD needs a column type";
+    for (; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (!(isalnum(c) || c == '_' || c == ' ' || c == '\t' ||
+              c == '(' || c == ')' || c == ','))
+            return "unsafe column type in ALTER TABLE";
+    }
+    return NULL;
+}
+
 /* Return an error message if the statement must not run, else NULL.
  * Semantics mirror the archived MCP server (tools/mcp-sqlite-safe.py):
- *   - dangerous DDL rejected: DROP/ALTER/TRUNCATE/VACUUM/ATTACH/DETACH/
+ *   - dangerous DDL rejected: DROP/TRUNCATE/VACUUM/ATTACH/DETACH/
  *     REINDEX/PRAGMA/GRANT/REVOKE/COPY
  *   - any statement mentioning the portfolio mirror table is rejected
- *   - allowed: INSERT / UPDATE / DELETE (UPDATE/DELETE must carry WHERE)
- *     and CREATE TABLE for a new table
+ *   - allowed: INSERT / UPDATE / DELETE (UPDATE/DELETE must carry WHERE),
+ *     CREATE TABLE for a new table, and the strictly-shaped additive
+ *     ALTER TABLE ... ADD COLUMN (schema evolution; checked only after the
+ *     portfolio rule, so mirror tables stay fully read-only)
  * body receives the comment-stripped SQL for prepare. */
 const char *db_validate_write(const char *sql, char *body, size_t n) {
     const char *t = sql;
@@ -125,14 +215,23 @@ const char *db_validate_write(const char *sql, char *body, size_t n) {
     while (*b == ' ' || *b == '\t' || *b == '\r' || *b == '\n') b++;
 
     static const char *const dangerous[] = {
-        "drop", "alter", "truncate", "vacuum", "attach", "detach",
+        "drop", "truncate", "vacuum", "attach", "detach",
         "reindex", "pragma", "grant", "revoke", "copy", NULL };
     for (int i = 0; dangerous[i]; i++) {
         if (kw_at(b, dangerous[i]))
-            return "dangerous statement rejected (DROP/ALTER/TRUNCATE/…)";
+            return "dangerous statement rejected (DROP/TRUNCATE/…)";
     }
-    if (kw_anywhere(b, "portfolio"))
+    /* Fail-closed: any statement mentioning "portfolio" at all — including
+     * identifiers like portfolio_mirror, which a word-boundary keyword scan
+     * would let through — is rejected. The mirror table is read-only, and a
+     * false rejection of an unrelated identifier is the safe direction. */
+    if (ci_strstr(b, "portfolio"))
         return "rejected — the portfolio mirror table is read-only";
+
+    /* Additive schema evolution is the one DDL beyond CREATE TABLE:
+     * generated apps add columns to existing tables on startup. */
+    if (kw_at(b, "alter"))
+        return sql_validate_alter_add(b);
 
     if (kw_at(b, "insert") || kw_at(b, "update") || kw_at(b, "delete")) {
         if ((kw_at(b, "update") || kw_at(b, "delete")) &&
@@ -288,6 +387,7 @@ static void tool_sql_write(void *data, const char *args,
         sb_str(result, "sql_write: cannot open database for writing");
         return;
     }
+    sqlite3_busy_timeout(db, sql_busy_timeout_ms());
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, body, -1, &st, NULL) != SQLITE_OK) {
         sb_str(result, "sql_write: ");
@@ -303,11 +403,12 @@ static void tool_sql_write(void *data, const char *args,
         sqlite3_close(db);
         return;
     }
-    int is_ddl = strncasecmp(body, "create", 6) == 0;
+    int is_ddl = strncasecmp(body, "create", 6) == 0 ||
+                 strncasecmp(body, "alter", 5) == 0;
     int ch = sqlite3_changes(db);
     sqlite3_close(db);
     if (is_ddl) {
-        sb_str(result, "ok: statement executed (table created)");
+        sb_str(result, "ok: statement executed (0 rows; DDL)");
     } else {
         char ok[96];
         snprintf(ok, sizeof ok, "ok: %d row(s) affected", ch);
@@ -358,6 +459,7 @@ int sqlite_query_json(const char *db, const char *sql, const char **params,
         if (sq) sqlite3_close(sq);
         return 1;
     }
+    sqlite3_busy_timeout(sq, sql_busy_timeout_ms());
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
         snprintf(err, errsz, "%s", sqlite3_errmsg(sq));
@@ -398,6 +500,7 @@ int sqlite_write_exec(const char *db, const char *sql, const char **params,
         if (sq) sqlite3_close(sq);
         return 1;
     }
+    sqlite3_busy_timeout(sq, sql_busy_timeout_ms());
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
         snprintf(err, errsz, "%s", sqlite3_errmsg(sq));

@@ -32,14 +32,24 @@ unset PURGE_CLIENT_CACHE
 # that file unconditionally, so park it for the run and restore on exit. The
 # dedicated MCP case below re-enables one explicitly via an inline env
 # assignment, which takes precedence over this export.
+# .data/mcp-servers-router.json is the llm-router sync's own mount list and
+# feeds the same loader; park it too or the npx-based router servers load
+# anyway and the instance never becomes ready (observed 2026-10-19).
 export MCP_SERVERS=""
 MCP_BAK=".data/mcp-servers.json.smoke-bak"
+ROUTER_BAK=".data/mcp-servers-router.json.smoke-bak"
 if [ -f .data/mcp-servers.json ]; then
     mv .data/mcp-servers.json "$MCP_BAK"
+fi
+if [ -f .data/mcp-servers-router.json ]; then
+    mv .data/mcp-servers-router.json "$ROUTER_BAK"
 fi
 restore_mcp() {
     if [ -f "$MCP_BAK" ]; then
         mv "$MCP_BAK" .data/mcp-servers.json
+    fi
+    if [ -f "$ROUTER_BAK" ]; then
+        mv "$ROUTER_BAK" .data/mcp-servers-router.json
     fi
     # Transient CGI fixtures written further down (zz-{big,slow,mid,redir,
     # status,cachectl}-test.cgi) must not survive the run: they are ordinary
