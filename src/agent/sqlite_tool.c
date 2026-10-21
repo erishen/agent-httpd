@@ -203,10 +203,11 @@ static const char *sql_validate_alter_add(const char *b) {
  *     ALTER TABLE ... ADD COLUMN (schema evolution; checked only after the
  *     portfolio rule, so mirror tables stay fully read-only)
  *   - a single WITH prefix (write-CTE whitelist, ported from lume-core
- *     0c44b90): subqueries must be SELECT/VALUES (read-only at any depth)
- *     or a RETURNING DML (top-level WHERE required for UPDATE/DELETE); the
- *     trailing statement then passes the exact bare-write rules above, so
- *     the whole CTE write stays one atomic statement
+ *     0c44b90): subqueries must be read-only SELECT/VALUES (SQLite has
+ *     no data-modifying CTE — a write verb inside one is rejected
+ *     outright, 2026-10-21); the trailing statement then passes the
+ *     exact bare-write rules above, so the whole CTE write stays one
+ *     atomic statement
  * body receives the comment-stripped SQL for prepare. */
 
 /* Skip whitespace and SQL comments (both -- line and block forms).
@@ -266,27 +267,29 @@ static const char *sql_match_paren(const char *p) {
 }
 
 /* Validate one WITH subquery body [s, end).
- *  - SELECT/VALUES/nested-WITH head: the body must be read-only — DML
- *    words are rejected at any depth.
- *  - DML head (INSERT/UPDATE/DELETE, SQLite 3.35+ data-modifying CTE):
- *    a top-level RETURNING is mandatory; an UPDATE/DELETE must carry a
- *    top-level WHERE before that RETURNING (a WHERE nested in a
- *    parenthesized expression never exempts it — the whole point of the
- *    gray zone is that a WHERE-less UPDATE inside a WITH is still a
- *    WHERE-less UPDATE). One DML verb per body; DML inside a nested
- *    expression is rejected.
+ *  - Head: SELECT/VALUES/nested-WITH only. SQLite has no data-modifying
+ *    CTE: verified 2026-10-21 against the system library (3.51.0), even
+ *    the PostgreSQL-style shape `WITH u AS (UPDATE ... RETURNING ...)
+ *    SELECT ...` dies at prepare with `near "UPDATE": syntax error` — on
+ *    every release, not just old ones. An earlier revision of this guard
+ *    opened a "RETURNING DML" head here, assuming 3.35 had added the
+ *    feature (3.35 added RETURNING on top-level DML only); the statements
+ *    it waved through reached prepare and surfaced as engine syntax
+ *    errors. Reject the shape here instead, with a message naming the
+ *    rule.
+ *  - The body must be read-only: write keywords (insert/update/delete)
+ *    are rejected at any depth, so a nested subquery cannot smuggle a
+ *    write either.
  *  - Dangerous words (DROP/PRAGMA/ALTER/CREATE/...) are rejected at any
  *    depth. Strings and comments are skipped everywhere.
- * Ported from lume-core src/builtins_sql.c (0c44b90). */
+ * Ported from lume-core src/builtins_sql.c (0c44b90; CTE read-only rule
+ * re-synced 2026-10-21). */
 static const char *sql_cte_body_ok(const char *s, const char *end) {
     const char *p = sql_skip_ws_comment(s);
     if (p >= end) return "empty WITH subquery";
 
-    int head = 0; /* 0 = select/values/with, 1 = insert, 2 = update/delete */
-    if (kw_at(p, "insert")) head = 1;
-    else if (kw_at(p, "update") || kw_at(p, "delete")) head = 2;
-    else if (!kw_at(p, "select") && !kw_at(p, "values") && !kw_at(p, "with"))
-        return "WITH subquery must be SELECT/VALUES or a RETURNING DML";
+    if (!kw_at(p, "select") && !kw_at(p, "values") && !kw_at(p, "with"))
+        return "WITH subquery must be a read-only SELECT/VALUES query";
 
     static const char *const dml_words[] = {
         "insert", "update", "delete", NULL };
@@ -295,51 +298,22 @@ static const char *sql_cte_body_ok(const char *s, const char *end) {
         "reindex", "pragma", "grant", "revoke", "copy",
         "alter", "create", "begin", "commit", "rollback", NULL };
 
-    int depth = 0, top_ret = 0, top_where = 0, first = 1;
     for (p = s; p < end; ) {
         p = sql_skip_ws_comment(p);
         if (p >= end) break;
         if (*p == '\'' || *p == '"') { p = sql_skip_string(p); continue; }
-        if (*p == '(') { depth++; p++; continue; }
-        if (*p == ')') { depth--; p++; continue; }
         if (!(isalnum((unsigned char)*p) || *p == '_')) { p++; continue; }
 
-        if (head == 0 && depth >= 0) {
-            for (int i = 0; dml_words[i]; i++)
-                if (kw_at(p, dml_words[i]))
-                    return "write keyword in read-only WITH subquery";
-        }
-        if (depth > 0) {
-            for (int i = 0; dml_words[i]; i++)
-                if (kw_at(p, dml_words[i]))
-                    return "DML inside a WITH subquery expression";
-        }
-        if (head > 0 && depth == 0 && !first) {
-            for (int i = 0; dml_words[i]; i++)
-                if (kw_at(p, dml_words[i]))
-                    return "only one statement per WITH subquery";
-        }
-        if (depth == 0) {
-            if (kw_at(p, "where")) {
-                if (head == 2 && top_ret)
-                    return "WHERE after RETURNING in WITH subquery";
-                top_where = 1;
-            } else if (kw_at(p, "returning")) {
-                if (head == 2 && !top_where)
-                    return "UPDATE/DELETE in WITH must carry a WHERE clause";
-                top_ret = 1;
-            }
-        }
+        for (int i = 0; dml_words[i]; i++)
+            if (kw_at(p, dml_words[i]))
+                return "write keyword in read-only WITH subquery";
         for (int i = 0; forb[i]; i++)
             if (kw_at(p, forb[i]))
                 return "dangerous statement rejected (DROP/TRUNCATE/…)";
 
         p = sql_scan_ident(p);
         if (!p) return "bad token in WITH subquery";
-        first = 0;
     }
-    if (head > 0 && !top_ret)
-        return "DML in WITH must carry RETURNING";
     return NULL;
 }
 
@@ -598,7 +572,11 @@ static void tool_sql_write(void *data, const char *args,
         sqlite3_close(db);
         return;
     }
-    int rc = sqlite3_step(st);
+    /* RETURNING drain (mirrors lume-core 2026-10-21): a top-level
+     * RETURNING clause answers SQLITE_ROW on the first step; the write
+     * has already happened, so drain the rows and require DONE after. */
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { /* drain RETURNING */ }
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         sb_str(result, "sql_write: ");
@@ -715,7 +693,9 @@ int sqlite_write_exec(const char *db, const char *sql, const char **params,
         sqlite3_close(sq);
         return 1;
     }
-    int rc = sqlite3_step(st);
+    /* Same RETURNING drain as the tool path above. */
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { /* drain RETURNING */ }
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         snprintf(err, errsz, "%s", sqlite3_errmsg(sq));

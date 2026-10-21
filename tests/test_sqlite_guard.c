@@ -89,6 +89,20 @@ int main(void) {
     CHECK(wguard("ALTER TABLE t ADD") != NULL);      /* no column name */
     CHECK(wguard("ALTER INDEX idx RENAME TO j") != NULL);
 
+    /* --- write-CTE whitelist (mirrors lume-core sql_guard) ------------- */
+    CHECK(wguard("WITH c AS (SELECT 1 AS a) INSERT INTO t(name) SELECT a FROM c") == NULL);
+    CHECK(wguard("WITH c (nm) AS (VALUES ('v1')) INSERT INTO t(name) SELECT nm FROM c") == NULL);
+    CHECK(wguard("WITH c AS (SELECT 1) UPDATE t SET a=1 WHERE id=2") == NULL);
+    /* SQLite has no data-modifying CTE (verified 2026-10-21 against the
+     * system library, 3.51.0): a write verb inside a subquery is rejected
+     * outright instead of being waved through to a prepare-time syntax
+     * error. 3.35 added RETURNING on top-level DML only. */
+    CHECK(wguard("WITH u AS (UPDATE t SET a=1 WHERE id=2 RETURNING a) SELECT 1") != NULL);
+    CHECK(wguard("WITH u AS (INSERT INTO t(a) VALUES(1) RETURNING a) SELECT 1") != NULL);
+    CHECK(wguard("WITH u AS (DELETE FROM t WHERE id=2 RETURNING a) SELECT 1") != NULL);
+    /* a WHERE inside a subquery never exempts a WHERE-less trailing UPDATE */
+    CHECK(wguard("WITH c AS (SELECT 1 WHERE 1) UPDATE t SET a=1") != NULL);
+
     /* --- portfolio mirror stays fully read-only ---------------------- */
     CHECK(wguard("UPDATE portfolio SET a=1 WHERE id=1") != NULL);
     CHECK(wguard("ALTER TABLE portfolio ADD COLUMN c TEXT") != NULL);
