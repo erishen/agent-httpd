@@ -297,6 +297,14 @@ int is_vite_proxy_route(const HttpRequest *request);
 /* True when the raw header block asks for a WebSocket upgrade (HMR tunnel). */
 int is_websocket_upgrade(const char *raw, size_t len);
 
+/* True when `path` falls under the configurable React SSR relay prefix
+ * (server{ react_prefix = "..." }, default "/react"). "/" matches everything. */
+int is_react_prefix_path(const char *path);
+
+/* True for paths the React relay must never swallow (API/built-ins/static
+ * roots) even when its prefix is "/". */
+int is_react_reserved_path(const char *path);
+
 /* Serialize an HttpResponse into a raw HTTP/1.1 message. Returns bytes sent.
  * keep_alive selects the Connection header value (1 = keep-alive). */
 int build_response(const HttpResponse *response, int head_only, int keep_alive, char *raw_response, int *response_len);

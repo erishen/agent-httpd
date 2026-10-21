@@ -747,9 +747,8 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
             llm_handle_chat(&request, &response, client_fd);
         } else if (llm_is_chat_route(request.path, request.method)) {
             llm_handle_chat(&request, &response, client_fd);
-        } else if (strncmp(request.path, "/react", 6) == 0 &&
-            (request.path[6] == '\0' || request.path[6] == '/' ||
-             request.path[6] == '?')) {  /* query keeps relay: fcgi splits it */
+        } else if (is_react_prefix_path(request.path) &&
+                   !is_react_reserved_path(request.path)) {
             if (g_react_sock[0]) {
                 const char *ip = client_ip;
                 int fcgi_body_bytes = 0;
@@ -766,36 +765,38 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
                     return;
                 }
             } else {
-                /* No SSR backend configured (slim image, no -R flag): the
-                 * SSR-only chat page would be a bare 404. Degrade to the
-                 * static zero-dependency chat UI; the chat API itself is
-                 * handled natively by llm_handle_chat above. Other deep
-                 * links (/react/about, /react/counter, ...) degrade to a
-                 * static page of the same name under www/react/ — 404 if
-                 * no such page was shipped. */
-                if (strcmp(request.path, "/react/chat") == 0) {
-                    snprintf(request.path, sizeof(request.path), "/chat.html");
-                } else if (strcmp(request.path, "/react") == 0 ||
-                           strcmp(request.path, "/react/") == 0) {
-                    /* Home route: static mirror of the SSR home page */
-                    snprintf(request.path, sizeof(request.path),
-                             "/react/home.html");
-                } else if (strncmp(request.path, "/react/", 7) == 0) {
-                    /* one deep-link segment (about, counter, ...): degrade to
-                     * a static page of the same name under www/react/ */
-                    const char *rest = request.path + 7;
-                    size_t rl = strlen(rest);
-                    char leaf[256];
-                    if (rl > 0 && rest[rl - 1] == '/') {
-                        rl--; /* /react/about/ works too */
-                    }
-                    if (rl < sizeof(leaf) && 7 + rl + 5 < sizeof(request.path)) {
-                        memcpy(leaf, rest, rl);
-                        leaf[rl] = '\0';
-                        if (strchr(leaf, '/') == NULL && /* one segment only */
-                            strrchr(leaf, '.') == NULL) { /* already a file name */
-                            snprintf(request.path, sizeof(request.path),
-                                     "/react/%s.html", leaf);
+                /* No SSR backend configured (slim image, no -R flag): degrade
+                 * to shipped static pages. With the default "/react" prefix the
+                 * demo pages (/react/chat, /react/about, ...) map to
+                 * www/react/<name>.html. For any other prefix (e.g. "/") the
+                 * mapping is not meaningful, so fall through to the normal
+                 * static pipeline (which, with server{ spa = true }, serves
+                 * docroot/index.html for HTML requests). */
+                if (strcmp(g_react_prefix, "/react") == 0) {
+                    if (strcmp(request.path, "/react/chat") == 0) {
+                        snprintf(request.path, sizeof(request.path), "/chat.html");
+                    } else if (strcmp(request.path, "/react") == 0 ||
+                               strcmp(request.path, "/react/") == 0) {
+                        /* Home route: static mirror of the SSR home page */
+                        snprintf(request.path, sizeof(request.path),
+                                 "/react/home.html");
+                    } else if (strncmp(request.path, "/react/", 7) == 0) {
+                        /* one deep-link segment (about, counter, ...): degrade to
+                         * a static page of the same name under www/react/ */
+                        const char *rest = request.path + 7;
+                        size_t rl = strlen(rest);
+                        char leaf[256];
+                        if (rl > 0 && rest[rl - 1] == '/') {
+                            rl--; /* /react/about/ works too */
+                        }
+                        if (rl < sizeof(leaf) && 7 + rl + 5 < sizeof(request.path)) {
+                            memcpy(leaf, rest, rl);
+                            leaf[rl] = '\0';
+                            if (strchr(leaf, '/') == NULL && /* one segment only */
+                                strrchr(leaf, '.') == NULL) { /* already a file name */
+                                snprintf(request.path, sizeof(request.path),
+                                         "/react/%s.html", leaf);
+                            }
                         }
                     }
                 }

@@ -27,10 +27,8 @@ int is_fast_request(const HttpRequest *request) {
     }
     if (request->content_length > 0) return 0; /* body needs the blocking pipeline */
     if (llm_is_chat_route(request->path, request->method)) return 0;
-    if (strncmp(request->path, "/react", 6) == 0 &&
-        (request->path[6] == '\0' || request->path[6] == '/')) {
-        return 0;
-    }
+    if (is_react_prefix_path(request->path) &&
+        !is_react_reserved_path(request->path)) return 0;
     if (is_cgi_request(request->path)) return 0;
     if (g_vite_upstream_port > 0 && is_vite_proxy_route(request)) return 0;
     return 1;

@@ -47,6 +47,50 @@ int g_no_directory_listing = 0;
 int g_spa_fallback = 0; /* SPA history-mode fallback (read by static.c) */
 int g_vite_upstream_port = 0;
 char g_react_sock[MAX_PATH_SIZE];
+char g_react_prefix[MAX_PATH_SIZE] = "/react"; /* URL prefix owned by the React relay */
+
+/* Does `path` fall under the React relay prefix (g_react_prefix)? Matches the
+ * prefix exactly, or the prefix followed by '/' or '?' (a query keeps the
+ * relay: the FCGI backend splits it). A configurable prefix lets a site own
+ * its real root paths ("/") instead of being confined to "/react".
+ *
+ * Prefix "/" is special-cased: it matches every path (the relay owns the
+ * whole URL space; API paths etc. are still served earlier by DSL routes and
+ * the static fallthrough order in http.c). */
+int is_react_prefix_path(const char *path) {
+    const char *pfx = g_react_prefix[0] ? g_react_prefix : "/react";
+    size_t n = strlen(pfx);
+    if (strcmp(pfx, "/") == 0) return 1; /* matches everything */
+    if (strncmp(path, pfx, n) != 0) return 0;
+    return path[n] == '\0' || path[n] == '/' || path[n] == '?';
+}
+
+/* Paths the React relay must NOT swallow when it owns "/" (or a prefix that
+ * would otherwise covering them): the DSL API space, framework built-ins, and
+ * docroot static roots are served by lume itself, not the SSR backend. Only
+ * consulted when the relay prefix is broader than these segments; with the
+ * default "/react" prefix none of them collide anyway. */
+int is_react_reserved_path(const char *path) {
+    static const char *const prefixed[] = {
+        "/api/", "/assets/", "/js/",
+    };
+    static const char *const exact[] = {
+        "/api", "/assets", "/js",
+        "/cgi-bin", "/health", "/metrics",
+        "/login", "/logout", "/favicon.ico",
+    };
+    for (size_t i = 0; i < sizeof(prefixed) / sizeof(prefixed[0]); i++) {
+        if (strncmp(path, prefixed[i], strlen(prefixed[i])) == 0) return 1;
+    }
+    for (size_t i = 0; i < sizeof(exact) / sizeof(exact[0]); i++) {
+        size_t n = strlen(exact[i]);
+        if (strncmp(path, exact[i], n) == 0 &&
+            (path[n] == '\0' || path[n] == '/' || path[n] == '?')) {
+            return 1;
+        }
+    }
+    return 0;
+}
 /* g_log_fp is defined in http.c alongside the log writers. */
 char g_log_path[MAX_PATH_SIZE];
 
@@ -384,6 +428,15 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     g_vite_upstream_port = c.vite_upstream_port;
     if (c.react_socket) {
         strncpy(g_react_sock, c.react_socket, sizeof(g_react_sock) - 1);
+    }
+    if (c.react_prefix) {
+        /* Normalize: strip a trailing slash so "/react/" and "/react" agree
+         * (except the bare "/", which must stay as-is). */
+        strncpy(g_react_prefix, c.react_prefix, sizeof(g_react_prefix) - 1);
+        size_t rp = strlen(g_react_prefix);
+        while (rp > 1 && g_react_prefix[rp - 1] == '/') {
+            g_react_prefix[--rp] = '\0';
+        }
     }
     /* allow timeout overrides from the environment (used by the test-suite) */
     g_request_timeout_seconds = env_int("REQUEST_TIMEOUT_SECONDS", g_request_timeout_seconds);

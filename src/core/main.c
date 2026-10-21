@@ -24,7 +24,10 @@ static void print_usage(const char *program) {
     printf("Options:\n");
     printf("  -p <port>       Specify HTTP port (default: %d)\n", DEFAULT_PORT);
     printf("  -F <sock-path>  Also listen as a FastCGI backend on a UNIX socket\n");
-    printf("  -R <sock-path>  Relay /react/* requests to a resident FastCGI backend\n");
+    printf("  -R <sock-path>  Relay <react-prefix>/* requests to a resident\n");
+    printf("                  FastCGI backend (prefix defaults to /react)\n");
+    printf("  -P <prefix>     URL prefix the React relay owns (default: /react;\n");
+    printf("                  \"/\" lets the SSR backend own the whole site)\n");
     printf("  -T <seconds>    Set request and CGI timeout (default: %d)\n", REQUEST_TIMEOUT_SECONDS_DEFAULT);
     printf("  -a <htpasswd>   Require Basic Auth against an htpasswd file\n");
     printf("                  (strong crypt(3) hashes only: $5$/$6$/bcrypt;\n");
@@ -54,7 +57,7 @@ int main(int argc, char *argv[]) {
     const char *log_path_arg = NULL; /* -L override, NULL = default */
     int opt;
 
-    while ((opt = getopt(argc, argv, "p:F:R:T:w:a:r:l:L:hnv:")) != -1) {
+    while ((opt = getopt(argc, argv, "p:F:R:T:w:a:r:l:L:hnv:P:")) != -1) {
         switch (opt) {
             case 'p':
                 cfg.port = atoi(optarg);
@@ -85,6 +88,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'R':
                 cfg.react_socket = optarg;
+                break;
+            case 'P':
+                cfg.react_prefix = optarg;
                 break;
             case 'a':
                 cfg.htpasswd = optarg;

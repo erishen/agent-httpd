@@ -52,7 +52,8 @@ typedef struct {
     const char *auth_realm; /* 401 realm ["agent-httpd"] */
     int rate_limit_rps;   /* per-IP token-bucket rate (req/s); 0 = off [0] */
     const char *fcgi_socket; /* also serve FastCGI on this UNIX socket; NULL = off [NULL] */
-    const char *react_socket; /* resident React SSR backend to relay /react/ to [NULL] */
+    const char *react_socket; /* resident React SSR backend to relay to [NULL] */
+    const char *react_prefix; /* URL prefix the relay owns ["/react"]; "/" = whole site */
     int vite_upstream_port; /* DEV ONLY: Vite proxy upstream; 0 = off [0] */
     int no_directory_listing; /* 1 = directory requests answer 404 [0] */
     int spa;                  /* 1 = static 404 (GET + Accept: text/html) falls
