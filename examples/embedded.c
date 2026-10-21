@@ -116,7 +116,15 @@ int main(void) {
         "{\"text\":{\"type\":\"string\",\"description\":\"text to analyze\"}}",
         "python3 examples/tools/wordcount.py");
 
+    agenthttpd_tool_exec("ai_verify",
+        "Run an LLM-written .lume program through the lume-core AI "
+        "self-verification gate (type check + semantic declarations + "
+        "backend equivalence) and report the verdict.",
+        "{\"program\":{\"type\":\"string\",\"description\":\"the .lume source the model wrote\"},"
+        "\"label\":{\"type\":\"string\",\"description\":\"optional stable id\",\"optional\":true}}",
+        "python3 examples/tools/ai-verify.py");
+
     fprintf(stderr, "embedded example: /api/status, /api/echo, /api/tool, "
-                    "agent tool 'wordcount'\n");
+                    "agent tools 'wordcount', 'ai_verify'\n");
     return agenthttpd_run(&cfg);
 }

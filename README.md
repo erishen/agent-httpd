@@ -292,6 +292,26 @@ agenthttpd_tool_exec("wordcount", "...", params_json, "python3 tools/wordcount.p
 agenthttpd_run(&(agenthttpd_config){ .port = 18101, .workers = 4 });
 ```
 
+Two exec-tool demos ship registered in `examples/embedded.c` (served
+through `POST /api/tool` after `make example-run`):
+
+- `wordcount` — transport demo: stdin JSON `{"text": ...}` → stdout JSON
+  word/char counts.
+- `ai_verify` — **the host-side producer half of lume-core's AI
+  self-verification (docs/ai-verify.md)**: an LLM-written `.lume` program
+  arrives as stdin JSON `{"program": "...", "label": "..."}`, is written
+  to a temp file and run through the lume-core machine gate (type check +
+  semantic declarations + three-backend equivalence + parser fuzz);
+  stdout returns `{"verdict": "accept"|"reject"|"error", "reason", ...}`
+  (exit 0/1/2, same semantics as the gate) — `reason` is the
+  counter-example to hand back to the model for retry. The gate is not
+  in this repo: point `LUME_CORE_GATE` at lume-core's
+  `scripts/verify-ai-lume.sh` (default `../lume-core/scripts/verify-ai-lume.sh`,
+  sibling-checkout convention); on Windows also set `LUME_CORE_BASH` to
+  the MSYS2 bash explicitly (PATH resolution otherwise hits the WSL stub
+  in System32), and the gate needs clang on PATH for the full three-leg
+  run. Reference implementation: `examples/tools/ai-verify.py`.
+
 ```bash
 make example-run   # builds bin/libagenthttpd.a + examples/embedded and serves on :18101
 ```

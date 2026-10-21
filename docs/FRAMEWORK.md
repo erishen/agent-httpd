@@ -140,8 +140,9 @@ node (host.js)                          examples/embedded (:18101)
 | `src/http/http_route.c` | `process_request` 方法闸门前加 3 行框架分发钩子 |
 | `src/internal.h` | 声明 `framework_route_dispatch` |
 | `Makefile` | SRCS/HDRS 加新文件；新增 `lib`（`bin/libagenthttpd.a`，过滤 main.o）、`example`、`example-run`、`node-example` 目标 |
-| `examples/embedded.c` | **新增**：~150 行嵌入式示例（3 条自定义路由 + 1 个 exec 工具 + 工具直调探针路由） |
+| `examples/embedded.c` | **新增**：~150 行嵌入式示例（3 条自定义路由 + 2 个 exec 工具 + 工具直调探针路由） |
 | `examples/tools/wordcount.py` | **新增**：外部工具进程（stdin JSON → stdout JSON） |
+| `examples/tools/ai-verify.py` | **新增**：AI 自验证 exec 工具——模型写的 `.lume` 过 lume-core 机器 gate（accept/reject/error 三态 JSON，`LUME_CORE_GATE`/`LUME_CORE_BASH` 可配；lume-core docs/ai-verify.md 的 host 侧 producer 半） |
 | `examples/node-host/host.js` | **新增**：Node 宿主——spawn 嵌入示例 + 就绪轮询 + 4 探针 + SIGTERM 收尾（见 3.5） |
 
 源码里所有 `#include "x.h"` 裸名一行未动——`-I` 搜索路径天然覆盖新文件。

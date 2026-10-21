@@ -125,6 +125,21 @@ agenthttpd_tool_exec("wordcount", "...", params_json, "python3 tools/wordcount.p
 agenthttpd_run(&(agenthttpd_config){ .port = 18101, .workers = 4 });
 ```
 
+内附两个 exec 工具演示（`examples/embedded.c` 注册，`make example-run`
+后经 `POST /api/tool` 分发）：
+
+- `wordcount` —— 传输层演示：stdin JSON `{"text": ...}` → stdout JSON 词数/字符数。
+- `ai_verify` —— **AI 自验证（lume-core docs/ai-verify.md 的 host 侧 producer 半）**：
+  模型写的 `.lume` 程序经 stdin JSON `{"program": "...", "label": "..."}` 传入，
+  落临时文件后交给 lume-core 的机器 gate（类型检查 + 语义声明 + 三后端等价 +
+  parser-fuzz），stdout 返回 `{"verdict": "accept"|"reject"|"error", "reason", ...}`
+  （exit 0/1/2 同 gate 语义）——`reason` 即喂回模型重试的 counter-example。
+  gate 脚本不在本仓库：`LUME_CORE_GATE` 指到 lume-core 的
+  `scripts/verify-ai-lume.sh`（默认 `../lume-core/scripts/verify-ai-lume.sh`，
+  兄弟检出约定）；Windows 上另设 `LUME_CORE_BASH` 为 MSYS2 bash 的显式路径
+  （PATH 解析会先撞上 System32 的 WSL stub），gate 需要 clang 在 PATH 上
+  才能跑满三腿。示例程序见 `examples/tools/ai-verify.py`。
+
 ```bash
 make example-run   # 构建 bin/libagenthttpd.a + examples/embedded 并起服在 :18101
 ```
