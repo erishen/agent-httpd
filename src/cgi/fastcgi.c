@@ -270,6 +270,13 @@ int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
             {"CONTENT_LENGTH", cl},
             {"HTTP_HOST", request->host},
             {"HTTP_USER_AGENT", request->user_agent},
+            /* The backend needs this to decide whether to gzip its response
+             * (an SSR page is ~90KB of HTML). Without it the backend can only
+             * guess and would have to compress unconditionally. */
+            {"HTTP_ACCEPT_ENCODING", request->accept_encoding},
+            /* Conditional request: lets the backend answer 304 for an
+             * unchanged page instead of re-sending the whole document. */
+            {"HTTP_IF_NONE_MATCH", request->if_none_match},
             {"REMOTE_ADDR", remote_addr},
         };
         for (size_t i = 0; i < sizeof(pv) / sizeof(pv[0]); i++) {
