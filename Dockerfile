@@ -37,7 +37,7 @@ COPY scripts/build-cgis.sh scripts/
 RUN sh scripts/build-cgis.sh
 
 # ---------- 阶段 3: React SSR 构建产物 ----------
-FROM node:20-bookworm-slim AS ssr-build
+FROM node:24-bookworm-slim AS ssr-build
 # 镜像内保持仓库布局 (/build 为仓库根), build-ssr.sh 按自身位置寻址
 WORKDIR /build
 # 先只拷贝清单+锁文件安装依赖, 充分利用层缓存 (源码改动不重装依赖)。
@@ -59,7 +59,7 @@ COPY scripts/build-ssr.sh scripts/
 RUN mkdir -p bin www/js && sh scripts/build-ssr.sh
 
 # ---------- 阶段 4: 运行时 ----------
-FROM node:20-bookworm-slim
+FROM node:24-bookworm-slim
 # bash: shell CGI 解释器 (node:slim 已自带);
 # python3/ruby/php-cgi: CGI 动物园的可移植成员; python3 兼做容器 healthcheck;
 # default-jre-headless: java.cgi 包装器运行 Main.class 需要 JVM;
