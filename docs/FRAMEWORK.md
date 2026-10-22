@@ -143,6 +143,7 @@ node (host.js)                          examples/embedded (:18101)
 | `examples/embedded.c` | **新增**：~150 行嵌入式示例（3 条自定义路由 + 2 个 exec 工具 + 工具直调探针路由） |
 | `examples/tools/wordcount.py` | **新增**：外部工具进程（stdin JSON → stdout JSON） |
 | `examples/tools/ai-verify.py` | **新增**：AI 自验证 exec 工具——模型写的 `.lume` 过 lume-core 机器 gate（accept/reject/error 三态 JSON，`LUME_CORE_GATE`/`LUME_CORE_BASH` 可配；lume-core docs/ai-verify.md 的 host 侧 producer 半） |
+| `examples/tools/ai-produce-llm.py` | **新增**：AI 自验证真 LLM 生产者（TODO P4 收口）——prompts → OpenAI 兼容 chat（`LLM_API_URL/KEY/MODEL` 环境约定）→ 抽取 \`\`\`lume → 本地 gate → counter-example 有界重试 → accept 候选+manifest 落 `AI_CANDIDATES_DIR` 交 lume-core `ai-produce.sh` 二次判定；`AI_LLM_ROUTER_AGENT=off` 应对 router 默认 agent 路径挂死直连流量；spec 带 few-shot 防 Python 化。已端到端实测（Qwen3-8B 两程序入库 must-pass 种子） |
 | `examples/node-host/host.js` | **新增**：Node 宿主——spawn 嵌入示例 + 就绪轮询 + 4 探针 + SIGTERM 收尾（见 3.5） |
 
 源码里所有 `#include "x.h"` 裸名一行未动——`-I` 搜索路径天然覆盖新文件。

@@ -311,6 +311,23 @@ through `POST /api/tool` after `make example-run`):
   the MSYS2 bash explicitly (PATH resolution otherwise hits the WSL stub
   in System32), and the gate needs clang on PATH for the full three-leg
   run. Reference implementation: `examples/tools/ai-verify.py`.
+- `ai-produce-llm.py` — **the real LLM half of the same loop (closes
+  lume-core TODO P4)**: sends prompts to an OpenAI-compatible chat
+  endpoint, extracts the ```lume program, runs the gate, and on a
+  rejection loops the counter-example back to the model (bounded
+  retries). Gate-accepted programs land in the core's
+  `out/ai-candidates/` with `accept` manifest rows — the exact contract
+  lume-core `scripts/ai-produce.sh` consumes for a deterministic second
+  opinion. Config via env: `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL`
+  (same names as this repo's `.env`; the key is read, used as the
+  bearer header and never logged or written), plus `AI_LLM_ATTEMPTS`,
+  `AI_LLM_TIMEOUT`, `AI_LLM_ROUTER_AGENT` (routers that hang direct
+  model traffic on their default agent path — e.g. the local tsm-hub —
+  want `off`), `LUME_CORE_GATE`, `LUME_CORE_BASH`. The system spec
+  carries a few-shot reference program; without it small models write
+  Python, which the gate rejects (correctly) but retries alone do not
+  fix. Verified end to end: two Qwen3-8B programs generated, gate-
+  accepted and committed as lume-core must-pass seeds.
 
 ```bash
 make example-run   # builds bin/libagenthttpd.a + examples/embedded and serves on :18101

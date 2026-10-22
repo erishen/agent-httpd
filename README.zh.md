@@ -139,6 +139,19 @@ agenthttpd_run(&(agenthttpd_config){ .port = 18101, .workers = 4 });
   兄弟检出约定）；Windows 上另设 `LUME_CORE_BASH` 为 MSYS2 bash 的显式路径
   （PATH 解析会先撞上 System32 的 WSL stub），gate 需要 clang 在 PATH 上
   才能跑满三腿。示例程序见 `examples/tools/ai-verify.py`。
+- `ai-produce-llm.py` —— **同一闭环的真 LLM 半（lume-core TODO P4 收口）**：
+  prompts 发给 OpenAI 兼容 chat 端点，抽取 ```lume 程序，本地跑 gate，
+  reject 时把 counter-example 喂回模型重试（有界次数）；通过的程序落进
+  core 的 `out/ai-candidates/` 并写 `accept` manifest 行——正是
+  lume-core `scripts/ai-produce.sh` 消费的契约，由它做确定性的二次判定。
+  配置走环境变量：`LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL`（与本仓
+  `.env` 同名约定；密钥只读入作 bearer 头，不落日志不落盘），另有
+  `AI_LLM_ATTEMPTS`、`AI_LLM_TIMEOUT`、`AI_LLM_ROUTER_AGENT`（默认
+  `off`——tsm-hub 类 router 的默认 agent 路径会挂死直连模型流量）、
+  `LUME_CORE_GATE`、`LUME_CORE_BASH`。system spec 内置 few-shot 参考
+  程序：没有它小模型会写 Python，gate 正确拒绝但仅靠重试教不会。
+  已端到端实测：Qwen3-8B 产出两个程序过 gate，作为 lume-core must-pass
+  种子入库。
 
 ```bash
 make example-run   # 构建 bin/libagenthttpd.a + examples/embedded 并起服在 :18101
