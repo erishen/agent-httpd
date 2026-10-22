@@ -64,7 +64,7 @@ jobs:
         run: make test-keepalive
 
   ubuntu-fuzz:
-    name: Ubuntu / clang libFuzzer (parser fuzz: http_parse + chunked)
+    name: Ubuntu / clang libFuzzer + ASan-LSan suite (parser fuzz, leak leg)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,3 +74,6 @@ jobs:
 
       - name: make fuzz-http (20k runs, ASan+UBSan)
         run: make fuzz-http
+
+      - name: make test-asan (whole suite, ASan + LSan)
+        run: make test-asan

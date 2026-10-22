@@ -116,12 +116,20 @@ file), but the two loops that reuse state across requests on one
 worker — `test_keepalive_pipeline.c` and `test_fcgi_stream.c`,
 exactly the shape php2shell exploited — have no ASAN make target.
 
-- [ ] Add `make test-asan` (CC/FLAGS + `-fsanitize=address,leak`),
+- [x] Add `make test-asan` (CC/FLAGS + `-fsanitize=address,leak`),
       run the whole `tests/` suite, keep the existing pass/fail
       contract.
-- [ ] Run it in CI (Linux at minimum); record the baseline first and
+      **Done 2026-10-22**: `test-asan` re-runs `test-unit` (all suites)
+      with ASan+LSan and `test-keepalive` with ASan (leak detection off,
+      forked server); SAN_FLAGS parameterized, t_fcgi + t_ka now under
+      sanitizers too.
+- [x] Run it in CI (Linux at minimum); record the baseline first and
       file suppressions for intentional globals rather than "fixing"
       them.
+      **Done 2026-10-22**: `make test-asan` added to the `ubuntu-fuzz`
+      CI job; first CI run is the baseline — if LSAN flags intentional
+      globals, file a suppressions list (see lume-core's LSAN file)
+      instead of changing code.
 
 ### Fuzz target for the request parser + chunked decoder
 
@@ -153,8 +161,17 @@ unlinks transcripts older than 30 days every 24 h, while prefork
 workers read/write session files in their COW address spaces.
 Confirm the file-level contract:
 
-- [ ] Verify `session.c` prune uses unlink-then-recreate (or atomic
+- [x] Verify `session.c` prune uses unlink-then-recreate (or atomic
       rename) semantics so a worker mid-write cannot silently lose an
       active session — symptom would be sporadic logouts / vanished
       sessions. Add a test that prunes an active session file while a
       fake worker keeps appending.
+      **Done 2026-10-22**: `session_save` is tmp+rename (atomic, 0600
+      via fchmod, tmp cleaned on failure); the prune only matches
+      `*.json` names, so a worker's in-flight `x.json.tmp.<pid>` can
+      never be unlinked under it, and `memory.json` / non-JSON files are
+      untouched. Residual TOCTOU: a session pruned while its rename lands
+      in the stat→unlink window was already past TTL, so the outcome is
+      equivalent to session expiry (not data corruption). Covered by
+      `tests/test_session_prune.c` (stale pruned / fresh kept / tmp kept /
+      memory kept / non-JSON kept) in `make test-unit`.

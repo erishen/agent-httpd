@@ -221,31 +221,48 @@ test: all
 	@echo "Running smoke tests..."
 	@sh scripts/smoke-test.sh
 
+# Sanitizer flags for the standalone unit suites. test-unit defaults to
+# ASan+UBSan; make test-asan re-runs the same suite with ASan+LSan (the
+# leak detector is Linux-only, so that target runs in CI).
+SAN_FLAGS ?= -fsanitize=address,undefined
+
 # Unit tests for the dev-proxy header builder (ASan+UBSan) and the FastCGI
 # stream relay (end-to-end, large responses must not be capped at 64KB).
 # Standalone: no live server required, so they run in CI without a backend.
 test-unit: all
 	@mkdir -p tests
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_vite_header.c src/cgi/vite.c -o tests/t_vite
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_vite_header.c src/cgi/vite.c -o tests/t_vite
 	./tests/t_vite
-	$(CC) -Wall -Wextra -O2 -pthread $(INCDIRS) tests/test_fcgi_stream.c src/cgi/fastcgi.c $(GC) -o tests/t_fcgi
+	$(CC) -Wall -Wextra -O2 -pthread $(SAN_FLAGS) $(INCDIRS) tests/test_fcgi_stream.c src/cgi/fastcgi.c $(GC) -o tests/t_fcgi
 	./tests/t_fcgi
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_auth.c src/security/auth.c src/security/bcrypt.c -o tests/t_auth
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_auth.c src/security/auth.c src/security/bcrypt.c -o tests/t_auth
 	./tests/t_auth
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_minijson.c src/core/minijson.c -o tests/t_json
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_minijson.c src/core/minijson.c -o tests/t_json
 	./tests/t_json
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_resp_headers.c \
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_resp_headers.c \
 	    src/http/http_resp.c -o tests/t_resp
 	./tests/t_resp
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_sqlite_guard.c \
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_sqlite_guard.c \
 	    src/agent/sqlite_tool.c src/core/minijson.c -o tests/t_guard -lsqlite3
 	./tests/t_guard
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_crlf.c \
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_crlf.c \
 	    src/http/http_parse.c -o tests/t_crlf
 	./tests/t_crlf
-	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/fuzz_http.c \
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/fuzz_http.c \
 	    src/http/http_parse.c src/http/http_chunk.c -o tests/t_fuzzhttp
 	./tests/t_fuzzhttp
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_session_prune.c \
+	    src/agent/session.c src/core/minijson.c -o tests/t_sessprune
+	./tests/t_sessprune
+
+# Whole-suite run under ASan + LSan (P1 follow-up). The leak detector needs
+# Linux; record the baseline and file suppressions for intentional globals
+# rather than "fixing" them (see lume-core's LSAN suppressions file). The
+# keep-alive leg spawns a forked server, so leak detection is off there
+# (forked workers own their address space; abort on error instead).
+test-asan:
+	$(MAKE) test-unit SAN_FLAGS="-fsanitize=address,leak -fno-omit-frame-pointer"
+	$(MAKE) test-keepalive SAN_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" ASAN_OPTIONS="detect_leaks=0:abort_on_error=1"
 
 # Keep-alive pipelining regression (fix D): start the real server in
 # fork-per-connection mode, pipeline two GETs on one connection, assert both
@@ -255,7 +272,7 @@ test-unit: all
 # startup), so it is kept separate from the fast `test-unit` target.
 test-keepalive: all
 	@mkdir -p tests
-	$(CC) $(CFLAGS) -I src tests/test_keepalive_pipeline.c -o tests/t_ka
+	$(CC) $(CFLAGS) $(SAN_FLAGS) -I src tests/test_keepalive_pipeline.c -o tests/t_ka
 	./tests/t_ka
 
 # Session-cookie auth (AUTH_SESSION_FILE): /login minting, gate acceptance,
@@ -328,7 +345,7 @@ node-example: example
 clean:
 	rm -rf $(BUILD_DIR) bin examples/embedded
 
-.PHONY: all lib example example-run node-example build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream fuzz-http
+.PHONY: all lib example example-run node-example build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-asan test-keepalive test-linux test-container test-upstream test-stream fuzz-http
 
 # Parser fuzzing (P12 follow-up): libFuzzer over http_parse.c + http_chunk.c.
 # Needs clang (mingw has no libFuzzer), so this runs in Linux CI; the same
