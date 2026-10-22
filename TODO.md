@@ -54,12 +54,29 @@ This is an OOM robustness / DoS issue, not a php2shell-style UAF or RCE.
 Fix and test it independently so the parser cannot dispatch a request
 with a partially initialised body.
 
-- [ ] On body allocation failure, set a 500 response, force-close the
+- [x] On body allocation failure, set a 500 response, force-close the
       connection, and skip dispatch.
-- [ ] Add a regression test using allocation fault injection or a tiny
+      **Done 2026-10-22**: `http.c` body buffer malloc is now checked —
+      on failure it answers `500 Internal Server Error` and sets
+      `keep_alive_force_close = 1`; `response.status_code != 0` already
+      short-circuits dispatch, so `form_field()` / JSON handlers never
+      see a NULL body. The 500 error page is emitted by the existing
+      body-less-failure path.
+- [x] Add a regression test using allocation fault injection or a tiny
       address-space limit; assert no SIGSEGV and a bounded response.
-- [ ] Audit the remaining request-path allocations for the same pattern;
+      **Done 2026-10-22**: `tests/fault_malloc.c` (LD_PRELOAD malloc
+      injector, fails only the size named by `AH_OOM_BYTES`) +
+      `tests/test_oom_body.c` (spawns the real server, POSTs a body whose
+      buffer size is the injected failure, asserts `HTTP/1.1 500` + close).
+      Wired as `make test-oom` and into the `ubuntu-fuzz` CI job (POSIX
+      only — LD_PRELOAD does not exist on mingw).
+- [x] Audit the remaining request-path allocations for the same pattern;
       prefer a checked allocator or explicit `if (!p)` handling.
+      **Done 2026-10-22**: the other request-path buffers already check —
+      `fastcgi.c` body (`if (!request.body) goto send_end`) and `cgi.c`
+      CGI output (`if (!output)` → 500 + return); response serialization
+      uses the caller's stack buffer. The `http.c` body was the only
+      unchecked one.
 
 ## P1 — 2026-10-22 memory-safety audit follow-ups (php2shell-class review)
 

@@ -64,7 +64,7 @@ jobs:
         run: make test-keepalive
 
   ubuntu-fuzz:
-    name: Ubuntu / clang libFuzzer + ASan-LSan suite (parser fuzz, leak leg)
+    name: Ubuntu / clang libFuzzer + ASan-LSan suite (parser fuzz, leak leg, body-OOM)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,3 +77,6 @@ jobs:
 
       - name: make test-asan (whole suite, ASan + LSan)
         run: make test-asan
+
+      - name: make test-oom (body-OOM 500 regression, LD_PRELOAD fault injection)
+        run: make test-oom

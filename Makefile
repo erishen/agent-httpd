@@ -275,6 +275,18 @@ test-keepalive: all
 	$(CC) $(CFLAGS) $(SAN_FLAGS) -I src tests/test_keepalive_pipeline.c -o tests/t_ka
 	./tests/t_ka
 
+# Request-body OOM (C robustness item): LD_PRELOAD a malloc fault injector
+# into the real server (AH_OOM_BYTES = Content-Length + 1) and assert the
+# body-allocation failure answers HTTP/1.1 500 + close instead of crashing
+# the worker in form_field(). LD_PRELOAD / fork-per-connection are POSIX;
+# runs on the Linux CI job (mingw cannot preload). Kept separate from the
+# fast targets because it spawns a server.
+test-oom: all
+	@mkdir -p tests
+	$(CC) $(CFLAGS) -shared -fPIC tests/fault_malloc.c -o tests/fault_malloc.so -ldl
+	$(CC) $(CFLAGS) -I src tests/test_oom_body.c -o tests/t_oom
+	./tests/t_oom
+
 # Session-cookie auth (AUTH_SESSION_FILE): /login minting, gate acceptance,
 # logout deletion, htpasswd-driven revocation, ?back= open-redirect guard,
 # plus a second instance started WITHOUT the env var to prove a Basic-only

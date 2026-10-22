@@ -628,6 +628,17 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
                         if (request.body) {
                             memcpy(request.body, buffer + body_start, request.content_length);
                             request.body[request.content_length] = '\0';
+                        } else {
+                            /* Body allocation failure (OOM / address-space
+                             * limit). Do not dispatch with body == NULL: the
+                             * form/JSON handlers would dereference it
+                             * (http_route.c form_field) and crash the worker.
+                             * 500 + force-close — the response.status_code
+                             * short-circuits dispatch below, and the close
+                             * drops any pipelined bytes instead of risking
+                             * them being parsed as the next request. */
+                            set_error_response(&response, 500, "Internal Server Error");
+                            keep_alive_force_close = 1;
                         }
                     }
                     /* Everything from here on in buffer belongs to a
