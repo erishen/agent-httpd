@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include "internal.h"
@@ -128,5 +129,17 @@ int main(int argc, char *argv[]) {
     }
 
     cfg.access_log = log_path_arg; /* NULL = framework default */
+
+    /* Line-ending policy (P12 audit follow-up): strict CRLF by default;
+     * AGENTHTTPD_LENIENT_CRLF=1 restores bare-LF / lone-CR tolerance for
+     * deployments that still hand the server non-CRLF requests. Read once,
+     * before any worker accepts a connection. */
+    {
+        const char *v = getenv("AGENTHTTPD_LENIENT_CRLF");
+        if (v && v[0] && v[0] != '0' && strcasecmp(v, "false") != 0 &&
+            strcasecmp(v, "no") != 0)
+            http_crlf_set_lenient(1);
+    }
+
     return agenthttpd_run(&cfg);
 }

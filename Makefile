@@ -240,6 +240,9 @@ test-unit: all
 	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_sqlite_guard.c \
 	    src/agent/sqlite_tool.c src/core/minijson.c -o tests/t_guard -lsqlite3
 	./tests/t_guard
+	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_crlf.c \
+	    src/http/http_parse.c -o tests/t_crlf
+	./tests/t_crlf
 
 # Keep-alive pipelining regression (fix D): start the real server in
 # fork-per-connection mode, pipeline two GETs on one connection, assert both

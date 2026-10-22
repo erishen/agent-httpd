@@ -13,6 +13,35 @@
 #include "internal.h"
 #include "httpd.h"
 
+/* Line-ending policy (P12 audit follow-up). RFC 9110/7230 require CRLF; the
+ * historical parser tolerated bare-LF and lone-CR terminators, which RFC 7230
+ * §3.5 explicitly allows a server to reject. Default: strict CRLF only —
+ * a lone \n or a \r not followed by \n is a 400-class malformed request.
+ * AGENTHTTPD_LENIENT_CRLF=1 (read once at startup, main.c) restores the old
+ * lenient behavior for deployments that still hand the server bare-LF.
+ * http_crlf_set_lenient() lets the unit test flip the policy per case. */
+static int g_lenient_crlf = 0;
+
+void http_crlf_set_lenient(int lenient) {
+    g_lenient_crlf = lenient ? 1 : 0;
+}
+
+/* Consume one line terminator at raw[p]: CRLF (or, leniently, a lone \n /
+ * lone \r). Returns the new offset, or -1 when the terminator is malformed
+ * under the strict policy. */
+static long consume_eol(const char *raw, long len, long p) {
+    if (raw[p] == '\r') {
+        if (p + 1 < len && raw[p + 1] == '\n') return p + 2;   /* CRLF */
+        if (g_lenient_crlf) return p + 1;                      /* lone CR */
+        return -1;
+    }
+    if (raw[p] == '\n') {
+        if (g_lenient_crlf) return p + 1;                      /* lone LF */
+        return -1;
+    }
+    return p;                                                  /* not a terminator */
+}
+
 /* Case-insensitive substring search (ASCII), used by Transfer-Encoding below
  * and kept here with the parsing helpers. */
 static const char *find_ci(const char *hay, const char *needle) {
@@ -158,12 +187,12 @@ static long parse_headers(const char *raw_request, long len, HttpRequest *reques
     /* header lines */
     for (;;) {
         if (p >= len) return -1;
-        /* end of a line: consume its terminator (\r\n or bare \n) */
-        if (raw_request[p] == '\r') {
-            p++;
-            if (p < len && raw_request[p] == '\n') p++;
-        } else if (raw_request[p] == '\n') {
-            p++;
+        /* end of a line: consume its terminator (CRLF; leniently also a
+         * bare \n or lone \r — strict policy rejects both) */
+        if (raw_request[p] == '\r' || raw_request[p] == '\n') {
+            long np = consume_eol(raw_request, len, p);
+            if (np < 0) return -1;
+            p = np;
         } else {
             long start = p;
             while (p < len && raw_request[p] != '\r' && raw_request[p] != '\n') p++;
@@ -182,8 +211,9 @@ static long parse_headers(const char *raw_request, long len, HttpRequest *reques
         }
         /* blank line (right after the terminator) closes the header block */
         if (p < len && (raw_request[p] == '\r' || raw_request[p] == '\n')) {
-            if (raw_request[p] == '\r' && p + 1 < len && raw_request[p + 1] == '\n') p++;
-            p++;
+            long np = consume_eol(raw_request, len, p);
+            if (np < 0) return -1;
+            p = np;
             return p; /* p now points at the body (or the buffer end) */
         }
     }

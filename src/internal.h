@@ -116,6 +116,10 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response,
 
 /* ---- http.c ---- */
 int parse_request(const char *raw_request, HttpRequest *request);
+/* Line-ending policy (strict CRLF by default; lenient accepts bare-LF /
+ * lone-CR terminators). Read once at startup from AGENTHTTPD_LENIENT_CRLF;
+ * also callable from tests to flip the policy per case. */
+void http_crlf_set_lenient(int lenient);
 /* Create the IPv4 listening TCP socket (SO_REUSEADDR, backlog 128).
  * host == NULL binds INADDR_ANY (0.0.0.0), matching the historical default;
  * a non-NULL dotted-quad address (e.g. "127.0.0.1") restricts the listener
