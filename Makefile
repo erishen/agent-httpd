@@ -243,6 +243,9 @@ test-unit: all
 	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_crlf.c \
 	    src/http/http_parse.c -o tests/t_crlf
 	./tests/t_crlf
+	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/fuzz_http.c \
+	    src/http/http_parse.c src/http/http_chunk.c -o tests/t_fuzzhttp
+	./tests/t_fuzzhttp
 
 # Keep-alive pipelining regression (fix D): start the real server in
 # fork-per-connection mode, pipeline two GETs on one connection, assert both
@@ -325,4 +328,13 @@ node-example: example
 clean:
 	rm -rf $(BUILD_DIR) bin examples/embedded
 
-.PHONY: all lib example example-run node-example build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream
+.PHONY: all lib example example-run node-example build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-keepalive test-linux test-container test-upstream test-stream fuzz-http
+
+# Parser fuzzing (P12 follow-up): libFuzzer over http_parse.c + http_chunk.c.
+# Needs clang (mingw has no libFuzzer), so this runs in Linux CI; the same
+# source's non-fuzz regression main already runs inside `make test-unit`.
+fuzz-http:
+	clang -fsanitize=fuzzer,address,undefined -O1 -g \
+	    $(INCDIRS) tests/fuzz_http.c src/http/http_parse.c src/http/http_chunk.c \
+	    -o tests/fuzz_http
+	./tests/fuzz_http -runs=20000

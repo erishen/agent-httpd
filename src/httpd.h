@@ -121,6 +121,23 @@ typedef struct {
     int path_param_count; /* captures stored in the arrays above */
 } HttpRequest;
 
+/* Chunked transfer-coding decoder (http_chunk.c): pure state machine over
+ * wire bytes, no I/O or allocation. Feed monotonically growing data with
+ * http_dechunk_feed(); returns 1 = need more, 0 = done, -1 = malformed,
+ * -2 = decoded body exceeds cap. http_dechunk() is the fully-buffered
+ * one-shot form. */
+typedef struct {
+    long p;         /* decode cursor into wire */
+    int phase;      /* 0 = chunk-size line, 1 = payload, 2 = trailer, 3 = done */
+    long pending;   /* payload bytes still to copy from the current chunk */
+    long written;   /* bytes written to out so far */
+} HttpChunkState;
+
+int http_dechunk_feed(const char *wire, long wire_len, void *state,
+                      char *out, long cap, long *out_len);
+int http_dechunk(const char *wire, long wire_len, char *out, long cap,
+                 long *out_len);
+
 typedef struct {
     int status_code;
     char status_text[64];

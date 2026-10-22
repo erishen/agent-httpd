@@ -501,158 +501,70 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
                 /* RFC 9110 8.7.1: decode the chunked stream in place. The
                  * body is re-assembled contiguously in a fresh buffer (the
                  * raw wire bytes are chunk metadata + payload interleaved),
-                 * capped at MAX_REQUEST_SIZE like the CL path. */
+                 * capped at MAX_REQUEST_SIZE like the CL path. The framing
+                 * logic lives in http_chunk.c as a pure state machine
+                 * (http_dechunk_feed) — this loop only supplies wire bytes,
+                 * enforcing the deadline and the single-buffer ceiling. */
                 char *body = malloc(MAX_REQUEST_SIZE + 1);
-                int blen = 0, ok = 1;
+                int ok = 1;
                 if (!body) {
                     set_error_response(&response, 500, "Internal Server Error");
                 } else {
-                    /* p walks the undecoded stream: what we already recv'd
-                     * past the headers, plus whatever keeps arriving. */
-                    long p = header_end_len;
-                    int have = total;
+                    HttpChunkState chst;
+                    memset(&chst, 0, sizeof chst);
+                    chst.p = header_end_len;
                     for (;;) {
-                        /* ensure a full line at p (a chunk-size line) */
-                        long ls = p;
-                        while (1) {
-                            for (; ls < have; ls++) {
-                                if (buffer[ls] == '\n') break;
-                            }
-                            if (ls < have) break;
-                            if (deadline && time(NULL) >= deadline) {
-                                set_error_response(&response, 408, "Request Timeout");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            if (have >= (int)sizeof(buffer) - 1) {
-                                set_error_response(&response, 431, "Request Header Fields Too Large");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            struct timeval tv = {req_to > 0 ? req_to : 300, 0};
-                            fd_set rfds;
-                            FD_ZERO(&rfds);
-                            FD_SET(client_fd, &rfds);
-                            if (select(client_fd + 1, &rfds, NULL, NULL, &tv) <= 0) {
-                                set_error_response(&response, 408, "Request Timeout");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            int n = recv(client_fd, buffer + have, sizeof(buffer) - 1 - have, 0);
-                            if (n <= 0) {
-                                set_error_response(&response, 400, "Bad Request");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            have += n;
+                        long out_len = 0;
+                        int r = http_dechunk_feed(buffer, total, &chst, body,
+                                                  MAX_REQUEST_SIZE, &out_len);
+                        if (r == 0) {
+                            body[out_len] = '\0';
+                            request.body = body;
+                            request.content_length = (int)out_len; /* downstream sees a
+                                plain CL-framed body: CGI stdin, chat parse and
+                                the FCGI relay are all untouched */
+                            break;
                         }
-                        /* parse "HEX[;ext]" up to the \n */
-                        char *ls2 = buffer + p;
-                        long sz = strtol(ls2, NULL, 16);
-                        /* skip to just past the size line */
-                        p = ls + 1;
-                        if (sz < 0) {
+                        if (r == -1) {
                             set_error_response(&response, 400, "Bad Request");
                             ok = 0;
-                            goto chunk_done;
+                            break;
                         }
-                        if (sz == 0) {
-                            /* terminating chunk; swallow the trailer block
-                             * up to the blank line (RFC 9110 8.7.1). */
-                            for (;;) {
-                                long ts = p;
-                                int done = 0;
-                                while (1) {
-                                    for (; ts < have; ts++) {
-                                        if (buffer[ts] == '\n') {
-                                            /* lone line = end of trailers */
-                                            if ((ts == p) ||
-                                                (ts == p + 1 && buffer[p] == '\r')) {
-                                                done = 1;
-                                            }
-                                            break;
-                                        }
-                                    }
-                                    if (done || ts < have) break;
-                                    if (deadline && time(NULL) >= deadline) {
-                                        set_error_response(&response, 408, "Request Timeout");
-                                        ok = 0;
-                                        goto chunk_done;
-                                    }
-                                    if (have >= (int)sizeof(buffer) - 1) {
-                                        set_error_response(&response, 431, "Request Header Fields Too Large");
-                                        ok = 0;
-                                        goto chunk_done;
-                                    }
-                                    struct timeval tv = {req_to > 0 ? req_to : 300, 0};
-                                    fd_set rfds;
-                                    FD_ZERO(&rfds);
-                                    FD_SET(client_fd, &rfds);
-                                    if (select(client_fd + 1, &rfds, NULL, NULL, &tv) <= 0) {
-                                        set_error_response(&response, 408, "Request Timeout");
-                                        ok = 0;
-                                        goto chunk_done;
-                                    }
-                                    int n = recv(client_fd, buffer + have, sizeof(buffer) - 1 - have, 0);
-                                    if (n <= 0) {
-                                        set_error_response(&response, 400, "Bad Request");
-                                        ok = 0;
-                                        goto chunk_done;
-                                    }
-                                    have += n;
-                                }
-                                if (done) break;
-                                p = ts + 1;
-                            }
-                            break; /* chunked body complete */
-                        }
-                        /* read sz payload bytes + CRLF into the body */
-                        if (blen + sz > MAX_REQUEST_SIZE) {
+                        if (r == -2) {
                             set_error_response(&response, 413, "Request Entity Too Large");
                             ok = 0;
-                            goto chunk_done;
+                            break;
                         }
-                        long need = sz + 2; /* data + CRLF */
-                        while (have - p < need) {
-                            if (deadline && time(NULL) >= deadline) {
-                                set_error_response(&response, 408, "Request Timeout");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            if (have >= (int)sizeof(buffer) - 1) {
-                                set_error_response(&response, 413, "Request Entity Too Large");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            struct timeval tv = {req_to > 0 ? req_to : 300, 0};
-                            fd_set rfds;
-                            FD_ZERO(&rfds);
-                            FD_SET(client_fd, &rfds);
-                            if (select(client_fd + 1, &rfds, NULL, NULL, &tv) <= 0) {
-                                set_error_response(&response, 408, "Request Timeout");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            int n = recv(client_fd, buffer + have, sizeof(buffer) - 1 - have, 0);
-                            if (n <= 0) {
-                                set_error_response(&response, 400, "Bad Request");
-                                ok = 0;
-                                goto chunk_done;
-                            }
-                            have += n;
+                        /* r == 1: decoder needs more wire bytes. */
+                        if (deadline && time(NULL) >= deadline) {
+                            set_error_response(&response, 408, "Request Timeout");
+                            ok = 0;
+                            break;
                         }
-                        memcpy(body + blen, buffer + p, (size_t)sz);
-                        blen += (int)sz;
-                        p += need;
+                        if (total >= (int)sizeof(buffer) - 1) {
+                            set_error_response(&response, 431, "Request Header Fields Too Large");
+                            ok = 0;
+                            break;
+                        }
+                        struct timeval tv = {req_to > 0 ? req_to : 300, 0};
+                        fd_set rfds;
+                        FD_ZERO(&rfds);
+                        FD_SET(client_fd, &rfds);
+                        if (select(client_fd + 1, &rfds, NULL, NULL, &tv) <= 0) {
+                            set_error_response(&response, 408, "Request Timeout");
+                            ok = 0;
+                            break;
+                        }
+                        int n = recv(client_fd, buffer + total,
+                                     sizeof(buffer) - 1 - total, 0);
+                        if (n <= 0) {
+                            set_error_response(&response, 400, "Bad Request");
+                            ok = 0;
+                            break;
+                        }
+                        total += n;
                     }
-                chunk_done:
-                    if (ok) {
-                        body[blen] = '\0';
-                        request.body = body;
-                        request.content_length = blen; /* downstream sees a
-                            plain CL-framed body: CGI stdin, chat parse and
-                            the FCGI relay are all untouched */
-                    } else {
+                    if (!ok) {
                         free(body);
                         keep_alive_force_close = 1;
                     }

@@ -62,3 +62,15 @@ jobs:
 
       - name: make test-keepalive (pipelining regression)
         run: make test-keepalive
+
+  ubuntu-fuzz:
+    name: Ubuntu / clang libFuzzer (parser fuzz: http_parse + chunked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang (libFuzzer)
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: make fuzz-http (20k runs, ASan+UBSan)
+        run: make fuzz-http

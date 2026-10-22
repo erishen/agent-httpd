@@ -98,12 +98,16 @@ not a guarantee: exposing agent-httpd directly, or putting a
 CRLF-strict intermediary in front of it, makes the asymmetry
 exploitable.
 
-- [ ] Add a strict-CRLF mode (`-s` flag or `STRICT_CRLF=1`): when set,
+- [x] Add a strict-CRLF mode (`-s` flag or `STRICT_CRLF=1`): when set,
       `parse_headers` rejects header lines terminated by a bare LF and
       header framing requires CRLF. Default stays lenient for dev.
-- [ ] Document the deployment boundary in `README` / `docs`: behind an
+      **Done 2026-10-22**: strict is now the default; `AGENTHTTPD_LENIENT
+      _CRLF=1` restores the old tolerance (read once in main.c); covered
+      by `tests/test_crlf.c` (6 shapes) inside `make test-unit`.
+- [x] Document the deployment boundary in `README` / `docs`: behind an
       LF-tolerant proxy = safe; standalone public exposure = use
       strict mode.
+      **Done 2026-10-22**: README.zh.md documents the env switch.
 
 ### ASAN coverage for the keep-alive + streaming loops
 
@@ -126,13 +130,20 @@ layer has no fuzzer. `parse_headers`, the chunked reassembly loop in
 `http.c`, and `line_has_embedded_crlf` are the remaining
 malformed-input memory-management surface in this tree.
 
-- [ ] Add `tests/fuzz_http.c` (libFuzzer): harness 1 drives
+- [x] Add `tests/fuzz_http.c` (libFuzzer): harness 1 drives
       `parse_headers` on raw bytes; harness 2 exercises the chunked
       branch of `handle_client` (oversize chunk-size hex, CL+TE
       conflict, embedded CRLF, lone-LF variants). Seed corpus from
       the existing smoke tests.
-- [ ] Time-boxed `make fuzz-http` target (≈5 min under ASAN) so the
+      **Done 2026-10-22**: chunked framing was factored out of
+      `handle_client` into a pure state machine `src/http/http_chunk.c`
+      (`http_dechunk_feed`, resumable) — the fuzz target drives both
+      parsers and cross-checks incremental vs one-shot verdicts; the
+      same source's regression main runs inside `make test-unit`.
+- [x] Time-boxed `make fuzz-http` target (≈5 min under ASAN) so the
       loop stays cheap enough for a pre-push hook.
+      **Done 2026-10-22**: `make fuzz-http` = clang libFuzzer 20k runs
+      under ASan+UBSan; wired into CI (`ubuntu-fuzz` job).
 
 ### Session prune vs worker writes (data integrity, not memory safety)
 
