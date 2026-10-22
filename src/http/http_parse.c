@@ -31,6 +31,21 @@ static const char *find_ci(const char *hay, const char *needle) {
 /* Header values go through the project-wide bounded setter (set_str): the
  * destination is a fixed-size field and is always NUL-terminated, so an
  * over-long header cannot leave a field unterminated. */
+
+/* Append one raw header line + CRLF to the unknown-header capture buffer.
+ * Silent no-op when the buffer is full: requests with pathological header
+ * counts lose the overflow only, exactly the behavior the headers had
+ * before the capture existed (dropped). */
+static void capture_extra_header(const char *line, HttpRequest *request) {
+    size_t used = strlen(request->extra_headers);
+    size_t line_len = strlen(line);
+    if (used + line_len + 3 > sizeof(request->extra_headers)) return;
+    memcpy(request->extra_headers + used, line, line_len);
+    request->extra_headers[used + line_len] = '\r';
+    request->extra_headers[used + line_len + 1] = '\n';
+    request->extra_headers[used + line_len + 2] = '\0';
+}
+
 static void parse_header_line(const char *line, HttpRequest *request) {
     if (strncasecmp(line, "Host:", 5) == 0) {
         set_str(request->host, sizeof(request->host), line + 5);
@@ -110,6 +125,15 @@ static void parse_header_line(const char *line, HttpRequest *request) {
              * read can answer 501 instead of framing garbage */
             request->te_unsupported = 1;
         }
+    } else if (line[0] != ' ' && line[0] != '\t') {
+        /* Unknown header: retain verbatim in the bounded capture buffer so
+         * embedders (the lume bridge) can expose generic req.headers. The
+         * line arrives without its terminator; re-attach CRLF to keep the
+         * "Name: value\r\n" framing the response side can re-emit. An
+         * obs-fold continuation line (RFC 9110 5.2) starts with space/tab
+         * and is dropped - appending it would split the framing (same
+         * lenient treatment as before the capture existed: ignored). */
+        capture_extra_header(line, request);
     }
 }
 

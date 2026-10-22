@@ -70,6 +70,31 @@ static int purge_client_cache(void) {
 
 /* RFC 7230 section 6.3: the last response on a connection carries
  * "Connection: close"; HTTP/1.1 defaults to persistent otherwise. */
+
+/* Does the verbatim extra-headers block already carry `name`? Scans the
+ * "Name: value\r\n" lines and compares the token before ':' case-
+ * insensitively. Used to let a handler's own header suppress the framework
+ * default of the same name (X-Frame-Options etc.) instead of emitting a
+ * conflicting duplicate. */
+static int has_extra_header(const char *extra, const char *name) {
+    if (!extra || !extra[0]) return 0;
+    size_t nl = strlen(name);
+    const char *p = extra;
+    while (*p) {
+        const char *eol = strchr(p, '\n');
+        size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
+        /* match iff the line starts with name (CI) and ':' follows it */
+        if (line_len > nl && strncasecmp(p, name, nl) == 0) {
+            size_t i = nl;
+            while (i < line_len && (p[i] == ' ' || p[i] == '\t')) i++;
+            if (i < line_len && p[i] == ':') return 1;
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    return 0;
+}
+
 int build_response(const HttpResponse *response, int head_only, int keep_alive, char *raw_response, int *response_len) {
     char *p = raw_response;
     char *end = raw_response + MAX_RESPONSE_SIZE - 1;
@@ -136,6 +161,15 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
     if (response->allow[0]) {
         p += snprintf(p, end - p + 1, "Allow: %s\r\n", response->allow);
     }
+    /* Handler-supplied extra headers, verbatim (the lume bridge fills this
+     * from the DSL envelope `headers` map and validates the lines). Emitted
+     * BEFORE the framework security block: has_extra_header() suppresses a
+     * default whose name the handler set itself, so X-Frame-Options /
+     * Referrer-Policy / CSP are genuinely overridable per response rather
+     * than doubled up (duplicate X-Frame-Options is a browser error). */
+    if (response->extra_headers[0]) {
+        p += snprintf(p, end - p + 1, "%s", response->extra_headers);
+    }
     if (response->etag[0]) {
         /* Only static 200/304 responses set an ETag; those are also the
          * paths where gzip negotiation happens, so advertise Vary here. */
@@ -155,36 +189,51 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
     }
     p += snprintf(p, end - p + 1, "Server: AgentHTTPD\r\n");
     /* Security headers: no version fingerprint; refuse framing, MIME
-     * sniffing and referrer leakage on every response. */
-    p += snprintf(p, end - p + 1, "X-Content-Type-Options: nosniff\r\n");
-    p += snprintf(p, end - p + 1, "X-Frame-Options: DENY\r\n");
-    p += snprintf(p, end - p + 1, "Referrer-Policy: no-referrer\r\n");
+     * sniffing and referrer leakage on every response. A handler that set
+     * the same name in extra_headers takes over (the default line is
+     * suppressed) so the security posture is adjustable per response. */
+    if (!has_extra_header(response->extra_headers, "X-Content-Type-Options")) {
+        p += snprintf(p, end - p + 1, "X-Content-Type-Options: nosniff\r\n");
+    }
+    if (!has_extra_header(response->extra_headers, "X-Frame-Options")) {
+        p += snprintf(p, end - p + 1, "X-Frame-Options: DENY\r\n");
+    }
+    if (!has_extra_header(response->extra_headers, "Referrer-Policy")) {
+        p += snprintf(p, end - p + 1, "Referrer-Policy: no-referrer\r\n");
+    }
     /* Content-Security-Policy: lock to same-origin, block framing, plugins
      * and inline base URIs. A Vite-built single-page app loads its own
      * bundle.js and issues same-origin fetches, so 'self' is sufficient;
      * if the app ever needs inline scripts/eval, relax script-src here.
      * frame-ancestors 'none' is the modern replacement for X-Frame-Options.
-     * Deployments that load third-party images (avatar CDNs, preview hosts)
+     * Selection order: a per-response extra header wins; else the
+     * agenthttpd_config.csp policy (set at startup, CR/LF-validated on
+     * ingest — embedders expose it as `server { csp = ... }` in the lume
+     * DSL); else this default. Deployments that load third-party images
      * can extend img-src via AGENTHTTPD_CSP_IMG_SRC: a space-separated list
      * of origins appended verbatim, e.g.
      *   AGENTHTTPD_CSP_IMG_SRC="https://avatars.githubusercontent.com"
      * A value containing CR/LF is rejected outright (header injection) and
      * falls back to the default policy. */
-    const char *csp_img_extra = getenv("AGENTHTTPD_CSP_IMG_SRC");
-    if (csp_img_extra && *csp_img_extra && strpbrk(csp_img_extra, "\r\n") == NULL) {
-        p += snprintf(p, end - p + 1,
-            "Content-Security-Policy: default-src 'self'; "
-            "script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: %s; font-src 'self'; connect-src 'self'; "
-            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
-            "object-src 'none'\r\n", csp_img_extra);
-    } else {
-        p += snprintf(p, end - p + 1,
-            "Content-Security-Policy: default-src 'self'; "
-            "script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
-            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
-            "object-src 'none'\r\n");
+    if (!has_extra_header(response->extra_headers, "Content-Security-Policy")) {
+        const char *csp_img_extra = getenv("AGENTHTTPD_CSP_IMG_SRC");
+        if (g_csp[0]) {
+            p += snprintf(p, end - p + 1, "Content-Security-Policy: %s\r\n", g_csp);
+        } else if (csp_img_extra && *csp_img_extra && strpbrk(csp_img_extra, "\r\n") == NULL) {
+            p += snprintf(p, end - p + 1,
+                "Content-Security-Policy: default-src 'self'; "
+                "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: %s; font-src 'self'; connect-src 'self'; "
+                "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
+                "object-src 'none'\r\n", csp_img_extra);
+        } else {
+            p += snprintf(p, end - p + 1,
+                "Content-Security-Policy: default-src 'self'; "
+                "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+                "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
+                "object-src 'none'\r\n");
+        }
     }
     /* Process-isolation + cross-origin resource guards (spectre-class
      * side channels, accidental cross-origin loads). */

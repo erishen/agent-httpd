@@ -54,6 +54,10 @@ typedef struct {
     const char *fcgi_socket; /* also serve FastCGI on this UNIX socket; NULL = off [NULL] */
     const char *react_socket; /* resident React SSR backend to relay to [NULL] */
     const char *react_prefix; /* URL prefix the relay owns ["/react"]; "/" = whole site */
+    const char *csp; /* Content-Security-Policy policy emitted on every
+                        response instead of the built-in default; NULL/"" =
+                        default. A CR/LF inside the value is rejected at
+                        startup (header injection) and the default stays. */
     int vite_upstream_port; /* DEV ONLY: Vite proxy upstream; 0 = off [0] */
     int no_directory_listing; /* 1 = directory requests answer 404 [0] */
     int spa;                  /* 1 = static 404 (GET + Accept: text/html) falls

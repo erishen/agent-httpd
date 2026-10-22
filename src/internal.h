@@ -46,6 +46,7 @@ extern int g_spa_fallback;                  /* static 404 -> docroot/index.html 
 extern int g_vite_upstream_port;            /* -v: dev Vite port to proxy /@, /react, /src to */
 extern char g_react_sock[MAX_PATH_SIZE];    /* -R: resident React backend */
 extern char g_react_prefix[MAX_PATH_SIZE]; /* URL prefix the React relay owns ["/react"] */
+extern char g_csp[256]; /* config CSP policy; "" = built-in default (http_resp.c) */
 
 /* ---- lifecycle + logging (http.c; driven by main.c) ---- */
 extern volatile sig_atomic_t g_server_running; /* SIGINT/SIGTERM flag */

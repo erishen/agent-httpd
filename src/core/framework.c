@@ -48,6 +48,7 @@ int g_spa_fallback = 0; /* SPA history-mode fallback (read by static.c) */
 int g_vite_upstream_port = 0;
 char g_react_sock[MAX_PATH_SIZE];
 char g_react_prefix[MAX_PATH_SIZE] = "/react"; /* URL prefix owned by the React relay */
+char g_csp[256]; /* config CSP policy; "" = built-in default (http_resp.c) */
 
 /* Does `path` fall under the React relay prefix (g_react_prefix)? Matches the
  * prefix exactly, or the prefix followed by '/' or '?' (a query keeps the
@@ -436,6 +437,15 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
         size_t rp = strlen(g_react_prefix);
         while (rp > 1 && g_react_prefix[rp - 1] == '/') {
             g_react_prefix[--rp] = '\0';
+        }
+    }
+    if (c.csp && c.csp[0]) {
+        /* A CR/LF in the policy would split the response header (header
+         * injection): refuse the whole value and keep the default policy. */
+        if (strpbrk(c.csp, "\r\n") == NULL) {
+            set_str(g_csp, sizeof(g_csp), c.csp);
+        } else {
+            fprintf(stderr, "agenthttpd: csp policy contains CR/LF - ignored\n");
         }
     }
     /* allow timeout overrides from the environment (used by the test-suite) */

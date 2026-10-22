@@ -234,6 +234,9 @@ test-unit: all
 	./tests/t_auth
 	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_minijson.c src/core/minijson.c -o tests/t_json
 	./tests/t_json
+	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_resp_headers.c \
+	    src/http/http_resp.c -o tests/t_resp
+	./tests/t_resp
 	$(CC) $(CFLAGS) -fsanitize=address,undefined tests/test_sqlite_guard.c \
 	    src/agent/sqlite_tool.c src/core/minijson.c -o tests/t_guard -lsqlite3
 	./tests/t_guard

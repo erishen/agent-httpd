@@ -76,3 +76,5 @@ deploy/cicdkit-project.json
 asm-demo/*
 !asm-demo/*.c
 !asm-demo/Makefile
+tests/t_guard
+tests/t_resp

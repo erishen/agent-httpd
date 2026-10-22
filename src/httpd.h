@@ -77,6 +77,19 @@ extern int g_request_timeout_seconds;
 #define HTTP_PATH_PARAM_NAME_MAX 64
 #define HTTP_PATH_PARAM_VALUE_MAX 128
 
+/* Bounded raw capture of headers the parser does not map to a dedicated
+ * HttpRequest field. Stored verbatim as "Name: value\r\n" lines (the same
+ * framing http_resp.c re-emits on the response side), so embedders can
+ * surface generic req.headers without the parser growing a field per
+ * header. Requests rarely carry more than a dozen unknown headers; the
+ * cap discards the overflow (lenient, like the pre-capture behavior). */
+#define HTTP_EXTRA_HEADERS_MAX 4096
+/* Response-side counterpart: extra header lines a handler (or the lume
+ * DSL envelope `headers` map) wants appended verbatim. Names whose
+ * default security header the framework would also emit suppress that
+ * default, so X-Frame-Options / CSP are genuinely overridable. */
+#define HTTP_EXTRA_RESP_HEADERS_MAX 1024
+
 typedef struct {
     char method[16];
     char path[MAX_PATH_SIZE];
@@ -102,6 +115,7 @@ typedef struct {
     int te_unsupported; /* a request transfer coding we cannot frame */
     int body_too_large; /* Content-Length exceeded MAX_REQUEST_SIZE (413) */
     char *body;
+    char extra_headers[HTTP_EXTRA_HEADERS_MAX]; /* unknown headers, "Name: value\r\n" lines */
     char path_param_names[HTTP_PATH_PARAMS_MAX][HTTP_PATH_PARAM_NAME_MAX];
     char path_param_values[HTTP_PATH_PARAMS_MAX][HTTP_PATH_PARAM_VALUE_MAX];
     int path_param_count; /* captures stored in the arrays above */
@@ -153,6 +167,13 @@ typedef struct {
     /* 405/OPTIONS only: methods the resource understands, echoed as the
      * Allow header (RFC 9110 15.5.1 makes Allow mandatory on 405). */
     char allow[96];
+    /* Extra response headers, verbatim "Name: value\r\n" lines. The lume
+     * bridge fills this from the DSL envelope `headers` map (validated:
+     * token names, CR/LF-free values). A line naming a header the
+     * framework emits by default (X-Frame-Options, X-Content-Type-Options,
+     * Referrer-Policy, Content-Security-Policy) suppresses that default
+     * for this response, making the security set overridable per route. */
+    char extra_headers[HTTP_EXTRA_RESP_HEADERS_MAX];
     /* Streaming dispatchers (SSE chat) write head + body to client_fd
      * themselves; handle_client then only logs (body_length = bytes sent)
      * and closes — no response serialization, no keep-alive. */
