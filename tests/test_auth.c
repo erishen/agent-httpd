@@ -111,8 +111,12 @@ int main(void) {
     make_basic("alice", "password123", hdr, sizeof hdr);
     CHECK(check_basic_auth(hdr) == 0);
 
-    /* Mixed file: strong entry loads, weak sibling is skipped forever. */
-    const char *probe = crypt("probe", "$6$abcdefgh");
+    /* Mixed file: strong entry loads, weak sibling is skipped forever.
+     * The stored hash must be of the password the checks below supply
+     * (carolpass) — hashing a different probe string made the strong-entry
+     * assertion unsatisfiable on every platform that actually supports $6$
+     * (it was invisible on macOS, whose crypt lacks $6$ and skips the block). */
+    const char *probe = crypt("carolpass", "$6$abcdefgh");
     if (probe && strncmp(probe, "$6$", 3) == 0) {
         char mixed[512];
         snprintf(mixed, sizeof mixed,
