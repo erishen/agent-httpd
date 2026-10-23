@@ -35,6 +35,10 @@ RUN apt-get update \
 WORKDIR /build
 COPY cgi-langs/ cgi-langs/
 COPY scripts/build-cgis.sh scripts/
+COPY scripts/php-guard.sh scripts/
+# php2shell guard: fail the stage on an affected php-cgi before its
+# wrapper can ship (CVE-2026-109618 / CVE-2026-109619).
+RUN sh scripts/php-guard.sh
 RUN sh scripts/build-cgis.sh
 
 # ---------- 阶段 3: 运行时 (node:24-bookworm-slim + CGI 解释器, 约 600MB) ----------
@@ -51,6 +55,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 curl ca-certificates \
        ruby php-cgi default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
+# Same php2shell guard in the runtime stage: the interpreter serving
+# /cgi-bin/php.cgi must be a fixed version, not whatever apt resolved.
+COPY scripts/php-guard.sh scripts/
+RUN sh scripts/php-guard.sh
 RUN useradd --system --uid 10001 --create-home --home-dir /home/agent agent
 WORKDIR /app
 # 容器专用基础 MCP 配置 (echo 演示, python3 自包含零下载); 无 node,

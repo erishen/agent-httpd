@@ -34,6 +34,11 @@ RUN apt-get update \
 WORKDIR /build
 COPY cgi-langs/ cgi-langs/
 COPY scripts/build-cgis.sh scripts/
+COPY scripts/php-guard.sh scripts/
+# php2shell build-time guard: a cached/old base image carrying an affected
+# php-cgi (<= 8.2.34 / 8.3.35 / 8.4.26 / 8.5.11) fails here, before its
+# wrapper can ever ship in the runtime image.
+RUN sh scripts/php-guard.sh
 RUN sh scripts/build-cgis.sh
 
 # ---------- 阶段 3: React SSR 构建产物 ----------
@@ -74,6 +79,11 @@ FROM node:24-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 ruby php-cgi default-jre-headless curl make git ca-certificates libgomp1 libmagic1 libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
+# Same php2shell guard in the runtime stage: the interpreter that actually
+# serves /cgi-bin/php.cgi must be a fixed version (>= 8.2.35 / 8.3.36 /
+# 8.4.27 / 8.5.12), never whatever apt resolved from a stale layer.
+COPY scripts/php-guard.sh scripts/
+RUN sh scripts/php-guard.sh
 # uv: 两个 MCP 桥 (portfolio-check / pse-review) 都以 `uv run` 驱动各自的
 # Python 项目。从 astral 官方镜像拷二进制, 免在 slim 镜像里装 pip
 # (bookworm 的 python3 受 PEP 668 保护)。

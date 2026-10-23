@@ -219,6 +219,7 @@ docker compose logs -f httpd # 跟看日志
 - **LLM 配置走项目根 `.env`**: `cp .env.example .env` 后填 `LLM_API_KEY` 即接真实模型 (OpenAI 兼容端点均可: OpenAI / DeepSeek / 本地 Ollama); compose 的 httpd 与 react 服务都经 `env_file` 注入 (文件缺失也能启动), `make dev` 用 `--env-file-if-exists=.env` 自动加载; C 服务器在首个聊天请求时也从工作目录读 `.env` 的 `LLM_*` (环境变量已存在的优先 —— 可用空 `LLM_API_KEY` 强制回落演示引擎)。改完 `docker compose up -d` 重建容器生效。`.env` 已被 `.gitignore`/`.dockerignore` 排除, 密钥不进仓库不进镜像
 - `docker stop` 的 SIGTERM 直达 agent-httpd 的优雅排水逻辑 (停 accept → worker 排水最多 5 秒 → SIGKILL 兜底), 重启不丢在途请求
 - **FCGI socket 权限默认收紧**: react 后端的 UNIX socket 默认 `0700` (owner-only)——socket 直连可绕过 httpd 的认证/限流, 不能让同机任意进程可连; nginx `fastcgi_pass` 场景下 worker 用户不同时, 给 react 服务设 `REACT_FCGI_SOCK_MODE=0777` 放宽
+- **PHP CGI 版本守卫 (php2shell)**: 镜像在 build 与 runtime 两阶段装完 `php-cgi` 后都跑 `scripts/php-guard.sh`, 版本落在受影响区间 (`<= 8.2.34` / `<= 8.3.35` / `<= 8.4.26` / `<= 8.5.11`, 含 8.0/8.1) 即构建失败, 缓存的旧基础镜像无法静默过关。**部署提示**: `/cgi-bin` 从不在公开豁免路径 (`AUTH_PUBLIC_PATHS` 默认空) 内, 但若不开 Basic Auth (`-a`/`-r`) 且把 demo 暴露到公网, php.cgi 会无认证可执行——**演示环境请务必启用认证或保持网络隔离**
 
 ## 测试
 
