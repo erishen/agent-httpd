@@ -52,7 +52,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     memset(&req, 0, sizeof req);
     (void)parse_request(raw, &req);
 
-    /* leg 2: chunked decoder, incremental + one-shot cross-check */
+    /* leg 2: chunked decoder, incremental + one-shot cross-check.
+     * NOTE: st is reset per input (was static, which leaked chunk-decoder
+     * state across fuzz inputs and obscured crash attribution). */
     HttpChunkState st;
     memset(&st, 0, sizeof st);
     long out_len = 0;

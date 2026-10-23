@@ -39,10 +39,40 @@ int http_dechunk_feed(const char *wire, long wire_len, void *state,
 
     for (;;) {
         if (st->phase == 0) {
-            /* chunk-size line: "HEX[;ext]" up to LF */
+            /* chunk-size line: "HEX[;ext]" up to LF at ls (RFC 9110 8.7.1).
+             * The size is parsed with an explicit [st->p, ls) bound: the
+             * former strtol(wire + st->p, NULL, 16) ignored wire_len and
+             * over-read past the input (heap-buffer-overflow caught by the
+             * fuzzer under ASan). Bounding to ls removes the over-read while
+             * keeping behaviour identical for valid inputs (hex digits, the
+             * ';' extension separator, leading whitespace and an optional
+             * sign are all handled exactly as strtol did). */
             long ls = find_lf(wire, wire_len, st->p);
             if (ls < 0) { if (out_len) *out_len = st->written; return 1; }
-            long sz = strtol(wire + st->p, NULL, 16);
+            long j = st->p;
+            while (j < ls && (wire[j] == ' ' || wire[j] == '\t')) j++;
+            int neg = 0;
+            if (j < ls && wire[j] == '+') j++;
+            else if (j < ls && wire[j] == '-') { neg = 1; j++; }
+            long sz = 0;
+            int digits = 0;
+            while (j < ls) {
+                char d = wire[j];
+                int v;
+                if (d >= '0' && d <= '9') v = d - '0';
+                else if (d >= 'a' && d <= 'f') v = d - 'a' + 10;
+                else if (d >= 'A' && d <= 'F') v = d - 'A' + 10;
+                else break;              /* ';' extension or stray -> stop */
+                sz = sz * 16 + v;
+                if (++digits > 16) {     /* absurd size: malformed, and it
+                                          * also avoids a signed overflow in
+                                          * the written+sz cap check below */
+                    if (out_len) *out_len = st->written;
+                    return -1;
+                }
+                j++;
+            }
+            if (neg) sz = -sz;
             st->p = ls + 1;
             if (sz < 0) { if (out_len) *out_len = st->written; return -1; }
             if (sz == 0) { st->phase = 2; continue; }
