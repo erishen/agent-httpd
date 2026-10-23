@@ -107,7 +107,7 @@ with a partially initialised body.
 
 ## P1 — 2026-10-22 memory-safety audit follow-ups (php2shell-class review)
 
-Status: open (filed 2026-10-22, after the CVE-2026-109618/109619
+Status: closed (filed 2026-10-22, all sub-items done 2026-10-22, after the CVE-2026-109618/109619
 php2shell review). A line-by-line pass over the request path
 (`http.c` / `http_parse.c` / `http_resp.c` / `ratelimit.c` /
 `worker.c` / `sqlite_tool.c`) found **no php2shell-class stale
