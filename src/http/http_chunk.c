@@ -16,6 +16,7 @@
  * line or CRLF line ends the trailer block, payload+CRLF consumed per
  * chunk); only the recv/select/timeout plumbing moved to the caller. */
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -63,10 +64,15 @@ int http_dechunk_feed(const char *wire, long wire_len, void *state,
                 else if (d >= 'a' && d <= 'f') v = d - 'a' + 10;
                 else if (d >= 'A' && d <= 'F') v = d - 'A' + 10;
                 else break;              /* ';' extension or stray -> stop */
+                if (sz > (LONG_MAX - v) / 16) {  /* would overflow long:
+                                          * malformed, and it also keeps the
+                                          * written+sz cap check below
+                                          * overflow-free (UBSan-clean) */
+                    if (out_len) *out_len = st->written;
+                    return -1;
+                }
                 sz = sz * 16 + v;
-                if (++digits > 16) {     /* absurd size: malformed, and it
-                                          * also avoids a signed overflow in
-                                          * the written+sz cap check below */
+                if (++digits > 16) {     /* absurd size: malformed */
                     if (out_len) *out_len = st->written;
                     return -1;
                 }

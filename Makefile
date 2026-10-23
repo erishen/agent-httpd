@@ -235,7 +235,7 @@ test-unit: all
 	./tests/t_vite
 	$(CC) -Wall -Wextra -O2 -pthread $(SAN_FLAGS) $(INCDIRS) tests/test_fcgi_stream.c src/cgi/fastcgi.c $(GC) -o tests/t_fcgi
 	./tests/t_fcgi
-	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_auth.c src/security/auth.c src/security/bcrypt.c -o tests/t_auth
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_auth.c src/security/auth.c src/security/bcrypt.c -o tests/t_auth $(LDFLAGS_EXTRA)
 	./tests/t_auth
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_minijson.c src/core/minijson.c -o tests/t_json
 	./tests/t_json
