@@ -248,7 +248,7 @@ test-unit: all
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_crlf.c \
 	    src/http/http_parse.c -o tests/t_crlf
 	./tests/t_crlf
-	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/fuzz_http.c \
+	$(CC) $(CFLAGS) $(SAN_FLAGS) -DLUME_FUZZ_DRIVER tests/fuzz_http.c \
 	    src/http/http_parse.c src/http/http_chunk.c -o tests/t_fuzzhttp
 	./tests/t_fuzzhttp
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_session_prune.c \
@@ -362,6 +362,9 @@ clean:
 # Parser fuzzing (P12 follow-up): libFuzzer over http_parse.c + http_chunk.c.
 # Needs clang (mingw has no libFuzzer), so this runs in Linux CI; the same
 # source's non-fuzz regression main already runs inside `make test-unit`.
+# NOTE: this build must NOT define LUME_FUZZ_DRIVER, so fuzz_http.c's own
+# main is excluded and libFuzzer supplies the entry point (avoids the
+# historical duplicate-`main` link error).
 fuzz-http:
 	clang -fsanitize=fuzzer,address,undefined -O1 -g \
 	    $(INCDIRS) tests/fuzz_http.c src/http/http_parse.c src/http/http_chunk.c \

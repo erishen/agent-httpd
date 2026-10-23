@@ -10,7 +10,9 @@
  * Compiled with clang -fsanitize=fuzzer,address,undefined on Linux CI
  * (mingw has no libFuzzer). The stubs mirror src/core/util.c so the two
  * parser TUs link standalone; the regression main below is the local /
- * non-fuzz verification path. */
+ * non-fuzz verification path, selected via -DLUME_FUZZ_DRIVER (set by
+ * `make test-unit`). Under the libFuzzer build it is excluded so libFuzzer
+ * supplies the entry point. */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -68,8 +70,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     return 0;
 }
 
-#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
-/* deterministic regression main: known-good and known-bad shapes */
+#ifdef LUME_FUZZ_DRIVER
+/* deterministic regression main: known-good and known-bad shapes.
+ * Included only for the standalone driver build (make test-unit, or the
+ * macOS local -DLUME_FUZZ_DRIVER path). When built under libFuzzer
+ * (-fsanitize=fuzzer, as `make fuzz-http` does), this main is excluded and
+ * libFuzzer supplies its own entry point. This avoids the duplicate-`main`
+ * link error the previous FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION guard
+ * produced: a bare clang -fsanitize=fuzzer does NOT define that macro. */
 static int failures = 0;
 static void expect(int cond, const char *what) {
     if (!cond) { fprintf(stderr, "FAIL: %s\n", what); failures++; }
