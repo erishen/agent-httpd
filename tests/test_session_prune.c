@@ -9,6 +9,7 @@
  * it runs in the Linux/macOS CI legs; the regression main is also the
  * local non-sanitizer path. */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,9 +79,9 @@ int main(void) {
     char tmpl[] = "/tmp/sessprune.XXXXXX"; /* mutable: mkdtemp writes into it */
     char *d = mkdtemp(tmpl);
     if (!d) { perror("mkdtemp"); return 2; }
-    chdir(d);
-    mkdir(".data", 0700);
-    mkdir(".data/sessions", 0700);
+    if (chdir(d) != 0) { perror("chdir"); return 2; } /* glibc: warn_unused_result */
+    if (mkdir(".data", 0700) != 0 && errno != EEXIST) { perror("mkdir .data"); return 2; }
+    if (mkdir(".data/sessions", 0700) != 0 && errno != EEXIST) { perror("mkdir sessions"); return 2; }
 
     time_t now = time(NULL);
     time_t old = now - 40 * 86400; /* past the 30-day TTL */
