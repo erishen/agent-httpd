@@ -75,7 +75,8 @@ static void rmrf(const char *p) {
 }
 
 int main(void) {
-    char *d = mkdtemp("/tmp/sessprune.XXXXXX");
+    char tmpl[] = "/tmp/sessprune.XXXXXX"; /* mutable: mkdtemp writes into it */
+    char *d = mkdtemp(tmpl);
     if (!d) { perror("mkdtemp"); return 2; }
     chdir(d);
     mkdir(".data", 0700);

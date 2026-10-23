@@ -77,7 +77,7 @@ BUILD_DIR = build
 SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c src/core/router.c \
        src/core/metrics.c src/core/minijson.c src/core/util.c \
        src/http/http.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
-       src/http/http_route.c src/http/static.c src/http/chatio.c \
+       src/http/http_route.c src/http/static.c src/http/chatio.c src/http/http_chunk.c \
        src/cgi/cgi.c src/cgi/fastcgi.c src/cgi/vite.c \
        src/security/auth.c src/security/ratelimit.c src/security/bcrypt.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
