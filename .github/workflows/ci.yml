@@ -1,6 +1,6 @@
 # Build + test gate for agent-httpd.
 #
-# Two jobs, both required:
+# Four jobs, all required:
 #
 #   linux-build  — pays for the "works on my Mac" trap. Apple clang stays
 #                  silent on -Wstringop-truncation / -Wformat-truncation /
@@ -13,10 +13,14 @@
 #                  standalone suites that need no live server: ASan/UBSan
 #                  unit tests and the keep-alive pipelining regression.
 #
-# NOT wired up here on purpose: `make test` (scripts/smoke-test.sh). It
-# spawns a real server over HTTP/CGI/FastCGI and exercises the multi-language
-# CGI zoo (cgi-bin/*.cgi), so it needs go/ruby/rust/java/php + python3 on the
-# host. Run it locally before pushing; CI covers the parts that are portable.
+#   ubuntu-smoke — the full `make test` (scripts/smoke-test.sh): a real
+#                  server over HTTP/CGI/FastCGI. The CGI zoo's go/ruby/rust/
+#                  java entries are dev-built Mach-O binaries (skipped on
+#                  Linux, and smoke-test.sh never requests them — only
+#                  bash / python / optional-node SSR CGIs are asserted), so
+#                  the job needs no toolchain beyond the runner's python3 +
+#                  node; every missing runtime is skipped by the script's
+#                  own `command -v` guards rather than failed.
 
 name: CI
 
@@ -80,3 +84,18 @@ jobs:
 
       - name: make test-oom (body-OOM 500 regression, LD_PRELOAD fault injection)
         run: make test-oom
+
+  ubuntu-smoke:
+    name: Ubuntu / full HTTP-CGI-FastCGI smoke (make test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runtimes (node for the React SSR CGI, python3 for CGI + FastCGI)
+        run: |
+          node --version
+          python3 --version
+          curl --version | head -1
+
+      - name: make test (scripts/smoke-test.sh full chain)
+        run: make test
