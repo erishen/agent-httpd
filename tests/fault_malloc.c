@@ -10,7 +10,11 @@
  * Build (Linux CI / glibc):
  *   cc -shared -fPIC tests/fault_malloc.c -o tests/fault_malloc.so -ldl
  */
+/* Guarded: the Linux build already passes -D_GNU_SOURCE in CFLAGS, and a
+ * bare redefine trips -Werror under glibc's __attribute__((warn...)). */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
