@@ -40,12 +40,12 @@ deploy/.env.local
 .DS_Store
 ._*
 
-# unit-test binaries (built by `make test-unit`)
-tests/t_vite
-tests/t_fcgi
-tests/t_ka
-tests/t_auth
-tests/t_json
+# unit-test binaries (built by `make test-unit` / `make test-oom`)
+# wildcard: every tests/t_* is a compiled binary; the sources are
+# tests/test_*.c (prefix "test_", never matches "t_*"), so this covers
+# t_vite/t_fcgi/t_ka/t_auth/t_json/t_guard/t_resp/t_crlf/t_fuzzhttp/
+# t_sessprune/t_oom without having to list each one by hand.
+tests/t_*
 
 # embedded example binary (built by `make example`)
 examples/embedded
@@ -76,5 +76,3 @@ deploy/cicdkit-project.json
 asm-demo/*
 !asm-demo/*.c
 !asm-demo/Makefile
-tests/t_guard
-tests/t_resp
