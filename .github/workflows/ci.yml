@@ -14,13 +14,13 @@
 #                  unit tests and the keep-alive pipelining regression.
 #
 #   ubuntu-smoke — the full `make test` (scripts/smoke-test.sh): a real
-#                  server over HTTP/CGI/FastCGI. The CGI zoo's go/ruby/rust/
-#                  java entries are dev-built Mach-O binaries (skipped on
-#                  Linux, and smoke-test.sh never requests them — only
-#                  bash / python / optional-node SSR CGIs are asserted), so
-#                  the job needs no toolchain beyond the runner's python3 +
-#                  node; every missing runtime is skipped by the script's
-#                  own `command -v` guards rather than failed.
+#                  server over HTTP/CGI/FastCGI. The CGI zoo's go/rust
+#                  entries are dev-built Mach-O binaries (macOS only; the
+#                  script skips them on any other host), while ruby/java/php
+#                  are shebang scripts that run wherever their interpreter
+#                  exists, so the job needs no toolchain beyond the runner's
+#                  python3 + node; every missing runtime is skipped by the
+#                  script's own `command -v` guards rather than failed.
 
 name: CI
 

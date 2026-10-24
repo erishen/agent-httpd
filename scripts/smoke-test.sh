@@ -549,8 +549,15 @@ check "etag: static 200 carries ETag + Vary" "2" \
 check "etag: validator is W/\"size-mtime\" form" "1" \
     "$(printf '%s' "$ETAG_VAL" | grep -c '^W/"[0-9a-f]*-[0-9a-f]*"$')"
 rm -f "$ETAG_B" # curl only touches -o when body bytes arrive
+etag_304_code=$(curl -s -o "$ETAG_B" -w '%{http_code}' \
+    -H "If-None-Match: $ETAG_VAL" "$ETAG_BASE/index.html")
+# A 304 carries no body: curl only creates the -o file when body bytes
+# arrive, so the size probe must tolerate the file being absent — an
+# unconditional `wc -c <` prints "cannot open ... No such file" on
+# dash/sh (the noise seen in CI logs) even though the check still passes.
+etag_304_sz=$([ -f "$ETAG_B" ] && wc -c < "$ETAG_B" | tr -d ' ')
 check "etag: matching If-None-Match -> 304 without body" "304|" \
-    "$(curl -s -o "$ETAG_B" -w '%{http_code}' -H "If-None-Match: $ETAG_VAL" "$ETAG_BASE/index.html")|$(wc -c < "$ETAG_B" 2>/dev/null | tr -d ' ')"
+    "$etag_304_code|$etag_304_sz"
 check "etag: stale validator -> 200 full body" "200" \
     "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: W/"999-999"' "$ETAG_BASE/index.html")"
 check "etag: '*' matches any current entity" "304" \
@@ -1287,6 +1294,20 @@ check "rate-limit: off by default (30 rapid requests, no -l)" "0" "$main_429"
 for lang in go ruby rust java php; do
     if [ -x "cgi-bin/$lang.cgi" ]; then
         marker=$(lang_get_marker "$lang")
+        # The go/rust zoo entries are dev-built Mach-O binaries that exec
+        # only on the macOS dev box; on Linux (and any other non-Darwin
+        # host) the exec fails with ENOEXEC and the CGI answers 500, which
+        # fails the ubuntu-smoke CI job. Skip them off-macOS — ci.yml has
+        # always documented these as "skipped on Linux". ruby/java/php are
+        # shebang scripts and run wherever their interpreter exists.
+        case "$lang" in
+            go|rust)
+                if [ "$(uname -s)" != "Darwin" ]; then
+                    echo "SKIP: $lang CGI ($marker dev-built Mach-O, not runnable on $(uname -s))"
+                    continue
+                fi
+                ;;
+        esac
         got=$(curl -s "$BASE/cgi-bin/$lang.cgi?name=t&msg=langtest" \
             | grep -c "<h1>$marker</h1>")
         check "$lang CGI GET ($marker)" "1" "$got"
