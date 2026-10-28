@@ -34,6 +34,45 @@
 #define SAMPLE_VALUES 3
 #define SCHEMA_CHARS 8000
 
+/* Tables kept out of the agent's view entirely: not injected into the prompt
+ * schema, not listed by sql_tables, and not queryable through sql_query.
+ *
+ * lost_and_found is where SQLite parks pages recovered from a corrupt file.
+ * It is not part of the data model — it is raw salvage, 2291 rows × 65
+ * untyped columns. Exposing it widens the surface the model can read for no
+ * analytical gain, and its sample values would otherwise be pasted into every
+ * chat turn's system prompt. */
+static const char *k_hidden_tables[] = {"lost_and_found"};
+#define HIDDEN_TABLES (sizeof k_hidden_tables / sizeof k_hidden_tables[0])
+
+static int table_hidden(const char *name) {
+    if (!name) return 0;
+    for (size_t i = 0; i < HIDDEN_TABLES; i++) {
+        if (strcasecmp(name, k_hidden_tables[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Word-boundary scan for a hidden table name in SQL. Deliberately blunt and
+ * conservative: it looks for each name as a whole token anywhere in the
+ * statement, so `SELECT * FROM "lost_and_found"`, `lost_and_found.x` and
+ * `JOIN lost_and_found ON …` are all refused. A false positive only costs one
+ * rejected query; a false negative leaks the table. */
+static int sql_touches_hidden(const char *sql) {
+    if (!sql || !*sql) return 0;
+    for (size_t i = 0; i < HIDDEN_TABLES; i++) {
+        const char *needle = k_hidden_tables[i];
+        size_t nl = strlen(needle);
+        for (const char *p = sql; (p = strcasestr(p, needle)) != NULL; p += nl) {
+            int left_ok = (p == sql) || !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
+            char after = p[nl];
+            int right_ok = !(isalnum((unsigned char)after) || after == '_');
+            if (left_ok && right_ok) return 1;
+        }
+    }
+    return 0;
+}
+
 static char g_db[1024] = {0};
 
 static const char *sqlite_db_path(void) {
@@ -514,6 +553,10 @@ static void tool_sql_query(void *data, const char *args,
         sb_str(result, err);
         return;
     }
+    if (sql_touches_hidden(body)) {
+        sb_str(result, "sql_query: that table is not exposed to the agent");
+        return;
+    }
     sqlite3 *db;
     if (open_readonly(&db) != SQLITE_OK) {
         sb_str(result, "sql_query: cannot open database read-only");
@@ -729,8 +772,10 @@ static void tool_sql_tables(void *data, const char *args,
     int first = 1;
     if (sqlite3_prepare_v2(db, q, -1, &st, NULL) == SQLITE_OK) {
         while (sqlite3_step(st) == SQLITE_ROW) {
+            const char *tn = (const char *)sqlite3_column_text(st, 0);
+            if (table_hidden(tn)) continue;
             if (!first) sb_str(result, ",");
-            sb_json_str(result, (const char *)sqlite3_column_text(st, 0));
+            sb_json_str(result, tn);
             first = 0;
         }
         sqlite3_finalize(st);
@@ -772,6 +817,7 @@ void sqlite_introspect_text(sbuf *out) {
     }
     while (sqlite3_step(st) == SQLITE_ROW && !truncated) {
         const char *tname = (const char *)sqlite3_column_text(st, 0);
+        if (table_hidden(tname)) continue;
         char qt[256];
         snprintf(qt, sizeof qt, "\"%s\"", tname);
 
