@@ -13,6 +13,7 @@
 #include "llm.h"
 #include "minijson.h"
 #include "tools.h"
+#include "skills.h"   /* skills_allowed: 同步期就按白名单裁剪, 不落盘 */
 
 /* Catalog responses are small (a few KB per skill body); cap defensively. */
 #define ROUTER_JSON_MAX (1024 * 1024)
@@ -285,33 +286,48 @@ static RouterSkill *parse_skills(const char *json, int *out) {
  * JSON string value (opening quote included); unescaped once here. The
  * router's list carries a description — we bake it into a token-minimal
  * frontmatter so skills.c (name/description from the --- block) indexes it
- * and the skill's desc survives into the system prompt and skills(). */
-static void materialize_skill(const char *name, const char *desc,
-                              const char *body) {
-    if (!name || !*name || !body || !*body) return;
+ * and the skill's desc survives into the system prompt and skills().
+ *
+ * Returns 1 only when SKILL.md was actually written; 0 means the caller must
+ * not count this skill as synced (bad name, unwritable dir, open failure). */
+static int materialize_skill(const char *name, const char *desc,
+                             const char *body) {
+    if (!name || !*name || !body || !*body) return 0;
     /* name arrives from the router /skills response, NOT from skills.c's own
      * loader, so do not trust the "dir-safe by construction" assumption there.
      * Reject any separator or ".." component to prevent writing outside the
      * skills/ subtree (e.g. "../../etc/cron.d/x"). */
     if (strpbrk(name, "/\\") || strstr(name, "..")) {
         fprintf(stderr, "[router] skill name rejected (path separator): %s\n", name);
-        return;
+        return 0;
     }
     char dir[ROUTER_PATH_MAX];
-    if (snprintf(dir, sizeof dir, "skills/router/%s", name) >= (int)sizeof dir) return;
+    if (snprintf(dir, sizeof dir, "skills/router/%s", name) >= (int)sizeof dir) return 0;
     /* A fresh project may not have skills/ yet; mkdir("skills/router") would
      * then fail with ENOENT and silently drop the whole catalog. Create the
-     * parent first (each level idempotent). */
-    if (mkdir("skills", 0755) != 0 && errno != EEXIST) return;
-    if (mkdir("skills/router", 0755) != 0 && errno != EEXIST) return;
-    if (mkdir(dir, 0755) != 0 && errno != EEXIST) return;
+     * parent first (each level idempotent).
+     * Every failure below is logged: a read-only cwd (e.g. /app owned by root
+     * while the process runs as uid 10001) used to fail here mutely, so the
+     * caller still counted the skill as synced and the catalog came up empty. */
+    if (mkdir("skills", 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[router] cannot create skills/: %s\n", strerror(errno));
+        return 0;
+    }
+    if (mkdir("skills/router", 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[router] cannot create skills/router/: %s\n", strerror(errno));
+        return 0;
+    }
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[router] cannot create %s: %s\n", dir, strerror(errno));
+        return 0;
+    }
 
     char path[ROUTER_PATH_MAX];
-    if (snprintf(path, sizeof path, "%s/SKILL.md", dir) >= (int)sizeof path) return;
+    if (snprintf(path, sizeof path, "%s/SKILL.md", dir) >= (int)sizeof path) return 0;
     FILE *f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "[router] cannot write skill %s: %s\n", path, strerror(errno));
-        return;
+        return 0;
     }
     fprintf(f, "---\nname: %s\n", name);
     if (desc && *desc) {
@@ -334,7 +350,13 @@ static void materialize_skill(const char *name, const char *desc,
     } else {
         fputs(body, f);
     }
-    fclose(f);
+    /* A full disk or quota can surface only at close; report it instead of
+     * claiming a write that never landed. */
+    if (fclose(f) != 0) {
+        fprintf(stderr, "[router] cannot finalize %s: %s\n", path, strerror(errno));
+        return 0;
+    }
+    return 1;
 }
 
 /* Sync the MCP servers the router mounts into .data/mcp-servers-router.json
@@ -452,7 +474,16 @@ static void sync_skills(void) {
     if (!skills) return;
 
     int ok = 0;
+    int skipped = 0;
     for (int i = 0; i < n && skills[i].name; i++) {
+        /* Respect the profile allow-list BEFORE materializing: an unallowed
+         * skill must not land on disk at all. Filtering only at index time
+         * (skills.c) would still leave e.g. post-comment/SKILL.md in the
+         * writable skills/ mount, one env-var mistake away from being read. */
+        if (!skills_allowed(skills[i].name)) {
+            skipped++;
+            continue;
+        }
         char ep[ROUTER_PATH_MAX];
         /* names are alnum/dash only, no URL-encoding needed */
         if (snprintf(ep, sizeof ep, "skills/%s", skills[i].name) >=
@@ -465,23 +496,36 @@ static void sync_skills(void) {
         }
         /* body key */
         const char *bv = jfind_value(body, "body");
+        int wrote = 0;
         if (bv) {
             if (*bv == '"') {
-                materialize_skill(skills[i].name, skills[i].desc, bv);
+                wrote = materialize_skill(skills[i].name, skills[i].desc, bv);
             } else {
                 fprintf(stderr, "[router] skill '%s' body not a string, skip\n",
                         skills[i].name);
             }
+        } else {
+            fprintf(stderr, "[router] skill '%s' has no body field, skip\n",
+                    skills[i].name);
         }
         free(body);
-        ok++;
+        /* Count only skills that actually reached disk: a listing whose
+         * bodies all fail to materialize (read-only cwd, full disk) must not
+         * report success. */
+        if (wrote) ok++;
     }
     for (int i = 0; i < n; i++) {
         free(skills[i].name);
         free(skills[i].desc);
     }
     free(skills);
-    printf("llm-router skills: %d skill(s) synced -> skills/router/\n", ok);
+    if (skipped)
+        printf("llm-router skills: %d not in allow-list, skipped\n", skipped);
+    if (ok + skipped < n)
+        fprintf(stderr, "[router] skills: %d of %d written, %d dropped\n",
+                ok, n, n - ok - skipped);
+    printf("llm-router skills: %d/%d skill(s) synced -> skills/router/\n",
+           ok, n - skipped);
 }
 
 /* ---- router tool proxy -------------------------------------------------

@@ -42,6 +42,12 @@ static int skill_allowed(const char *name) {
     return 0;
 }
 
+/* Public wrapper: lets router.c apply the same allow-list at sync time, so
+ * disallowed skills are never written to disk in the first place. */
+int skills_allowed(const char *name) {
+    return skill_allowed(name);
+}
+
 static void add_root(char roots[][MAX_PATH_SIZE], int *n, const char *path) {
     if (!path || !path[0] || *n >= SKILL_ROOTS_MAX) return;
     /* dedupe */

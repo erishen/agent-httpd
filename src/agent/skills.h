@@ -51,4 +51,13 @@ const char *skills_index_text(void);
  * name is matched against the indexed table, never used as a path). */
 char *skills_read(const char *name);
 
+/* Profile allow-list predicate (HARNESS_SKILLS_ALLOW="a,b"; unset/empty =
+ * allow everything). Exposed so the router sync can drop disallowed skills
+ * BEFORE writing them to disk: with a writable skills/ mount the shared
+ * corpus (code-review / hot-news-post / post-comment / rust-review) would
+ * otherwise land in the container even though the index filters it later.
+ * Keeping them off disk entirely means a cleared allow-list cannot silently
+ * re-expose write-capable skills. */
+int skills_allowed(const char *name);
+
 #endif /* SKILLS_H */
