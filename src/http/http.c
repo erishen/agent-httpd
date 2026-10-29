@@ -30,6 +30,7 @@
 #include "internal.h"
 #include "metrics.h"
 #include "llm.h"
+#include "tools_api.h"
 
 volatile sig_atomic_t g_server_running = 1;
 volatile sig_atomic_t g_reopen_log = 0;
@@ -670,6 +671,11 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
             llm_handle_chat(&request, &response, client_fd);
         } else if (llm_is_chat_route(request.path, request.method)) {
             llm_handle_chat(&request, &response, client_fd);
+        } else if (tools_api_is_route(request.path, request.method)) {
+            /* MCP tool registry over HTTP (src/agent/tools_api.c): lets a
+             * remote peer (another machine's lume node) list and invoke tools
+             * without going through the chat/LLM path. */
+            tools_api_handle(&request, &response);
         } else if (is_react_prefix_path(request.path) &&
                    !is_react_reserved_path(request.path)) {
             if (g_react_sock[0]) {
@@ -729,6 +735,10 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
             process_request(&request, &response, client_fd);
         }
     }
+
+    /* 流式回调由 process_request 内部接管（见 http_route.c 的 framework
+     * 分发处）—— 那里是所有框架路由的统一出口，无论 handle_client 走
+     * 哪条循环/错误分支都会经过。此处不再重复处理。 */
 
     /* Streaming dispatchers (SSE chat) already wrote head + body to the
      * socket; log and close — no response serialization, no keep-alive

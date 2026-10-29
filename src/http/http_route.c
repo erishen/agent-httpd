@@ -14,6 +14,7 @@
 #include "internal.h"
 #include "httpd.h"
 #include "llm.h"
+#include "tools_api.h"
 #include "metrics.h"
 
 int is_fast_request(const HttpRequest *request) {
@@ -27,6 +28,8 @@ int is_fast_request(const HttpRequest *request) {
     }
     if (request->content_length > 0) return 0; /* body needs the blocking pipeline */
     if (llm_is_chat_route(request->path, request->method)) return 0;
+    /* tool registry endpoints are handled by tools_api in http.c */
+    if (tools_api_is_route(request->path, request->method)) return 0;
     if (is_react_prefix_path(request->path) &&
         !is_react_reserved_path(request->path)) return 0;
     if (is_cgi_request(request->path)) return 0;
@@ -456,7 +459,24 @@ int process_request(HttpRequest *request, HttpResponse *response, int client_fd)
      * before the built-in method gate, so a custom route may serve any verb
      * (POST included, without needing the CGI path form). A handler returns
      * 0 = handled; -1 = fall through to the dispatch below. */
-    if (framework_route_dispatch(request, response)) return 0;
+    {
+        int hit = framework_route_dispatch(request, response);
+        if (hit) {
+            /* 流式: 在这里就地接管，不等 handle_client。
+             * 为什么放这里: process_request 是框架路由的统一出口，
+             * 在它内部处理能保证无论外层怎么走（keep-alive 循环、
+             * 错误分支）都能生效。client_fd 由参数传入。 */
+            if (response->stream_fn != NULL) {
+                int streamed = 0;
+                long sent = response->stream_fn(response->stream_data,
+                                                client_fd, request, &streamed);
+                if (sent > 0) response->body_length = (size_t)sent;
+                response->handled = streamed;
+                response->stream_fn = NULL;
+            }
+            return 0;
+        }
+    }
 
     /* Method dispatch (RFC 9110 9): GET/HEAD read resources, POST/PUT/PATCH
      * carry bodies to CGI, DELETE asks a script to remove something, and

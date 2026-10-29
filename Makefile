@@ -82,12 +82,12 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
        src/security/auth.c src/security/ratelimit.c src/security/bcrypt.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
        src/agent/tools.c src/agent/skills.c src/agent/session.c \
-       src/agent/sqlite_tool.c src/agent/db_layer.c
+       src/agent/sqlite_tool.c src/agent/db_layer.c src/agent/tools_api.c
 HDRS = src/httpd.h src/agenthttpd.h src/internal.h \
        src/core/minijson.h src/core/metrics.h src/core/router.h \
        src/http/chatio.h \
        src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
-       src/agent/tools.h src/agent/skills.h src/agent/session.h \
+       src/agent/tools.h src/agent/skills.h src/agent/session.h src/agent/tools_api.h \
        src/agent/sqlite_tool.h src/agent/db_layer.h src/security/bcrypt.h
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 INSTALL_DIR = /usr/local/bin

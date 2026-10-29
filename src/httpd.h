@@ -195,6 +195,22 @@ typedef struct {
      * themselves; handle_client then only logs (body_length = bytes sent)
      * and closes — no response serialization, no keep-alive. */
     int handled;
+    /* Generic streaming hook. When non-NULL, http.c hands client_fd to it
+     * *before* the normal serializer runs, and the callee owns the whole
+     * response (write headers, write body, close). This is what lets an
+     * ordinary route (not just the hard-wired chat endpoint) emit SSE.
+     *
+     * Contract for the callee:
+     *   - writes the complete HTTP response head + body to `fd`
+     *   - MUST set *handled to 1 (the http.c path checks it after return)
+     *   - returns the number of body bytes written (for the access log)
+     * The normal serializer is skipped entirely, so the callee is
+     * responsible for Content-Type / security headers itself.
+     *
+     * Kept as a plain function pointer + opaque data so httpd.h needs no
+     * knowledge of the DSL layer that installs it. */
+    long (*stream_fn)(void *data, int fd, const HttpRequest *req, int *handled);
+    void *stream_data;
 } HttpResponse;
 
 /* Basic Auth (-a <htpasswd-file>, -r <realm>). Empty g_auth_file disables
