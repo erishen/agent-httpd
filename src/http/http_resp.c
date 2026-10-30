@@ -199,7 +199,8 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
         p += snprintf(p, end - p + 1, "X-Frame-Options: DENY\r\n");
     }
     if (!has_extra_header(response->extra_headers, "Referrer-Policy")) {
-        p += snprintf(p, end - p + 1, "Referrer-Policy: no-referrer\r\n");
+        p += snprintf(p, end - p + 1,
+                      "Referrer-Policy: strict-origin-when-cross-origin\r\n");
     }
     /* Content-Security-Policy: lock to same-origin, block framing, plugins
      * and inline base URIs. A Vite-built single-page app loads its own

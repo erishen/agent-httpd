@@ -59,7 +59,7 @@ int main(void) {
                "default X-Frame-Options DENY", buf, n);
         expect(strstr(buf, "X-Content-Type-Options: nosniff\r\n") != NULL,
                "default nosniff", buf, n);
-        expect(strstr(buf, "Referrer-Policy: no-referrer\r\n") != NULL,
+        expect(strstr(buf, "Referrer-Policy: strict-origin-when-cross-origin\r\n") != NULL,
                "default Referrer-Policy", buf, n);
         printf("case1 default security block: ok\n");
     }
