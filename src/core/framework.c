@@ -101,7 +101,7 @@ char g_log_path[MAX_PATH_SIZE];
  * route {} through this table, so it must not be the smaller half of the
  * pair: a 35-route server.lume died at registration #33 with "failed to
  * register route GET /api/texts/:name" while the VM side happily kept 128. */
-#define FRAMEWORK_ROUTES_MAX 128
+#define FRAMEWORK_ROUTES_MAX 256
 
 typedef struct {
     char method[16];
