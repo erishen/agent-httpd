@@ -212,7 +212,12 @@ int framework_route_dispatch(HttpRequest *request, HttpResponse *response) {
     for (int pass = 0; pass < 3; pass++) {
         for (int i = 0; i < g_route_count; i++) {
             const FrameworkRoute *r = &g_routes[i];
-            if (strcmp(r->method, "*") != 0 && strcmp(r->method, request->method) != 0) {
+            /* HEAD falls through to GET routes (RFC 9110 9.3.2): the handler
+             * runs, build_response drops the body but keeps Content-Length. */
+            if (strcmp(r->method, "*") != 0 &&
+                strcmp(r->method, request->method) != 0 &&
+                !(strcmp(request->method, "HEAD") == 0 &&
+                  strcmp(r->method, "GET") == 0)) {
                 continue;
             }
             if (route_kind(r->path) != pass) continue;
