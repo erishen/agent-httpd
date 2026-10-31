@@ -656,6 +656,33 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     printf("CGI bin: %s\n", g_cgi_bin_real);
     printf("Log file: %s\n", g_log_path);
 
+    /* ---- fork 前预热出站 TLS ----
+     *
+     * macOS 上 libobjc 有 fork 闸门: 父进程若在别处初始化过 Objective-C
+     * 运行时, 子进程再碰它会直接 abort
+     *   "+[NSString initialize] may have been in progress in another thread
+     *    when fork() was called ... Crashing instead."
+     * OpenSSL 首次建 SSL_CTX / 读系统 CA 时会走到 CFNetwork/Security 那条链,
+     * 于是"在 worker 里首次发起 HTTPS 出站"就正好踩中: 连接被掐断,
+     * 而且只在**第一次** HTTPS 时出现(纯 HTTP 不受影响), 极难排查。
+     *
+     * 解法: 在 fork 出 worker 之前, 由 master 单线程阶段把 CTX 建好。
+     * 子进程继承一份已初始化的配置, 不再触发惰性初始化。
+     *
+     * 用弱符号是因为本库不依赖 lume 的 lang 实现(独立构建时没有这个符号),
+     * 符号存在则调用, 不存在就跳过 —— 不该为了一个预热把两层硬绑在一起。 */
+    {
+        extern int lume_http_warmup(void) __attribute__((weak));
+        if (lume_http_warmup) {
+            int wr = lume_http_warmup();
+            printf("TLS warmup: %s\n", wr == 0 ? "ok" : (wr == 1 ? "no libssl" : "failed"));
+            if (wr != 0 && wr != 1) {
+                fprintf(stderr, "warning: TLS warmup failed (https egress may "
+                                "break under prefork on macOS)\n");
+            }
+        }
+    }
+
     int workers = c.workers;
     int pool_mode = 0;
     if (workers > 0 && start_worker_pool(workers, server_fd) < 0) {
