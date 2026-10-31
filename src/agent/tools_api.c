@@ -18,6 +18,15 @@
  *     the first costs one round-trip to the MCP child, not a full spawn.
  *   - Bodies are capped by the existing request-body limit; the result is
  *     capped at MCP_FINAL_MAX by mcp_call itself.
+ *   - SECURITY RED LINE: /react/api/tools/call executes arbitrary registered
+ *     MCP tools and MUST NEVER be listed in AUTH_PUBLIC_PATHS. The central
+ *     gate (http.c) already requires a session or Basic Auth unless the path
+ *     is public; if an operator mistakenly adds this path there, the handler
+ *     refuses the call fail-closed (see the guard below) so a misconfig can't
+ *     silently expose tool execution. Only the read-only GET listing above is
+ *     safe to expose. (No session role concept exists — sessions resolve to a
+ *     username only — so the gate is "authenticated", not "admin-only"; that
+ *     is intentional, since authenticated peer nodes are the callers.)
  */
 
 #include "tools_api.h"
@@ -119,6 +128,19 @@ int tools_api_handle(const HttpRequest *request, HttpResponse *response) {
     }
 
     /* ---- call ---- */
+    /* Defense-in-depth: the call path executes arbitrary registered MCP tools
+     * and must never be reachable without authentication. The central gate
+     * (http.c) skips auth when the path is listed in AUTH_PUBLIC_PATHS; if an
+     * operator adds this path there by mistake, refuse here rather than
+     * exposing tool execution to the world (fail-closed). The read-only GET
+     * listing above is the only part safe to expose. */
+    if (is_public_path(request->path)) {
+        reply_json(response, 403,
+                   "{\"ok\":false,\"error\":\"tool execution is not available on a public path\"}",
+                   "Forbidden");
+        return 1;
+    }
+
     if (!origin_ok(request)) {
         reply_json(response, 403, "{\"ok\":false,\"error\":\"cross-origin request rejected\"}",
                    "Forbidden");
