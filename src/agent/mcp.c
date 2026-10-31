@@ -209,6 +209,25 @@ static void mcpproc_close(McpProc *p) {
     p->from_child[0] = -1;
 }
 
+/* 把 fd 标成 exec 时自动关闭。
+ *
+ * 为什么需要: MCP 是**长连接** —— to_child[1] / from_child[0] 从 spawn 一直
+ * 持有到进程结束。而 agent-httpd 调 LLM 用的是 fork + execlp("curl")(见
+ * agent.c), 子进程只关了自己那对管道, 这些长连接 fd 会**原样继承**给 curl。
+ *
+ * 后果是一类很难看出来的死锁: curl 退出前, MCP 管道的写端在子进程里还开着,
+ * 父进程 read() 等不到 EOF, 于是卡满 MCP_CALL_TIMEOUT(900s)。表现是"一问
+ * 需要跨节点查数据的问题就永远不返回", 而不用工具的问题立刻就好。
+ *
+ * 实测(2026-10-30): curl 子进程持有 16 个 PIPE fd(本应 3 个 stdio);
+ * 用 C 复现对照 —— 不设 CLOEXEC 时子进程继承 12 个, 设了则 0 个。
+ *
+ * 用 fcntl 而不是 pipe2: macOS 没有 pipe2(O_CLOEXEC), 而本项目要跨平台。 */
+static void set_cloexec(int fd) {
+    int fl = fcntl(fd, F_GETFD);
+    if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+}
+
 static int mcpproc_spawn(const McpServerCfg *s, McpProc *p) {
     int in[2], out[2];
     if (pipe(in) < 0 || pipe(out) < 0) return -1;
@@ -242,6 +261,10 @@ static int mcpproc_spawn(const McpServerCfg *s, McpProc *p) {
     p->to_child[1] = in[1];
     p->from_child[0] = out[0];
     p->from_child[1] = -1;
+    /* 这两个 fd 会活到进程结束, 必须标 CLOEXEC —— 否则每次 fork+exec
+     * (调 LLM 的 curl、格式化用的 jq) 都会把它们复制进子进程, 见上面注释。 */
+    set_cloexec(p->to_child[1]);
+    set_cloexec(p->from_child[0]);
     return 0;
 }
 
@@ -521,6 +544,11 @@ static int mcp_tools_call_raw(const McpServerCfg *s, const char *tool,
 static void jq_pretty_print(const char *json, sbuf *out) {
     int in_pipe[2], out_pipe[2];
     if (pipe(in_pipe) < 0 || pipe(out_pipe) < 0) return;
+    /* 这对管道是短命的(用完即关), 但它们本身也会被 jq 的 exec 继承 ——
+     * 同样的死锁风险: jq 的 stdin 写端在它自己进程里开着, 父进程读到的是
+     * 一个永不到 EOF 的管道。所以同样标 CLOEXEC(dup2 之后 fd 0/1/2 不受影响)。 */
+    set_cloexec(in_pipe[0]); set_cloexec(in_pipe[1]);
+    set_cloexec(out_pipe[0]); set_cloexec(out_pipe[1]);
     pid_t pid = fork();
     if (pid < 0) {
         close(in_pipe[0]); close(in_pipe[1]);

@@ -21,6 +21,7 @@
 #include <time.h>
 #include <signal.h>
 #include <poll.h>
+#include <fcntl.h>   /* fcntl / FD_CLOEXEC: 见 agent_init 的令牌管道 */
 #include <sys/wait.h>
 
 #include "internal.h"
@@ -81,8 +82,18 @@ void agent_init(void) {
         perror("agent_init: pipe");
         return; /* runs uncapped */
     }
+    /* 这对管道活到进程结束, 且会被每次 fork+exec(curl) 继承 —— 与 MCP 管道
+     * 同一类问题(见 mcp.c 的 set_cloexec 注释): 子进程里多出来的 fd 会让
+     * 父进程的阻塞读等不到 EOF。这里就地标 CLOEXEC, 不依赖调用方清理。 */
+    for (int i = 0; i < 2; i++) {
+        int fl = fcntl(p[i], F_GETFD);
+        if (fl >= 0) fcntl(p[i], F_SETFD, fl | FD_CLOEXEC);
+    }
     g_tok_r = p[0];
     g_tok_w = p[1];
+    fprintf(stderr, "[diag] token pipe fd %d,%d cloexec=%d,%d\n",
+            p[0], p[1], (fcntl(p[0],F_GETFD) & FD_CLOEXEC) ? 1 : 0,
+            (fcntl(p[1],F_GETFD) & FD_CLOEXEC) ? 1 : 0);
     int seeded = 0;
     for (int i = 0; i < agent_max_concurrent(); i++) {
         char tok = 1;
@@ -427,6 +438,16 @@ int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
         sse_event(out, "error", "pipe failed");
         free(body.p);
         return -1;
+    }
+    /* 这对管道要标 CLOEXEC: fork 后子进程靠 dup2 把它们变成 0/1/2 用,
+     * 但**父进程这侧的副本**若不带 CLOEXEC, 会被子进程 exec 后的 curl
+     * 继承一份。于是父进程从 out_pipe[0] 读 curl 输出时, 写端在 curl 自己
+     * 手里也开着 —— 读到的是"对方还没写完", 而不是 EOF。 */
+    for (int i = 0; i < 2; i++) {
+        int fl = fcntl(in_pipe[i], F_GETFD);
+        if (fl >= 0) fcntl(in_pipe[i], F_SETFD, fl | FD_CLOEXEC);
+        fl = fcntl(out_pipe[i], F_GETFD);
+        if (fl >= 0) fcntl(out_pipe[i], F_SETFD, fl | FD_CLOEXEC);
     }
     pid_t pid = fork();
     if (pid < 0) {

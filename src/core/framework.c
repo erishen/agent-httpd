@@ -21,6 +21,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <fcntl.h>   /* open / O_RDWR */
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -33,6 +34,11 @@
 #include "metrics.h"
 #include "minijson.h"
 #include "router.h"
+
+/* lume 的 TLS 预热钩子(可选)。弱定义在文件末尾, 与 lume 一起链接时由
+ * lang/builtins_http.c 的强定义覆盖。这里前置声明, 否则 -Wimplicit-
+ * function-declaration 会报错(C99 起不允许隐式声明)。 */
+int lume_http_warmup(void);
 #include "session.h"
 #include "skills.h"
 #include "tools.h"
@@ -543,6 +549,35 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     /* Agent chat token semaphore likewise: created here so every worker /
      * forked handler inherits the pipe fds. */
     agent_init();
+    /* ---- 预热出站 TLS, 必须早于**第一个线程** ----
+     *
+     * macOS 的 libobjc 有一道 fork 闸门: 若父进程在 fork 之前已经让别的
+     * 线程碰过 Objective-C 运行时, 子进程再碰就会 abort:
+     *   "+[NSString initialize] may have been in progress in another thread
+     *    when fork() was called ... Crashing instead."
+     * 而 OpenSSL 首次 SSL_CTX_new / set_default_verify_paths 会走到
+     * CFNetwork/Security, 正是这条链。于是"在 worker 里第一次发 HTTPS"
+     * 必崩, 且只在首次出现、纯 HTTP 不受影响 —— 极难定位。
+     *
+     * 位置很关键: 必须放在下面 pthread_create(session_prune_thread) 之**前**。
+     * 放在 fork 之前但线程之后是不够的 —— 那时 fork 安全性已经破坏了。
+     *
+     * 弱符号: 本库不依赖 lume 的 lang 实现。独立构建(只编 agent-httpd 可执行
+     * 文件)时没有这个符号 —— 用"弱定义 + 非弱声明"的写法, 让链接器在两种
+     * 情况下都满意: 定义了弱版本兜底, 若 lume 里提供了强符号则自动覆盖。
+     *
+     * 只用 `extern ... __attribute__((weak))` 声明是不够的: clang 仍会报
+     * "symbol(s) not found"(实测), 因为它对"仅弱声明、无任何定义"不产符号。 */
+    {
+        /* 有弱定义兜底(见文件末尾), 所以直接调用即可, 不需要判空 ——
+         * `if (lume_http_warmup)` 这种函数名当指针用的写法在 C 里是错的。 */
+        int wr = lume_http_warmup();
+        if (wr != 0 && wr != 1) {
+            fprintf(stderr, "warning: TLS warmup failed (https egress may "
+                            "break under prefork on macOS)\n");
+        }
+    }
+
     /* Startup hygiene: drop session transcripts older than 30 days, then
      * keep doing it daily for the lifetime of the process. */
     session_prune_old(session_ttl_days());
@@ -737,5 +772,39 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     }
     if (g_log_fp) fclose(g_log_fp);
 
+    return 0;
+}
+
+/* 兜底: 独立构建 agent-httpd 时用它; 与 lume 一起链接时由
+ * lang/builtins_http.c 的强定义覆盖。
+ *
+ * **必须真的做点事**, 不能只 return 1。实测踩过: 独立构建的 agent-httpd
+ * (比如给 scanner 配的那个) 里 lume_http_warmup 是空实现, 于是预热没发生,
+ * 第一次 TLS 出站在 worker 里触发, 撞上 macOS 的 libobjc fork 闸门:
+ *   "+[NSString initialize] may have been in progress in another thread
+ *    when fork() was called ... Crashing instead."
+ * 表现为 agent 进程直接挂掉, 对端连接被拒。
+ *
+ * 这里的做法: fork 一个子进程跑一次 curl(与 agent-httpd 调 LLM 的方式一致),
+ * 让 curl 自己去完成 TLS 初始化。父进程 wait 到它结束 —— 这一步发生在
+ * pthread_create 之前(调用点在 agenthttpd_run 里), 所以 fork 还是安全的。 */
+__attribute__((weak)) int lume_http_warmup(void) {
+    pid_t pid = fork();
+    if (pid < 0) return 1;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > 2) close(devnull);
+        }
+        /* 3 秒足够握手; 没有外网时也会很快失败 —— 预热的目标是"别在 worker
+         * 里首次初始化", 不是"必须连通"。 */
+        execlp("curl", "curl", "-sS", "--max-time", "3",
+               "-o", "/dev/null", "https://example.com", (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    (void)waitpid(pid, &status, 0);
     return 0;
 }

@@ -219,3 +219,182 @@ Confirm the file-level contract:
       equivalent to session expiry (not data corruption). Covered by
       `tests/test_session_prune.c` (stale pruned / fresh kept / tmp kept /
       memory kept / non-JSON kept) in `make test-unit`.
+
+## P2 — 2026-10-30 security review (fastapi-web parity)
+
+Filed 2026-10-30 while scoping a multi-user service on this server. The
+baseline is good — realpath-checked static paths with a boundary test
+(`static.c:44`), force-close on 413 so no keep-alive desync (`http.c`),
+request deadlines + 431, `/dev/urandom` session tokens that fail closed
+(`auth.c:538`), weak htpasswd hashes rejected unless
+`AGENTHTTPD_ALLOW_WEAK_AUTH=1`, 0600 session file with flock, CR/LF-free
+validated response headers, and a shared-memory token bucket that only
+trusts `X-Forwarded-For` from a configured CIDR. What is missing is
+everything that turns a single-site gate into an application security
+model. Ordered by risk.
+
+### CSRF: `req.origin` is parsed and never read; the one same-origin check can be bypassed
+
+`HttpRequest.origin` is documented as the "CSRF / cross-origin guard"
+(`src/httpd.h:100`) but **no code reads it** — the two `origin` hits in
+`agent/llm.c` / `agent/tools_api.c` are local variables serving the model
+proxy only. The single real check is `chat_origin_ok()`
+(`agent/llm.c:373`), applied to one route, and it compares the Origin's
+host against `request->host`:
+
+```c
+const char *o = strstr(origin, "://");
+return strcmp(o ? o + 3 : origin, request->host) == 0;
+```
+
+With no Host allowlist anywhere in the tree, a browser pointed at a
+hostname that resolves to this server sends `Origin: https://evil.com`
+**and** `Host: evil.com`, so the comparison passes (DNS-rebinding shape).
+Everything else relies on `SameSite=Lax`, which is decent but leaves
+same-site-subdomain XSS, GET-shaped state changes and direct-to-origin
+exposure uncovered.
+
+- [ ] Add `ALLOWED_HOSTS` (CSV, default = the value of `SERVER_NAME` or
+      empty = accept any but refuse to trust it for origin checks) and
+      reject foreign Host on every request — this also closes Host-header
+      poisoning for any absolute URL the app builds.
+- [ ] Add a framework-level `request_is_same_origin(req)` used by the
+      method gate for state-changing verbs: compare `Sec-Fetch-Site`
+      (`same-origin`/`none`) when present, else `Origin` host against the
+      **allowlisted** Host, else fall back to `SameSite=Lax` semantics.
+      Must be a framework default, not a per-route call — a forgotten
+      `guard()` in one handler is exactly the hole this item exists to
+      prevent.
+- [ ] Delete or actually use `HttpRequest.origin`; a dead field whose
+      comment promises a guard is worse than no field.
+
+### Session cookie has no `Secure`
+
+`auth_session_cookie_line()` emits `Path=/; HttpOnly; SameSite=Lax;
+Max-Age=N` (`src/security/auth.c:533`) — no `Secure`, so behind an nginx
+TLS terminator the cookie still rides plaintext if anything reaches the
+origin on :80.
+
+- [ ] Add `AUTH_COOKIE_SECURE=1` (emit `Secure`) and document that it
+      requires a 80→443 redirect; default off only because local http
+      development must be able to log in.
+
+### `/login` has no failure accounting; rate limiting is off by default
+
+`int g_rate_limit_rps = 0; /* disabled by default */`
+(`src/security/ratelimit.c:42`) and `handle_login` does no attempt
+counting, delay, or 429 — so an out-of-the-box deployment permits
+unlimited password guessing, and the per-IP bucket does not distinguish
+success from failure even when enabled.
+
+- [ ] Per-`(user, ip)` failure counter with exponential backoff and a
+      short lockout, persisted (the fork workers share no memory — see
+      the state rule in `docs/LUME.md`), or an in-shm counter if the
+      reset-on-restart tradeoff is acceptable for the deployment.
+- [ ] Make a non-zero `rate_limit_rps` the documented default in the
+      server example/`README.zh.md`, and emit a startup warning when auth
+      is enabled with rate limiting disabled.
+
+### `req` exposes no authenticated identity
+
+The gate answers yes/no. `auth_session_verify()` can return the username
+but nothing plumbs it into the DSL `req` map, so any per-user business
+logic must re-parse the cookie — and cannot, because the HMAC/session
+lookup lives in C. FastAPI gives `request.user` for free; this server
+gives a boolean.
+
+- [ ] Carry the verified identity into `request_to_value()` as
+      `req.user` (string, empty when signed out) plus `req.roles` (list,
+      sourced from a group field in the htpasswd line or a separate
+      groups file). Must reuse the identity the gate already resolved —
+      never re-derive it in the handler.
+- [ ] Define the authorization contract for row-level checks: the DSL
+      side gets `req.user`, and every `sql_*` query is the handler's
+      responsibility to scope by it. Document it next to the "server
+      state" rule so it is not re-litigated per project.
+
+### Session token compare is not constant-time
+
+`strcmp(tok, toks[i])` in the session lookup (`src/security/auth.c:816`)
+while `timingsafe_eq` already exists in `bcrypt.c:308`. Not practically
+exploitable over a network, but free to fix and it is the kind of thing a
+reviewer flags.
+
+- [ ] Swap to `timingsafe_eq` and add a note that length is
+      fixed (32 hex) so the compare is total.
+
+### No audit trail beyond `access_log`
+
+`access_log` + `/metrics` answer "who hit which URL with which status".
+There is no record of login success/failure, no operator action log, and
+nothing that survives log rotation for forensics. The FastAPI reference
+project has a dedicated audit-log table; here it must be built in the app
+(no builtin), which needs a documented recipe rather than a framework
+feature.
+
+- [ ] Document the pattern (an `audit_log` table written through
+      `sql_write` inside the handler, with the actor taken from
+      `req.user`) and ship it in the example server so projects copy a
+      correct one.
+
+### `MAX_REQUEST_SIZE` is a hard 64 KiB and blocks the upload use case
+
+`src/httpd.h:8` + the force-close 413 path. Any multipart support is
+moot until the body buffer stops being a single stack buffer, so this is
+cross-filed with `lume-core/TODO.md` P13 and lume host `TODO.md` P13.
+
+- [ ] Nothing to do here until the streamed-body redesign is scheduled;
+      keep serving downloads (which work today) and reject uploads at the
+      route level with a clear error instead of a bare 413.
+
+### MySQL/PG backends are implemented but invisible to the header comment and CI
+
+`src/agent/db_layer.h` still describes MySQL as "插槽 … 当前返回未实现"
+while `db_layer.c:355` is a full libmysqlclient prepared-statement
+backend with a cap-8 connection pool. No CI job builds with
+`WITH_MYSQL=1` or `WITH_PG=1`, so the path a MySQL project depends on is
+uncompiled by default.
+
+- [ ] Fix the header comment (it is the first thing a project reads when
+      choosing a backend).
+- [ ] Add a `ubuntu-mysql` (or extend `ubuntu-fuzz`) CI leg that compiles
+      and smoke-runs both optional backends; a SQLite-only CI makes a
+      broken `WITH_MYSQL` build invisible until a deployment hits it.
+
+## P3 — 2026-10-30 React SSR / nsbp-lume dependency puzzle (host-framework read-across)
+
+Filed 2026-10-30 from the same checkout audit that produced
+`lume-core/TODO.md` P14 and lume host `TODO.md` P13. agent-httpd's own
+TODO is mostly unchanged by this — it is a C HTTP server, not a React SSR
+host — but two items deserve an explicit cross-reference so the next review
+does not treat the React SSR projects as if they were agent-httpd gaps.
+
+### Scope boundary
+
+- **agent-httpd is not the React SSR host here.** The two real React SSR
+  projects in this checkout (`personal/personal-site/nsbp` and
+  `personal/personal-site/nsbp-lume`) run on Node, not on agent-httpd.
+  Their SSR dependency puzzle (React 19 `react-dom/server` ESM-only entry,
+  esbuild polyfill shape, webpack bypass, node-on-windows footprint) is a
+  lume-core / lume-host / project-local concern. Do **not** copy it into
+  agent-httpd as if the C server were responsible for `renderToPipeableStream`.
+
+### Items that genuinely touch this tree
+
+- [ ] Keep `src/agent/db_layer.h` honest (done item above) — that is the one
+  agent-httpd surface a future lume-hosted multi-user project (FastAPI
+  parity, nsbp-style user site) would rely on for MySQL/PG. It is already
+  filed under P2; keep it there, do not duplicate it under P3.
+- [ ] Do **not** add agent-httpd items for "make React SSR build on
+  agent-httpd" — that is the wrong server for the React SSR stack in this
+  checkout. If a future project genuinely needs agent-httpd to serve a React
+  SSR site as a static/SSR proxy, file that as a concrete project need,
+  not as a lume-core TODO mirror.
+
+### Read-across only
+
+- [ ] Link from this TODO to `lume-core/TODO.md` P14 and lume host
+  `TODO.md` P13 for the React SSR dependency puzzle, so an agent-httpd
+  reviewer does not waste time re-deriving the nsbp / nsbp-lume React SSR
+  story in the C tree. The actual itemized TODO lives in lume-core P14 and
+  lume host P13.
