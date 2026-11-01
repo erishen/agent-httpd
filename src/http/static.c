@@ -281,7 +281,10 @@ int parse_range(const char *header, off_t size, off_t *start, off_t *len) {
         return *len > 0;
     }
 
-    char *dash = strchr(spec, '-');
+    /* GCC 15 propagates constness through strchr: with a const source the
+     * result is const-qualified, so -Werror=discarded-qualifiers rejects
+     * char * here (v0.12.1's ubuntu-26.04 runner rolled GCC 13 -> 15). */
+    const char *dash = strchr(spec, '-');
     if (!dash) return 0;
     char *end = NULL;
     long long s = strtoll(spec, &end, 10);
