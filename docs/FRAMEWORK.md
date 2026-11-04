@@ -39,6 +39,14 @@ PSE 编排的 Agent 服务端，这在 C 语言生态里没有对标物。所以
 3. **fast path 与 slow path 都汇入 `process_request`**：自定义 GET 路由会跑在
    master 事件循环（进程内），带 body 的 POST 跑在 fork 出的 worker 里——
    这决定了"handler 必须无状态"的契约。
+4. **身份与授权契约（req.user 是唯一 actor）**：门在分派前已解析身份
+   （Basic 校验 → `auth_session_verify` 回退），handler **不得**再解析
+   cookie / Authorization —— `req.user` 就是权威身份（字符串，未登录为空串）。
+   行级授权只认 `req.user`：每个 `sql_*` 查询都必须按它 scope
+   （`WHERE owner = ?` 或 JOIN 权限表），缺省拒绝，不许"全表读出 + handler
+   里过滤"。审计配方：建 `audit_log(ts, actor, event, detail)` 表，handler
+   内 `sql_write` 追加，`actor` 取 `req.user`，成功与失败事件都记 —— 完整
+   示例见 `lume/examples/sqlite-write.lume` 的 audit 段。
 
 ## 三、设计决策
 

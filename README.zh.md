@@ -488,6 +488,9 @@ curl -u alice:password123 http://localhost:18080/
   验证认证。
 - **fail-closed 设计**: htpasswd 中格式非法的行被跳过并告警, 全部无效则启动
   失败 —— 配置错误永远倒向"拒绝"而非"放行"; 凭据缺失/格式错/未知用户一律 401。
+- **角色列 (可选)**: 行可带第三列 `user:hash:group1,group2` 声明角色, 经
+  DSL `req.roles` 以列表形式暴露 (见 FRAMEWORK.md「身份与授权契约」);
+  标准两列 htpasswd 文件完全不受影响。角色不参与认证判定, 只作授权依据。
 
 ## 会话 cookie 登录（/login 表单）
 

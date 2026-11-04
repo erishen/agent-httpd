@@ -270,6 +270,10 @@ int auth_session_enabled(void);
  * unexpired token (user_out filled, nulsafe); 0 otherwise. Expired entries
  * are reaped lazily on the way through. */
 int auth_session_verify(const char *cookie_header, char *user_out, size_t out_size);
+/* Roles for a known user: optional 3rd column of the htpasswd line
+ * ("user:hash:g1,g2") as a comma-separated string, "" when unset. Returns 1
+ * if the user exists, 0 otherwise. Exposed to the DSL as req.roles. */
+int auth_user_roles(const char *user, char *out, size_t out_size);
 /* ---- login failure limiter (loginlimit.c) ----
  * Per-(user, ip) consecutive-failure counter with exponential backoff, shared
  * across fork workers via mmap. Guards the /login form against brute force

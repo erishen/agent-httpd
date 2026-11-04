@@ -275,6 +275,29 @@ int main(void) {
     unsetenv("AUTH_SESSION_FILE");
     unlink("/tmp/ah_test_sessions");
 
+    /* ---- req.roles: optional 3rd column (user:hash:g1,g2) ---- */
+    {
+        const char *rprobe = crypt("pw", "$6$rolesalt");
+        char rb[512];
+        /* alice has two groups, bob an empty third column, carol none. */
+        snprintf(rb, sizeof rb, "alice:%s:admin,editor\nbob:%s:\ncarol:%s\n",
+                 rprobe, rprobe, rprobe);
+        write_htpasswd("roles", rb);
+        set_auth_file("roles");
+        CHECK(load_htpasswd(g_auth_file) == 0);
+        char roles[128];
+        CHECK(auth_user_roles("alice", roles, sizeof roles) == 1);
+        CHECK(strcmp(roles, "admin,editor") == 0);
+        CHECK(auth_user_roles("bob", roles, sizeof roles) == 1);
+        CHECK(strcmp(roles, "") == 0);
+        CHECK(auth_user_roles("carol", roles, sizeof roles) == 1);
+        CHECK(strcmp(roles, "") == 0);
+        CHECK(auth_user_roles("nobody", roles, sizeof roles) == 0);
+        /* a 3rd column must not disturb the credential check */
+        make_basic("alice", "pw", hdr, sizeof hdr);
+        CHECK(check_basic_auth(hdr) == 1);
+    }
+
     printf(failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;
 }

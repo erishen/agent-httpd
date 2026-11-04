@@ -125,6 +125,7 @@ static int auth_logout_consume(const char *user) {
 struct htpasswd_entry {
     char user[64];
     char secret[256];
+    char roles[128];    /* optional 3rd column "g1,g2" — comma-separated */
 };
 
 static struct htpasswd_entry g_htpasswd[HTPASSWD_MAX_ENTRIES];
@@ -239,13 +240,28 @@ int load_htpasswd(const char *path) {
         char *colon = strchr(line, ':');
         if (!colon || colon == line ||
             (size_t)(colon - line) >= sizeof(g_htpasswd[0].user) ||
-            strlen(colon + 1) >= sizeof(g_htpasswd[0].secret) ||
             g_htpasswd_count >= HTPASSWD_MAX_ENTRIES) {
             fprintf(stderr, "htpasswd: skipping malformed line in %s\n", path);
             continue;
         }
         *colon = '\0';
-        if (!is_strong_hash(colon + 1) && !weak_allowed) {
+        /* Optional third column (user:hash:group1,group2) carries roles. A
+         * standard htpasswd file has only two columns, so this stays
+         * backward-compatible; roles are informational (exposed as req.roles)
+         * and never affect the credential check. */
+        char *secret = colon + 1;
+        char *roles = NULL;
+        char *r2 = strchr(secret, ':');
+        if (r2) {
+            *r2 = '\0';
+            roles = r2 + 1;
+        }
+        if (strlen(secret) >= sizeof(g_htpasswd[0].secret) ||
+            (roles && strlen(roles) >= sizeof(g_htpasswd[0].roles))) {
+            fprintf(stderr, "htpasswd: skipping malformed line in %s\n", path);
+            continue;
+        }
+        if (!is_strong_hash(secret) && !weak_allowed) {
             fprintf(stderr,
                     "htpasswd: '%s' in %s has a plaintext or weak secret - "
                     "only crypt(3) $5$/$6$ (SHA-2) or bcrypt ($2a$/$2b$/$2y$) "
@@ -256,7 +272,10 @@ int load_htpasswd(const char *path) {
             continue;
         }
         strcpy(g_htpasswd[g_htpasswd_count].user, line);
-        strcpy(g_htpasswd[g_htpasswd_count].secret, colon + 1);
+        strcpy(g_htpasswd[g_htpasswd_count].secret, secret);
+        g_htpasswd[g_htpasswd_count].roles[0] = '\0';
+        if (roles)
+            strcpy(g_htpasswd[g_htpasswd_count].roles, roles);
         g_htpasswd_count++;
     }
     fclose(f);
@@ -630,6 +649,24 @@ static void session_unlock_write(int fd, const char *data) {
 static int htpasswd_has_user(const char *user) {
     for (int i = 0; i < g_htpasswd_count; i++) {
         if (strcmp(user, g_htpasswd[i].user) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Roles for a known user: the optional third column of the htpasswd line
+ * ("user:hash:group1,group2"), copied into out as a comma-separated string
+ * (empty = no groups). Returns 1 when the user exists, 0 otherwise. The
+ * lookup is by plain strcmp — the username is not secret, only the secret
+ * half is (ct_eq there). Reloads the file on mtime change like every other
+ * htpasswd consumer, so online role edits take effect without restart. */
+int auth_user_roles(const char *user, char *out, size_t out_size) {
+    if (!user || !out || out_size == 0) return 0;
+    htpasswd_reload_if_changed();
+    for (int i = 0; i < g_htpasswd_count; i++) {
+        if (strcmp(user, g_htpasswd[i].user) == 0) {
+            snprintf(out, out_size, "%s", g_htpasswd[i].roles);
+            return 1;
+        }
     }
     return 0;
 }

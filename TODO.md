@@ -355,12 +355,25 @@ gives a boolean.
       Basic fallback, per-request not process-global — never re-derived);
       it returned `null` when signed out, which violated the "string,
       empty when signed out" contract, so bridge.c now yields `""`.
-      `req.roles` is **not** done: it needs a group source (htpasswd line
-      field or groups file) that does not exist yet — tracked below.
-- [ ] Define the authorization contract for row-level checks: the DSL
+      `req.roles` (agent-httpd side) done 2026-11-04: htpasswd line gains
+      an optional third column (`user:hash:g1,g2`); `auth_user_roles()`
+      (auth.c) returns it as a comma-separated string. Standard two-column
+      files are untouched; roles never affect the credential check.
+      Covered in tests/test_auth.c. **lume-side wiring (req.roles list in
+      request_to_value) is deferred**: lume's build compiles lang/bridge.c
+      against the vendored agent-httpd submodule (locked at e62c346),
+      which lacks auth_user_roles — wiring it now would break lume's build
+      until the submodule is bumped to a commit containing this API. Bump
+      the submodule after this series is pushed, then land the bridge.c
+      change (split-on-comma list, empty when signed out).
+- [x] Define the authorization contract for row-level checks: the DSL
       side gets `req.user`, and every `sql_*` query is the handler's
       responsibility to scope by it. Document it next to the "server
       state" rule so it is not re-litigated per project.
+      **Done 2026-11-04**: `docs/FRAMEWORK.md` key-constraint 4 — req.user is
+      the only actor (gate-resolved, never re-parsed by the handler),
+      row-level scope must be by req.user (`WHERE owner = ?` / JOIN),
+      deny by default, no read-all-then-filter.
 
 ### Session token compare is not constant-time
 
@@ -386,10 +399,15 @@ project has a dedicated audit-log table; here it must be built in the app
 (no builtin), which needs a documented recipe rather than a framework
 feature.
 
-- [ ] Document the pattern (an `audit_log` table written through
+- [x] Document the pattern (an `audit_log` table written through
       `sql_write` inside the handler, with the actor taken from
       `req.user`) and ship it in the example server so projects copy a
       correct one.
+      **Done 2026-11-04**: recipe shipped in
+      `lume/examples/sqlite-write.lume` — `audit_log(ts, actor, event,
+      detail)` DDL + `audit(actor, event, detail)` helper (all values via
+      `?` binds, actor from req.user) wired into the `/dsl/data` route;
+      contract documented in docs/FRAMEWORK.md key-constraint 4.
 
 ### `MAX_REQUEST_SIZE` is a hard 64 KiB and blocks the upload use case
 
