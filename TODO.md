@@ -359,13 +359,11 @@ gives a boolean.
       an optional third column (`user:hash:g1,g2`); `auth_user_roles()`
       (auth.c) returns it as a comma-separated string. Standard two-column
       files are untouched; roles never affect the credential check.
-      Covered in tests/test_auth.c. **lume-side wiring (req.roles list in
-      request_to_value) is deferred**: lume's build compiles lang/bridge.c
-      against the vendored agent-httpd submodule (locked at e62c346),
-      which lacks auth_user_roles — wiring it now would break lume's build
-      until the submodule is bumped to a commit containing this API. Bump
-      the submodule after this series is pushed, then land the bridge.c
-      change (split-on-comma list, empty when signed out).
+      Covered in tests/test_auth.c. **lume-side wiring done 2026-11-04**:
+      lume's submodule bumped e62c346 → cf2af68 (this series), and
+      `lang/bridge.c` request_to_value now exposes `req.roles` as a list
+      (split on commas, blanks trimmed, empty list when signed out or
+      role-less; builtins_internal.h's list_push used to build it).
 - [x] Define the authorization contract for row-level checks: the DSL
       side gets `req.user`, and every `sql_*` query is the handler's
       responsibility to scope by it. Document it next to the "server
