@@ -98,6 +98,9 @@ typedef struct {
     char user_agent[512];
     char referer[512];
     char origin[256]; /* browser Origin header (CSRF / cross-origin guard) */
+    char sec_fetch_site[16]; /* Sec-Fetch-Site: none/same-site/same-origin/
+                                cross-site (browser's own cross-site verdict;
+                                "" = absent) */
     char accept[512];
     char accept_encoding[256];
     char connection[32];

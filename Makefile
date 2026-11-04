@@ -251,6 +251,9 @@ test-unit: all
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_allowed_hosts.c \
 	    src/core/util.c -o tests/t_allowed_hosts
 	./tests/t_allowed_hosts
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_same_origin.c \
+	    src/core/util.c -o tests/t_same_origin
+	./tests/t_same_origin
 	$(CC) $(CFLAGS) $(SAN_FLAGS) -DLUME_FUZZ_DRIVER tests/fuzz_http.c \
 	    src/http/http_parse.c src/http/http_chunk.c -o tests/t_fuzzhttp
 	./tests/t_fuzzhttp

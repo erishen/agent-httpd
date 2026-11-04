@@ -455,6 +455,25 @@ int process_request(HttpRequest *request, HttpResponse *response, int client_fd)
         return 0;
     }
 
+    /* Same-origin gate (CSRF): every state-changing verb must be same-origin.
+     * A framework default on purpose — it runs before the custom-route
+     * dispatch below, so a handler that forgets its own guard() cannot
+     * reopen the hole. /health, /logout and /login returned above (login
+     * carries its own SameSite=Lax + one-time token protection; logout
+     * exposes no data). Chain inside request_is_same_origin: Sec-Fetch-Site
+     * (browser's own verdict) -> Origin host vs the allowlisted Host ->
+     * SameSite=Lax fallback (curl / server-to-server carry neither header
+     * and stay allowed). 403, not 405: the method is fine, the origin is
+     * not. */
+    if ((strcmp(request->method, "POST") == 0 ||
+         strcmp(request->method, "PUT") == 0 ||
+         strcmp(request->method, "PATCH") == 0 ||
+         strcmp(request->method, "DELETE") == 0) &&
+        !request_is_same_origin(request)) {
+        set_error_response(response, 403, "Forbidden");
+        return -1;
+    }
+
     /* Framework layer: routes registered through agenthttpd_route() run
      * before the built-in method gate, so a custom route may serve any verb
      * (POST included, without needing the CGI path form). A handler returns

@@ -268,15 +268,28 @@ exposure uncovered.
       shapes) inside `make test-unit`. The `SERVER_NAME` default is
       deferred — the server has no such config today; empty remains
       accept-any until the `request_is_same_origin` item lands.
-- [ ] Add a framework-level `request_is_same_origin(req)` used by the
+- [x] Add a framework-level `request_is_same_origin(req)` used by the
       method gate for state-changing verbs: compare `Sec-Fetch-Site`
       (`same-origin`/`none`) when present, else `Origin` host against the
       **allowlisted** Host, else fall back to `SameSite=Lax` semantics.
       Must be a framework default, not a per-route call — a forgotten
       `guard()` in one handler is exactly the hole this item exists to
       prevent.
-- [ ] Delete or actually use `HttpRequest.origin`; a dead field whose
+      **Done 2026-11-04**: `request_is_same_origin()` in util.c; chain =
+      Sec-Fetch-Site (browser's own verdict) → Origin host[:port] vs the
+      allowlisted Host (case/port/trailing-dot tolerant, scheme-default
+      ports equivalent) → SameSite=Lax fallback (curl / server-to-server
+      stay allowed). `process_request` (http_route.c) calls it for every
+      POST/PUT/PATCH/DELETE **before** the custom-route dispatch, so
+      llm.c / tools_api.c can no longer be the only line of defense; their
+      per-route guards now reuse the same verdict (fail-closed repeat).
+      Covered by `tests/test_same_origin.c` (17 shapes) inside
+      `make test-unit`.
+- [x] Delete or actually use `HttpRequest.origin`; a dead field whose
       comment promises a guard is worse than no field.
+      **Done 2026-11-04**: the field was already parsed by http_parse.c and
+      is now read by `request_is_same_origin` (step 2 of the chain); it
+      also gained a companion `sec_fetch_site` field for step 1.
 
 ### Session cookie has no `Secure`
 

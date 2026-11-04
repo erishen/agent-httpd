@@ -56,6 +56,12 @@ extern char g_allowed_hosts[2048];
 /* True when the Host: header value matches the allowlist. Callers
  * short-circuit when g_allowed_hosts[0] == '\0'. Implemented in util.c. */
 int host_is_allowed(const char *host);
+/* Same-origin verdict for the state-changing method gate (CSRF). Chain:
+ * Sec-Fetch-Site (browser's own verdict) -> Origin host[:port] vs the
+ * (allowlisted) request Host -> SameSite=Lax fallback (no browser signal
+ * means a non-browser client). Framework default, called by process_request
+ * for POST/PUT/PATCH/DELETE. Implemented in util.c. */
+int request_is_same_origin(const HttpRequest *request);
 
 /* ---- lifecycle + logging (http.c; driven by main.c) ---- */
 extern volatile sig_atomic_t g_server_running; /* SIGINT/SIGTERM flag */

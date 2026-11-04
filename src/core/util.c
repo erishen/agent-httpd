@@ -265,3 +265,48 @@ int host_is_allowed(const char *host) {
     }
     return 0;
 }
+
+/* Same-origin verdict for the state-changing method gate (CSRF). Chain:
+ *   1. Sec-Fetch-Site (the browser's own cross-site verdict, hardest to
+ *      spoof into a false allow): same-origin / none -> ok; same-site /
+ *      cross-site -> reject.
+ *   2. Origin header: its host[:port] must match the request Host (which,
+ *      when ALLOWED_HOSTS is set, is itself allowlisted). Scheme-default
+ *      ports (an omitted port in Origin) are treated as equivalent to an
+ *      explicit 80/443 in Host; a non-default port in Origin with no port
+ *      in Host is rejected.
+ *   3. Neither signal (curl, server-to-server calls, old browsers, top-level
+ *      navigations): SameSite=Lax semantics -> allow.
+ * A framework default on purpose: process_request calls this for every
+ * POST/PUT/PATCH/DELETE before dispatch, so a forgotten per-handler guard
+ * cannot reopen the hole. */
+int request_is_same_origin(const HttpRequest *req) {
+    if (req->sec_fetch_site[0]) {
+        if (strcmp(req->sec_fetch_site, "same-origin") == 0 ||
+            strcmp(req->sec_fetch_site, "none") == 0)
+            return 1;
+        return 0; /* same-site / cross-site: not same-origin */
+    }
+    if (req->origin[0]) {
+        const char *oh = strstr(req->origin, "://");
+        oh = oh ? oh + 3 : req->origin; /* "null" (sandboxed iframe) lands here */
+        char ohost[256];
+        char hhost[256];
+        const char *oport = NULL;
+        const char *hport = NULL;
+        if (split_host(oh, ohost, sizeof ohost, &oport) != 0) return 0;
+        if (split_host(req->host, hhost, sizeof hhost, &hport) != 0) return 0;
+        if (strcmp(ohost, hhost) != 0) return 0;
+        if (oport) {
+            if (!hport || strcmp(oport, hport) != 0) return 0;
+        } else {
+            /* Origin used its scheme-default port; Host may name it
+             * explicitly (80 for http, 443 for https). Anything else
+             * mismatch. */
+            if (hport && strcmp(hport, "80") != 0 && strcmp(hport, "443") != 0)
+                return 0;
+        }
+        return 1;
+    }
+    return 1; /* no browser signal: SameSite=Lax allows */
+}

@@ -38,15 +38,14 @@
 #include "mcp.h"
 #include "core/minijson.h"
 
-/* Same-origin guard, mirroring llm.c's chat_origin_ok: a browser request
- * carries Origin; a non-browser client (our peer node, smoke tests) may omit
- * it. Only reject when an Origin is present AND does not match Host. */
+/* Same-origin guard. The framework's gate (process_request, http_route.c)
+ * already runs before this handler; this is the fail-closed repeat so a
+ * direct library call or a future entry path cannot skip it. Uses the
+ * framework verdict (Sec-Fetch-Site -> Origin vs Host -> SameSite=Lax
+ * fallback); a non-browser client (our peer node, smoke tests) carries
+ * neither header and stays allowed. */
 static int origin_ok(const HttpRequest *request) {
-    const char *origin = request->origin;
-    if (!origin || !origin[0]) return 1;
-    const char *o = strstr(origin, "://");
-    const char *oh = o ? o + 3 : origin;
-    return strcmp(oh, request->host) == 0;
+    return request_is_same_origin(request);
 }
 
 int tools_api_is_route(const char *path, const char *method) {

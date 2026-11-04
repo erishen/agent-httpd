@@ -88,6 +88,9 @@ static void parse_header_line(const char *line, HttpRequest *request) {
     } else if (strncasecmp(line, "Origin:", 7) == 0) {
         set_str(request->origin, sizeof(request->origin), line + 7);
         trim_whitespace(request->origin);
+    } else if (strncasecmp(line, "Sec-Fetch-Site:", 15) == 0) {
+        set_str(request->sec_fetch_site, sizeof(request->sec_fetch_site), line + 15);
+        trim_whitespace(request->sec_fetch_site);
     } else if (strncasecmp(line, "Accept:", 7) == 0) {
         set_str(request->accept, sizeof(request->accept), line + 7);
         trim_whitespace(request->accept);

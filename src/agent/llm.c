@@ -365,17 +365,15 @@ int llm_is_pse_route(const char *path, const char *method) {
 }
 
 /* M4: CSRF / cross-origin guard. The chat endpoint triggers an LLM call and
- * may write session memory, so a cross-site browser request is abuse. A
- * same-origin browser request carries an Origin equal to this server's Host
- * (nginx preserves Host via `proxy_set_header Host $host`); a cross-site
- * request carries a foreign Origin; requests with no Origin (non-browser
- * clients, our own smoke/test harness) are allowed. */
+ * may write session memory, so a cross-site browser request is abuse. The
+ * framework's same-origin gate (process_request, http_route.c) already runs
+ * before this handler for every POST; the check is repeated here
+ * (fail-closed) with the same verdict so a future non-POST entry path or a
+ * direct library call cannot skip it. `request_is_same_origin` chain:
+ * Sec-Fetch-Site -> Origin vs Host -> SameSite=Lax fallback (non-browser
+ * clients with neither header stay allowed). */
 static int chat_origin_ok(const HttpRequest *request) {
-    const char *origin = request->origin;
-    if (!origin || !origin[0]) return 1; /* no Origin: same-origin / non-browser */
-    const char *o = strstr(origin, "://");
-    const char *oh = o ? o + 3 : origin; /* host[:port] (Origin has no path) */
-    return strcmp(oh, request->host) == 0;
+    return request_is_same_origin(request);
 }
 
 int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
