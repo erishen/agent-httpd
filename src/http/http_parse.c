@@ -131,12 +131,18 @@ static void parse_header_line(const char *line, HttpRequest *request) {
         long cl = strtol(line + 15, NULL, 10);
         if (cl > 0 && cl <= MAX_REQUEST_SIZE) {
             request->content_length = (int)cl;
-        } else if (cl > MAX_REQUEST_SIZE) {
-            /* Declared length can never fit the single request buffer. Signal
-             * oversize (do NOT clamp to 0: that would make the body-read path
-             * treat it as a body-less request and leave the bytes on the
-             * socket — a keep-alive desync / request-smuggling hole). http.c
-             * turns this into a clean 413 + forced close. */
+        } else if (cl > MAX_REQUEST_SIZE && cl <= g_body_spool_bytes) {
+            /* Above the single read buffer but within the body spool cap:
+             * keep the declared length so the body-read path (http.c)
+             * streams it to a temp file (req->body_temp_path) instead of
+             * rejecting. */
+            request->content_length = (int)cl;
+        } else if (cl > g_body_spool_bytes) {
+            /* Declared length exceeds the spool cap too. Signal oversize (do
+             * NOT clamp to 0: that would make the body-read path treat it as
+             * a body-less request and leave the bytes on the socket — a
+             * keep-alive desync / request-smuggling hole). http.c turns this
+             * into a clean 413 + forced close. */
             request->body_too_large = 1;
         } else {
             request->content_length = 0;

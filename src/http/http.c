@@ -307,6 +307,77 @@ static void ws_tunnel(int client_fd, const char *raw, size_t hdr_len) {
     close(client_fd);
 }
 
+/* Stream a Content-Length body that does not fit the single read buffer
+ * (MAX_REQUEST_SIZE) to a temp file under g_body_tmp_dir, exposing the path
+ * as req->body_temp_path (body stays NULL). The bytes already buffered in
+ * `buffer` past body_start are written first, then the rest is received in
+ * bounded chunks with the same select/timeout discipline as the buffered
+ * loop. Returns 0 on success; -2 on deadline expiry (408), -3 on a
+ * vanished/empty socket (400), -1 on any I/O or allocation failure (500).
+ * On failure the temp file is removed and nothing is left behind. */
+static int spool_request_body(HttpRequest *req, int client_fd,
+                              const char *buffer, int total, int body_start,
+                              time_t deadline, int req_to) {
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s/body.XXXXXX", g_body_tmp_dir);
+    int fd = mkstemp(tmp);
+    if (fd < 0) return -1;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+    int have = total - body_start;
+    if (have > 0 &&
+        fwrite(buffer + body_start, 1, (size_t)have, f) != (size_t)have) {
+        fclose(f);
+        unlink(tmp);
+        return -1;
+    }
+    long left = (long)req->content_length - have;
+    while (left > 0) {
+        if (deadline && time(NULL) >= deadline) {
+            fclose(f);
+            unlink(tmp);
+            return -2;
+        }
+        struct timeval tv = {req_to > 0 ? req_to : 300, 0};
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(client_fd, &rfds);
+        if (select(client_fd + 1, &rfds, NULL, NULL, &tv) <= 0) {
+            fclose(f);
+            unlink(tmp);
+            return -2;
+        }
+        char chunk[65536];
+        size_t want = left < (long)sizeof(chunk) ? (size_t)left : sizeof(chunk);
+        int n = recv(client_fd, chunk, want, 0);
+        if (n <= 0) {
+            fclose(f);
+            unlink(tmp);
+            return -3;
+        }
+        if (fwrite(chunk, 1, (size_t)n, f) != (size_t)n) {
+            fclose(f);
+            unlink(tmp);
+            return -1;
+        }
+        left -= n;
+    }
+    if (fclose(f) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    req->body_temp_path = strdup(tmp);
+    if (!req->body_temp_path) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
 void handle_client(int client_fd, const struct sockaddr *client_addr,
                    socklen_t client_addr_len) {
     char buffer[MAX_REQUEST_SIZE];
@@ -584,14 +655,39 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
             int body_start = header_end_len;
             int have = total - body_start;
             if (request.body_too_large) {
-                /* Content-Length exceeded MAX_REQUEST_SIZE. The body can never
-                 * be buffered here, so reject before reading any of it and
+                /* Content-Length exceeded the body spool cap
+                 * (g_body_spool_bytes). The body can never be buffered nor
+                 * spooled here, so reject before reading any of it and
                  * force-close: a keep-alive client would otherwise have its
                  * oversized body parsed as the next request (desync /
                  * smuggling). Mirrors the 413 at the chunked path and the
-                 * "body did not fit" 413 just below. */
+                 * spool-failure 500 just below. */
                 set_error_response(&response, 413, "Request Entity Too Large");
                 keep_alive_force_close = 1;
+            } else if (request.content_length > MAX_REQUEST_SIZE ||
+                       (have < request.content_length &&
+                        request.content_length - have >
+                            (int)sizeof(buffer) - 1 - total)) {
+                /* Body does not fit the single read buffer: stream it to a
+                 * temp file instead of rejecting (the spool cap was already
+                 * enforced at parse time via body_too_large). req->body
+                 * stays NULL and req->body_temp_path names the file the
+                 * handler reads. The declared length is fully consumed off
+                 * the socket, so keep-alive/pipelining state stays exact.
+                 * Chunked bodies keep their own 64 KiB ceiling — the pure
+                 * decoder cannot resume mid-chunk. */
+                int sr = spool_request_body(&request, client_fd, buffer, total,
+                                            body_start, deadline, req_to);
+                if (sr == -2) {
+                    set_error_response(&response, 408, "Request Timeout");
+                    keep_alive_force_close = 1;
+                } else if (sr == -3) {
+                    set_error_response(&response, 400, "Bad Request");
+                    keep_alive_force_close = 1;
+                } else if (sr != 0) {
+                    set_error_response(&response, 500, "Internal Server Error");
+                    keep_alive_force_close = 1;
+                }
             } else if (have < request.content_length) {
                     int avail = (int)sizeof(buffer) - 1 - total;
                     if (request.content_length - have > avail) {
@@ -756,6 +852,11 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
     if (response.handled) {
         log_request(client_ip, &request, response.status_code, response.body_length);
         free(request.body);
+    if (request.body_temp_path) {
+        unlink(request.body_temp_path);
+        free(request.body_temp_path);
+        request.body_temp_path = NULL;
+    }
         close(client_fd);
         return;
     }
@@ -897,6 +998,11 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
         free(response.stream_path);
     }
     free(request.body);
+    if (request.body_temp_path) {
+        unlink(request.body_temp_path);
+        free(request.body_temp_path);
+        request.body_temp_path = NULL;
+    }
 
     served++;
     if (!keep_alive ||

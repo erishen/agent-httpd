@@ -464,6 +464,22 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     g_request_timeout_seconds = env_int("REQUEST_TIMEOUT_SECONDS", g_request_timeout_seconds);
     g_cgi_timeout_seconds = env_int("CGI_TIMEOUT_SECONDS", g_cgi_timeout_seconds);
     g_cgi_body_tmp_threshold = env_int("CGI_BODY_TMP_THRESHOLD", g_cgi_body_tmp_threshold);
+    /* Body spool bytes are not a timeout/rate, so env_int's 86400 ceiling
+     * does not apply: parse explicitly, bounded to 1 GiB (int range). */
+    {
+        const char *bs = getenv("MAX_BODY_SPOOL_BYTES");
+        if (bs && *bs) {
+            char *end = NULL;
+            long v = strtol(bs, &end, 10);
+            if (end != bs && v >= 0 && v <= (1L << 30)) {
+                g_body_spool_bytes = (int)v;
+            }
+        }
+    }
+    {
+        const char *bd = getenv("BODY_SPOOL_DIR");
+        if (bd && bd[0]) set_str(g_body_tmp_dir, sizeof(g_body_tmp_dir), bd);
+    }
     g_rate_limit_rps = c.rate_limit_rps;
     g_rate_limit_rps = env_int("RATE_LIMIT_RPS", g_rate_limit_rps);
     /* Host allowlist: config field wins, else the ALLOWED_HOSTS env (the

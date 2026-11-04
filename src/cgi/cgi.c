@@ -157,6 +157,43 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
                 written += n;
                 left -= n;
             }
+        } else if (request->body_temp_path && request->content_length > 0) {
+            /* Spooled request body: stream it into the CGI's stdin straight
+             * from the temp file (same poll discipline) so a large upload
+             * does not have to fit memory. */
+            FILE *bf = fopen(request->body_temp_path, "rb");
+            if (bf) {
+                long left = request->content_length;
+                int to = get_cgi_timeout();
+                while (left > 0 && to > 0) {
+                    struct timeval tv = {to, 0};
+                    fd_set wfds;
+                    FD_ZERO(&wfds);
+                    FD_SET(in_pipe[1], &wfds);
+                    if (select(in_pipe[1] + 1, NULL, &wfds, NULL, &tv) <= 0) {
+                        break; /* timeout (or EINTR); give up, child is stuck */
+                    }
+                    char chunk[65536];
+                    size_t want = left < (long)sizeof(chunk)
+                                      ? (size_t)left : sizeof(chunk);
+                    size_t got = fread(chunk, 1, want, bf);
+                    if (got == 0) break; /* temp file shorter than declared */
+                    int done = 0;
+                    while (done < (int)got) {
+                        int n = write(in_pipe[1], chunk + done,
+                                      got - (size_t)done);
+                        if (n < 0) {
+                            if (errno == EINTR) continue;
+                            done = (int)got; /* give up on this chunk */
+                            left = 0;
+                            break;
+                        }
+                        done += n;
+                        left -= n;
+                    }
+                }
+                fclose(bf);
+            }
         }
         close(in_pipe[1]);
 

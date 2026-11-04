@@ -24,6 +24,17 @@
 #define REQUEST_TIMEOUT_SECONDS_DEFAULT 30
 #define CGI_TMP_DIR "/tmp"
 
+/* Request-body spooling: a Content-Length body larger than the single
+ * 64 KiB read buffer (MAX_REQUEST_SIZE) but no larger than this cap is
+ * streamed to a temp file and exposed as req->body_temp_path instead of
+ * being rejected; Content-Length above the cap keeps the old 413 +
+ * forced-close behaviour. The chunked path keeps its own 64 KiB ceiling:
+ * the pure decoder (http_chunk.c) returns -2 when the decoded body would
+ * exceed cap and cannot resume mid-chunk, so streaming chunked bodies
+ * would need a decoder change of its own. */
+#define MAX_BODY_SPOOL_BYTES_DEFAULT 8388608
+#define BODY_TMP_DIR "/tmp"
+
 /* Keep-alive limits (RFC 7230 section 6.3): max requests on one connection
  * and idle time waiting for the next pipelined request. */
 #define MAX_KEEPALIVE_REQUESTS 100
@@ -69,6 +80,12 @@ void pool_shutdown(void);
 extern int g_cgi_body_tmp_threshold;
 extern int g_cgi_timeout_seconds;
 extern int g_request_timeout_seconds;
+/* Request-body spool: bodies above MAX_REQUEST_SIZE are written to
+ * g_body_tmp_dir up to g_body_spool_bytes, then exposed as
+ * req->body_temp_path. Overridable via MAX_BODY_SPOOL_BYTES /
+ * BODY_SPOOL_DIR (tests set a small cap to exercise the 413 side). */
+extern int g_body_spool_bytes;
+extern char g_body_tmp_dir[128];
 
 /* Dynamic route captures (":name" path segments). Populated by the
  * framework route matcher (framework.c); route handlers read them (lume
@@ -116,8 +133,15 @@ typedef struct {
     int content_length;
     int chunked;       /* Transfer-Encoding: chunked framing (RFC 9110 8.7) */
     int te_unsupported; /* a request transfer coding we cannot frame */
-    int body_too_large; /* Content-Length exceeded MAX_REQUEST_SIZE (413) */
+    int body_too_large; /* Content-Length exceeded the body spool cap (413) */
     char *body;
+    /* When the body was spooled to a temp file (Content-Length above
+     * MAX_REQUEST_SIZE but within the spool cap): non-NULL path, body stays
+     * NULL and content_length is the declared byte count. The temp file is
+     * removed after the request completes (handle_client). Consumers that
+     * need the bytes (CGI stdin, FastCGI STDIN, lume read_file on the
+     * exposed req.body_temp_path) read from the file. */
+    char *body_temp_path;
     char extra_headers[HTTP_EXTRA_HEADERS_MAX]; /* unknown headers, "Name: value\r\n" lines */
     char path_param_names[HTTP_PATH_PARAMS_MAX][HTTP_PATH_PARAM_NAME_MAX];
     char path_param_values[HTTP_PATH_PARAMS_MAX][HTTP_PATH_PARAM_VALUE_MAX];

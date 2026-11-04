@@ -296,6 +296,27 @@ int forward_to_fcgi(const char *sock_path, const HttpRequest *request,
     if (send_frame(fd, FCGI_PARAMS, 1, NULL, 0) < 0) goto fail; /* end of params */
     if (request->body && request->content_length > 0) {
         if (send_frame(fd, FCGI_STDIN, 1, request->body, (size_t)request->content_length) < 0) goto fail;
+    } else if (request->body_temp_path && request->content_length > 0) {
+        /* Spooled request body: stream it in FCGI_STDIN frames straight from
+         * the temp file so a large upload does not have to fit memory. */
+        FILE *bf = fopen(request->body_temp_path, "rb");
+        if (!bf) goto fail;
+        long left = request->content_length;
+        char fchunk[65536];
+        while (left > 0) {
+            size_t want = left < (long)sizeof(fchunk) ? (size_t)left : sizeof(fchunk);
+            size_t n = fread(fchunk, 1, want, bf);
+            if (n == 0) {
+                fclose(bf);
+                goto fail; /* temp file shorter than the declared length */
+            }
+            if (send_frame(fd, FCGI_STDIN, 1, fchunk, n) < 0) {
+                fclose(bf);
+                goto fail;
+            }
+            left -= (long)n;
+        }
+        fclose(bf);
     }
     if (send_frame(fd, FCGI_STDIN, 1, NULL, 0) < 0) goto fail; /* end of stdin */
 

@@ -37,6 +37,8 @@ const char *sockaddr_to_str(const struct sockaddr *sa, char *buf, size_t n) {
 int g_cgi_body_tmp_threshold = CGI_BODY_TMP_THRESHOLD_DEFAULT;
 int g_cgi_timeout_seconds = CGI_TIMEOUT_SECONDS_DEFAULT;
 int g_request_timeout_seconds = REQUEST_TIMEOUT_SECONDS_DEFAULT;
+int g_body_spool_bytes = MAX_BODY_SPOOL_BYTES_DEFAULT;
+char g_body_tmp_dir[128] = BODY_TMP_DIR;
 
 int env_int(const char *name, int dflt) {
     const char *v = getenv(name);

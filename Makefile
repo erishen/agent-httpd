@@ -312,6 +312,19 @@ test-oom: all
 	$(CC) $(CFLAGS) -I src tests/test_oom_body.c -o tests/t_oom
 	./tests/t_oom
 
+# Body-to-tempfile spool (multipart item (b)): Content-Length bodies above
+# the 64 KiB read buffer are streamed to a temp file within
+# MAX_BODY_SPOOL_BYTES (exposed as req->body_temp_path; fully consumed, so
+# keep-alive stays exact); over the cap keeps the 413 + forced close. The
+# test spawns a real server with a 256 KiB cap and a throwaway spool dir
+# and asserts all three tiers plus teardown cleanup. POSIX-only (mkdtemp,
+# env override): Linux CI job, like test-oom.
+test-spool: all
+	@mkdir -p tests
+	$(CC) $(CFLAGS) -I src tests/test_spool_body.c -o tests/t_spool
+	./tests/t_spool
+
+
 # Session-cookie auth (AUTH_SESSION_FILE): /login minting, gate acceptance,
 # logout deletion, htpasswd-driven revocation, ?back= open-redirect guard,
 # plus a second instance started WITHOUT the env var to prove a Basic-only
