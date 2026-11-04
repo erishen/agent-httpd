@@ -39,7 +39,7 @@ jobs:
     name: Linux / GCC build (Dockerfile c-build stage)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show toolchain
         run: docker version --format 'server {{.Server.Version}}'
@@ -51,7 +51,7 @@ jobs:
     name: macOS / clang build + unit tests
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show toolchain
         run: |
@@ -71,7 +71,7 @@ jobs:
     name: Ubuntu / clang libFuzzer + ASan-LSan suite (parser fuzz, leak leg, body-OOM)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install clang (libFuzzer)
         run: sudo apt-get update && sudo apt-get install -y clang
@@ -89,7 +89,7 @@ jobs:
     name: Ubuntu / full HTTP-CGI-FastCGI smoke (make test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show runtimes (node for the React SSR CGI, python3 for CGI + FastCGI)
         run: |
