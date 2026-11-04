@@ -439,6 +439,7 @@ char g_session_cookie[64] = SESSION_COOKIE_DEFAULT;
 
 static char g_session_file[MAX_PATH_SIZE] = "";
 static long g_session_ttl_days = SESSION_TTL_DEFAULT_DAYS;
+static int g_auth_cookie_secure = 0; /* AUTH_COOKIE_SECURE=1 -> Secure attr */
 static int g_session_inited = 0;
 
 /* Cookie names go straight into a Set-Cookie header, so only RFC 6265 token
@@ -492,6 +493,14 @@ static void session_lazy_init(void) {
         long d = atol(e);
         if (d > 0 && d <= 3650) g_session_ttl_days = d;
     }
+    /* AUTH_COOKIE_SECURE=1 emits the Secure attribute (HTTPS-only cookie).
+     * Default off only because local http development must be able to log
+     * in; deployments behind a TLS terminator with a 80->443 redirect must
+     * set it (README documents the requirement). */
+    e = getenv("AUTH_COOKIE_SECURE");
+    if (e && e[0] && e[0] != '0' && strcasecmp(e, "false") != 0 &&
+        strcasecmp(e, "no") != 0)
+        g_auth_cookie_secure = 1;
 }
 
 /* Sessions are meaningless without a credential table to verify against, so
@@ -521,17 +530,28 @@ int is_login_path(const char *path) {
 int auth_session_cookie_line(const char *token, char *out, size_t out_size) {
     session_lazy_init();
     if (!token || !token[0]) {
-        /* Explicit deletion: Max-Age=0 makes the client drop it immediately. */
-        snprintf(out, out_size, "%s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
-                 g_session_cookie);
+        /* Explicit deletion: Max-Age=0 makes the client drop it immediately.
+         * The attributes must mirror the issue line (a Secure cookie can only
+         * be deleted over HTTPS with the Secure attribute present). */
+        if (g_auth_cookie_secure)
+            snprintf(out, out_size, "%s=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0",
+                     g_session_cookie);
+        else
+            snprintf(out, out_size, "%s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+                     g_session_cookie);
         return 0;
     }
     long max_age = g_session_ttl_days * 86400;
-    /* Secure is left off on purpose: behind an http:// reverse proxy the
-     * cookie would be refused outright and login would silently never work.
-     * SameSite=Lax already stops cross-site submission. */
-    snprintf(out, out_size, "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%ld",
-             g_session_cookie, token, max_age);
+    /* Secure is off by default on purpose: behind an http:// reverse proxy
+     * the cookie would be refused outright and login would silently never
+     * work. SameSite=Lax already stops cross-site submission. AUTH_COOKIE_SECURE=1
+     * emits it — requires HTTPS to the client (80->443 redirect; documented). */
+    if (g_auth_cookie_secure)
+        snprintf(out, out_size, "%s=%s; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=%ld",
+                 g_session_cookie, token, max_age);
+    else
+        snprintf(out, out_size, "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%ld",
+                 g_session_cookie, token, max_age);
     return (int)max_age;
 }
 
@@ -813,7 +833,10 @@ int auth_session_delete(const char *cookie_header) {
         if (sscanf(line, "%32s %127s %31s", tok, u, exp) == 3 && atol(exp) > now) {
             int drop = 0;
             for (int i = 0; i < ntok; i++) {
-                if (strcmp(tok, toks[i]) == 0) { drop = 1; break; }
+                /* constant-time compare, matching the verify path: the token
+                 * is the secret half of the session, so a strcmp timing side
+                 * channel here would leak it one prefix byte at a time. */
+                if (ct_eq(tok, toks[i])) { drop = 1; break; }
             }
             if (drop) {
                 removed = 1;

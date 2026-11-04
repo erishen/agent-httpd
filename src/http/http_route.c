@@ -312,15 +312,31 @@ static void handle_login(HttpRequest *request, HttpResponse *response) {
             render_login_page(response, "Missing username or password.", back);
             return;
         }
+        /* Brute-force guard: per-(user, ip) consecutive-failure counter with
+         * exponential backoff (loginlimit.c, mmap-shared across fork workers).
+         * Checked BEFORE the password compare so a lockout can never be ended
+         * by guessing the password mid-lockout — the lock is on the pair, not
+         * on the attempts. Retry-After carries the remaining lockout. */
+        const char *ip = request->remote_addr[0] ? request->remote_addr : "-";
+        long lock_for = login_limiter_blocked_for(user, ip);
+        if (lock_for > 0) {
+            set_error_response(response, 429, "Too Many Requests");
+            response.retry_after =
+                lock_for > 2147483647L ? 2147483647 : (int)lock_for;
+            return;
+        }
         if (!auth_check_credentials(user, pass)) {
             /* 200 rather than 401: a 401 without WWW-Authenticate is not a
              * useful response here, and returning the form keeps the retry
              * loop visible instead of bouncing through the auth gate. The
              * message is deliberately generic -- no "user not found" -- so a
-             * probe cannot enumerate usernames. */
+             * probe cannot enumerate usernames. The failure is recorded so
+             * the pair backs off before the next attempt. */
+            login_limiter_fail(user, ip);
             render_login_page(response, "Invalid username or password.", back);
             return;
         }
+        login_limiter_success(user, ip);
         char token[64];
         if (!auth_session_create(user, token, sizeof(token))) {
             set_error_response(response, 500, "Internal Server Error");

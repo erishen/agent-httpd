@@ -457,6 +457,10 @@ HMR 与代理行为均由 `make test` 的守卫用例覆盖 (vite 未安装时�
 - **反代场景**: 默认 key 是 TCP 对端地址, 走反代时所有真实客户端会塌缩到代理这一个桶。把 `RATE_LIMIT_TRUSTED_PROXIES` 设为**逗号分隔的代理 IP/CIDR 列表**, `X-Forwarded-For` 最左跳即成为 key——但**仅当对端落在可信列表内**才采纳, 不可信客户端无法伪造自己的桶。条目支持 IPv4 **与** IPv6 (`127.0.0.1,10.0.0.0/8,::1,2001:db8::/32`), v6 可加方括号 (`[::1]`); 非法条目 (地址不合法, 或前缀非数字/越界) 会被**丢弃而非放宽**成"信任所有人"。IPv6 的 XFF 跳与 IPv6 对端用同一套 key 推导 (哈希成 32 位), 两种族各自独立限流。
 - 环境变量 `RATE_LIMIT_RPS` 可覆盖 `-l`。
 - 环境变量 `RATE_LIMIT_TRUSTED_PROXIES` 启用上面的 X-Forwarded-For 处理 (不设 = 不信任任何代理)。
+- **生产建议: 不要用 0**。`-l 0` (默认) 等于完全不限流。开启了认证 (`-a`
+  或会话登录) 而限流为 0 时, 启动会打印一条警告——Basic Auth 的密码猜测
+  只能靠 `/login` 表单的每用户限流挡住, 每次请求都做 crypt() 校验的
+  Basic 通道本身没有流量闸门。
 
 ## Basic Auth 认证
 
@@ -484,6 +488,28 @@ curl -u alice:password123 http://localhost:18080/
   验证认证。
 - **fail-closed 设计**: htpasswd 中格式非法的行被跳过并告警, 全部无效则启动
   失败 —— 配置错误永远倒向"拒绝"而非"放行"; 凭据缺失/格式错/未知用户一律 401。
+
+## 会话 cookie 登录（/login 表单）
+
+`AUTH_SESSION_FILE=<路径>` 打开会话登录: `GET /login` 渲染表单, `POST
+/login` 校验 `username` + `password` 后签发 HttpOnly + SameSite=Lax 的
+会话 cookie (token 16 字节 `/dev/urandom`, 存储文件权限 `0600`)。会话
+必须同时存在 htpasswd 凭据表 (`-a`), 密码只在 POST 时校验一次即丢弃。
+`/logout` 撤销当前会话。
+
+- **AUTH_COOKIE_SECURE=1**: 签发/删除的 cookie 附加 `Secure` 属性, 只走
+  HTTPS。默认关 —— 本地 http 开发必须能登录; 生产必须开启, **并要求
+  80→443 重定向** (TLS 终结在反代时, 反代负责把 http 请求重定向到 https,
+  否则 cookie 永远不会被发送, 登录会"静默失败")。`SameSite=Lax` 已阻止
+  跨站提交, `Secure` 补上的是明文中间人窃听。
+- **登录失败限流 (per-(user, ip))**: 每个 (用户名, 客户端 IP) 连续失败
+  5 次锁定, 锁定期指数退避 (30s 起, 每次再失败翻倍, 15 分钟封顶), 锁定期
+  内 `POST /login` 直接回 `429` + `Retry-After` (剩余秒数), 即使密码恰好
+  正确也拒 —— 锁的是这对 (user, ip), 不是"尝试次数"。计数表在
+  `MAP_SHARED` 匿名共享内存 (与每 IP 限流同模式), fork/worker 池共用同一
+  份锁定; 成功登录清除该对计数; 超过 15 分钟无失败的旧计数自动作废。
+  它挡住的是 `/login` 表单的爆破与密码喷洒——Basic 通道的流量闸门仍是
+  `-l`。
 - **CGI 集成**: 认证通过后, CGI 程序经标准变量 `REMOTE_USER` 拿到登录用户名。
 - 401 响应强制 `Connection: close`, 避免质询后管道内残留请求的歧义。
 

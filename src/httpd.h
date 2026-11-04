@@ -270,6 +270,18 @@ int auth_session_enabled(void);
  * unexpired token (user_out filled, nulsafe); 0 otherwise. Expired entries
  * are reaped lazily on the way through. */
 int auth_session_verify(const char *cookie_header, char *user_out, size_t out_size);
+/* ---- login failure limiter (loginlimit.c) ----
+ * Per-(user, ip) consecutive-failure counter with exponential backoff, shared
+ * across fork workers via mmap. Guards the /login form against brute force
+ * and password spraying; the per-IP token bucket (ratelimit.c) only throttles
+ * request volume and cannot see success vs failure. */
+void login_limiter_init(void);
+/* Seconds until the (user, ip) lockout expires; 0 = not locked. */
+long login_limiter_blocked_for(const char *user, const char *ip);
+/* Record one failed login for (user, ip). */
+void login_limiter_fail(const char *user, const char *ip);
+/* A successful login clears the (user, ip) counter and lockout. */
+void login_limiter_success(const char *user, const char *ip);
 /* Gate-only convenience: true when this Cookie: value carries a valid
  * unexpired session. Ignores the username. */
 int auth_session_valid(const char *cookie_header);

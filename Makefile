@@ -79,7 +79,7 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
        src/http/http.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
        src/http/http_route.c src/http/static.c src/http/chatio.c src/http/http_chunk.c \
        src/cgi/cgi.c src/cgi/fastcgi.c src/cgi/vite.c \
-       src/security/auth.c src/security/ratelimit.c src/security/bcrypt.c \
+       src/security/auth.c src/security/ratelimit.c src/security/loginlimit.c src/security/bcrypt.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
        src/agent/tools.c src/agent/skills.c src/agent/session.c \
        src/agent/sqlite_tool.c src/agent/db_layer.c src/agent/tools_api.c
@@ -254,6 +254,9 @@ test-unit: all
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_same_origin.c \
 	    src/core/util.c -o tests/t_same_origin
 	./tests/t_same_origin
+	$(CC) $(CFLAGS) $(SAN_FLAGS) -pthread tests/test_loginlimit.c \
+	    -o tests/t_loginlimit
+	./tests/t_loginlimit
 	$(CC) $(CFLAGS) $(SAN_FLAGS) -DLUME_FUZZ_DRIVER tests/fuzz_http.c \
 	    src/http/http_parse.c src/http/http_chunk.c -o tests/t_fuzzhttp
 	./tests/t_fuzzhttp

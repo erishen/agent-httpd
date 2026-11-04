@@ -490,6 +490,19 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
             return 1;
         }
     }
+    /* Auth is on (htpasswd, or session cookies via AUTH_SESSION_FILE) but the
+     * per-IP request limiter is disabled: password guessing on /login is then
+     * slowed only by the per-(user,ip) login limiter, and Basic-auth traffic
+     * is not volume-throttled at all. The operator should set a non-zero
+     * -l / RATE_LIMIT_RPS; the README documents this as the recommended
+     * default. */
+    if (g_rate_limit_rps <= 0 &&
+        (c.htpasswd || (getenv("AUTH_SESSION_FILE") != NULL))) {
+        fprintf(stderr,
+                "agenthttpd: warning: auth is enabled but rate limiting is off "
+                "(-l 0 / RATE_LIMIT_RPS unset); password guesses on /login are "
+                "throttled only by the per-(user,ip) login limiter\n");
+    }
     strncpy(g_auth_realm, c.auth_realm, sizeof(g_auth_realm) - 1);
 
     struct sigaction sa;
@@ -554,6 +567,7 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
 
     /* Rate limiter shared memory must exist before any worker is forked. */
     rate_limit_init();
+    login_limiter_init();
     /* Metrics table likewise: master + workers share one mmap. */
     metrics_init();
     /* Agent chat token semaphore likewise: created here so every worker /

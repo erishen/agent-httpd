@@ -298,9 +298,14 @@ Max-Age=N` (`src/security/auth.c:533`) — no `Secure`, so behind an nginx
 TLS terminator the cookie still rides plaintext if anything reaches the
 origin on :80.
 
-- [ ] Add `AUTH_COOKIE_SECURE=1` (emit `Secure`) and document that it
+- [x] Add `AUTH_COOKIE_SECURE=1` (emit `Secure`) and document that it
       requires a 80→443 redirect; default off only because local http
       development must be able to log in.
+      **Done 2026-11-04**: env read in `session_lazy_init()` (same lenient
+      truthiness as the other toggles); both the issue and the deletion
+      branch of `auth_session_cookie_line()` emit `Secure` when set (a
+      Secure cookie can only be deleted with the Secure attribute
+      present). Documented in README.zh.md with the 80→443 requirement.
 
 ### `/login` has no failure accounting; rate limiting is off by default
 
@@ -310,13 +315,27 @@ counting, delay, or 429 — so an out-of-the-box deployment permits
 unlimited password guessing, and the per-IP bucket does not distinguish
 success from failure even when enabled.
 
-- [ ] Per-`(user, ip)` failure counter with exponential backoff and a
+- [x] Per-`(user, ip)` failure counter with exponential backoff and a
       short lockout, persisted (the fork workers share no memory — see
       the state rule in `docs/LUME.md`), or an in-shm counter if the
       reset-on-restart tradeoff is acceptable for the deployment.
-- [ ] Make a non-zero `rate_limit_rps` the documented default in the
+      **Done 2026-11-04**: `loginlimit.c` — (user, ip) consecutive-failure
+      counter in a `MAP_SHARED|MAP_ANON` table (same pattern as
+      ratelimit.c, process-shared mutexes), 5 failures lock for 30s and
+      double per further failure, 15 min cap; stale streaks (no failure in
+      15 min) restart from one; success clears the pair. `handle_login`
+      checks `login_limiter_blocked_for()` BEFORE the password compare
+      (a lockout can never be ended by guessing mid-lockout) and answers
+      429 + Retry-After with the remaining seconds. Reset-on-restart is
+      the accepted tradeoff (documented) — the state rule's persisted
+      alternative remains a stretch goal.
+- [x] Make a non-zero `rate_limit_rps` the documented default in the
       server example/`README.zh.md`, and emit a startup warning when auth
       is enabled with rate limiting disabled.
+      **Done 2026-11-04**: `agenthttpd_run` warns at startup when auth is
+      on (`-a` or `AUTH_SESSION_FILE`) and `-l 0`; README.zh.md's rate
+      limit section now says "production: don't use 0" and explains what
+      the per-(user,ip) limiter does and does not cover.
 
 ### `req` exposes no authenticated identity
 
@@ -326,11 +345,18 @@ logic must re-parse the cookie — and cannot, because the HMAC/session
 lookup lives in C. FastAPI gives `request.user` for free; this server
 gives a boolean.
 
-- [ ] Carry the verified identity into `request_to_value()` as
+- [x] Carry the verified identity into `request_to_value()` as
       `req.user` (string, empty when signed out) plus `req.roles` (list,
       sourced from a group field in the htpasswd line or a separate
       groups file). Must reuse the identity the gate already resolved —
       never re-derive it in the handler.
+      **Done 2026-11-04 (user only)**: lume's `request_to_value()` already
+      exposed `req.user` via `auth_username()` (session cookie first,
+      Basic fallback, per-request not process-global — never re-derived);
+      it returned `null` when signed out, which violated the "string,
+      empty when signed out" contract, so bridge.c now yields `""`.
+      `req.roles` is **not** done: it needs a group source (htpasswd line
+      field or groups file) that does not exist yet — tracked below.
 - [ ] Define the authorization contract for row-level checks: the DSL
       side gets `req.user`, and every `sql_*` query is the handler's
       responsibility to scope by it. Document it next to the "server
@@ -343,8 +369,13 @@ while `timingsafe_eq` already exists in `bcrypt.c:308`. Not practically
 exploitable over a network, but free to fix and it is the kind of thing a
 reviewer flags.
 
-- [ ] Swap to `timingsafe_eq` and add a note that length is
+- [x] Swap to `timingsafe_eq` and add a note that length is
       fixed (32 hex) so the compare is total.
+      **Done 2026-11-04**: the remaining `strcmp(tok, toks[i])` was in
+      `auth_session_delete()` (auth.c:816, the revoke path — the verify
+      path already used `ct_eq`). Swapped to the same static `ct_eq()`
+      the verify path uses (constant-time, and with fixed 32-hex tokens
+      the length channel carries no information).
 
 ### No audit trail beyond `access_log`
 
