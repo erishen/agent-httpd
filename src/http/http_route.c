@@ -321,7 +321,7 @@ static void handle_login(HttpRequest *request, HttpResponse *response) {
         long lock_for = login_limiter_blocked_for(user, ip);
         if (lock_for > 0) {
             set_error_response(response, 429, "Too Many Requests");
-            response.retry_after =
+            response->retry_after =
                 lock_for > 2147483647L ? 2147483647 : (int)lock_for;
             return;
         }
