@@ -469,20 +469,29 @@ does not treat the React SSR projects as if they were agent-httpd gaps.
 
 ### Items that genuinely touch this tree
 
-- [ ] Keep `src/agent/db_layer.h` honest (done item above) — that is the one
+- [x] Keep `src/agent/db_layer.h` honest (done item above) — that is the one
   agent-httpd surface a future lume-hosted multi-user project (FastAPI
   parity, nsbp-style user site) would rely on for MySQL/PG. It is already
   filed under P2; keep it there, do not duplicate it under P3.
-- [ ] Do **not** add agent-httpd items for "make React SSR build on
+  **Done 2026-11-04 with the P2 item itself** (`cf2af68`): the header
+  comment now describes the real libmysqlclient prepared-statement
+  backend and the ubuntu-db CI leg live-smokes both MySQL and PostgreSQL.
+- [x] Do **not** add agent-httpd items for "make React SSR build on
   agent-httpd" — that is the wrong server for the React SSR stack in this
   checkout. If a future project genuinely needs agent-httpd to serve a React
   SSR site as a static/SSR proxy, file that as a concrete project need,
   not as a lume-core TODO mirror.
+  **Done 2026-11-04** — recorded as a decision, not an item. agent-httpd
+  is not the React SSR host; the puzzle lives in lume-core P14 / lume P13
+  (see the read-across link below).
 
 ### Read-across only
 
-- [ ] Link from this TODO to `lume-core/TODO.md` P14 and lume host
+- [x] Link from this TODO to `lume-core/TODO.md` P14 and lume host
   `TODO.md` P13 for the React SSR dependency puzzle, so an agent-httpd
   reviewer does not waste time re-deriving the nsbp / nsbp-lume React SSR
   story in the C tree. The actual itemized TODO lives in lume-core P14 and
   lume host P13.
+  **Done 2026-11-04**: React SSR dependency puzzle →
+  `lume-core/TODO.md` P14; lume-hosted projects / nsbp-lume decision →
+  lume host `TODO.md` P13. This TODO keeps only the one-liner above.
