@@ -30,6 +30,7 @@
  */
 
 #include "tools_api.h"
+#include "internal.h"   /* request_is_same_origin (tools_api.c:48) */
 
 #include <stdio.h>
 #include <string.h>
