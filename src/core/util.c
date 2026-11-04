@@ -33,11 +33,12 @@ const char *sockaddr_to_str(const struct sockaddr *sa, char *buf, size_t n) {
 
 /* Guard rails, overridable via environment for tests (see httpd.h).
  * main() applies -T and the env overrides; the getters below fall back
- * to these values when the env is unset. */
+ * to these values when the env is unset. The request-body spool cap
+ * (g_body_spool_bytes) lives in http_parse.c so that file's standalone
+ * unit test stays self-contained. */
 int g_cgi_body_tmp_threshold = CGI_BODY_TMP_THRESHOLD_DEFAULT;
 int g_cgi_timeout_seconds = CGI_TIMEOUT_SECONDS_DEFAULT;
 int g_request_timeout_seconds = REQUEST_TIMEOUT_SECONDS_DEFAULT;
-int g_body_spool_bytes = MAX_BODY_SPOOL_BYTES_DEFAULT;
 char g_body_tmp_dir[128] = BODY_TMP_DIR;
 
 int env_int(const char *name, int dflt) {

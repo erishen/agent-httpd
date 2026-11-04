@@ -13,6 +13,11 @@
 #include "internal.h"
 #include "httpd.h"
 
+/* Request-body spool cap (see httpd.h). Owned here rather than util.c so the
+ * parser's standalone unit test (tests/test_crlf.c links just this file)
+ * stays self-contained; framework.c overrides it from env at startup. */
+int g_body_spool_bytes = MAX_BODY_SPOOL_BYTES_DEFAULT;
+
 /* Line-ending policy (P12 audit follow-up). RFC 9110/7230 require CRLF; the
  * historical parser tolerated bare-LF and lone-CR terminators, which RFC 7230
  * §3.5 explicitly allows a server to reject. Default: strict CRLF only —
