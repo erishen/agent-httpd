@@ -188,3 +188,80 @@ int path_has_dot_component(const char *path) {
     }
     return 0;
 }
+
+/* Split a Host: header value (or an allowlist entry) into its hostname part
+ * and, when present, the port suffix. The hostname is lowercased, a single
+ * trailing dot (FQDN absolute form) is stripped, and IPv6 brackets are
+ * removed ("[::1]:8080" -> "::1" + port "8080"). *port_out is set to the
+ * port text or NULL. Returns 0 on success, -1 on a malformed value. */
+static int split_host(const char *s, char *host_out, size_t outsz,
+                      const char **port_out) {
+    const char *h = s;
+    const char *hend = NULL;
+    *port_out = NULL;
+    if (s[0] == '[') {
+        const char *br = strchr(s, ']');
+        if (!br) return -1;              /* malformed IPv6 literal */
+        h = s + 1;
+        hend = br;
+        if (br[1] == ':') *port_out = br + 2;
+    } else {
+        const char *colon = strchr(s, ':');
+        if (colon && strchr(colon + 1, ':') == NULL) {
+            /* exactly one ':' -> host:port; a second ':' means a bracketless
+             * IPv6 literal (e.g. "::1"), which is the whole hostname. */
+            hend = colon;
+            *port_out = colon + 1;
+        } else {
+            hend = s + strlen(s);
+        }
+    }
+    size_t n = (size_t)(hend - h);
+    if (n >= outsz) n = outsz - 1;
+    size_t o = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = h[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        host_out[o++] = c;
+    }
+    while (o > 0 && host_out[o - 1] == '.') o--; /* trailing FQDN dot */
+    host_out[o] = '\0';
+    return 0;
+}
+
+/* Host allowlist predicate (ALLOWED_HOSTS, config `allowed_hosts`). Empty
+ * allowlist accepts anything (the caller short-circuits on it anyway);
+ * otherwise the request's Host: header must match an entry. Hostnames
+ * compare case-insensitively after stripping the port and a trailing dot;
+ * an entry that itself carries ":port" matches only that exact host:port,
+ * while a bare-hostname entry accepts any port. Malformed entries and
+ * malformed Host values are rejected — they never widen the allowlist. */
+int host_is_allowed(const char *host) {
+    if (!g_allowed_hosts[0]) return 1;   /* no policy: accept any */
+    if (!host || !host[0]) return 0;     /* policy set, no Host: reject */
+    char hname[256];
+    const char *hport;
+    if (split_host(host, hname, sizeof hname, &hport) != 0) return 0;
+    const char *p = g_allowed_hosts;
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        const char *end = p;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
+        size_t elen = (size_t)(end - start);
+        char ebuf[256];
+        if (elen >= sizeof ebuf) elen = sizeof ebuf - 1;
+        memcpy(ebuf, start, elen);
+        ebuf[elen] = '\0';
+        char ename[256];
+        const char *eport;
+        if (split_host(ebuf, ename, sizeof ename, &eport) != 0) continue;
+        if (strcmp(hname, ename) == 0) {
+            if (eport == NULL) return 1;         /* bare host: any port ok */
+            if (hport != NULL && strcmp(hport, eport) == 0) return 1;
+        }
+    }
+    return 0;
+}

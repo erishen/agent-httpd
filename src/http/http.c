@@ -428,6 +428,16 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
         keep_alive_force_close = 1;
     } else if (parse_request(buffer, &request) < 0) {
         set_error_response(&response, 400, "Bad Request");
+    } else if (g_allowed_hosts[0] && !host_is_allowed(request.host)) {
+        /* Host allowlist (ALLOWED_HOSTS / server{ allowed_hosts }): a request
+         * whose Host: header matches no entry is not for this server. 421
+         * Misdirected Request (RFC 9110 15.5.20) — and it closes Host-header
+         * poisoning: any absolute URL the app builds from request->host now
+         * points at an allowlisted authority. Force-close afterwards: a
+         * rejected authority must not be retried on a reused connection
+         * (DNS-rebinding shape). */
+        set_error_response(&response, 421, "Misdirected Request");
+        keep_alive_force_close = 1;
     } else if (deadline && time(NULL) >= deadline) {
         /* headers arrived, but the overall request window is already spent */
         set_error_response(&response, 408, "Request Timeout");

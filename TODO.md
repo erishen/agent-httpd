@@ -254,10 +254,20 @@ Everything else relies on `SameSite=Lax`, which is decent but leaves
 same-site-subdomain XSS, GET-shaped state changes and direct-to-origin
 exposure uncovered.
 
-- [ ] Add `ALLOWED_HOSTS` (CSV, default = the value of `SERVER_NAME` or
+- [x] Add `ALLOWED_HOSTS` (CSV, default = the value of `SERVER_NAME` or
       empty = accept any but refuse to trust it for origin checks) and
       reject foreign Host on every request — this also closes Host-header
       poisoning for any absolute URL the app builds.
+      **Done 2026-11-04**: config field `allowed_hosts` + `ALLOWED_HOSTS`
+      env (set in `agenthttpd_run` before workers fork); non-empty = every
+      request whose Host: header matches no entry answers 421 Misdirected
+      Request (http.c, before rate-limit/auth) and force-closes the
+      connection. Hostnames compare case-insensitively, trailing FQDN dot
+      and port-tolerant (a ported entry matches only that exact host:port),
+      IPv6-literal aware. Covered by `tests/test_allowed_hosts.c` (22
+      shapes) inside `make test-unit`. The `SERVER_NAME` default is
+      deferred — the server has no such config today; empty remains
+      accept-any until the `request_is_same_origin` item lands.
 - [ ] Add a framework-level `request_is_same_origin(req)` used by the
       method gate for state-changing verbs: compare `Sec-Fetch-Site`
       (`same-origin`/`none`) when present, else `Origin` host against the

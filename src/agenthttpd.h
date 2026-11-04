@@ -63,6 +63,14 @@ typedef struct {
     int spa;                  /* 1 = static 404 (GET + Accept: text/html) falls
                                  back to docroot/index.html — SPA history-mode
                                  routing (React Router etc.) [0] */
+    const char *allowed_hosts; /* Host-header allowlist (CSV, e.g.
+                                  "example.com,api.example.com:8080"); NULL/"" =
+                                  read the ALLOWED_HOSTS env, then accept any
+                                  Host [NULL]. When set, every request whose
+                                  Host: header does not match an entry answers
+                                  421 Misdirected Request — this also closes
+                                  Host-header poisoning for absolute URLs the
+                                  app builds. */
 } agenthttpd_config;
 
 /* ---- registration (call before agenthttpd_run; closed after) ---- */

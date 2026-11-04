@@ -55,6 +55,7 @@ int g_vite_upstream_port = 0;
 char g_react_sock[MAX_PATH_SIZE];
 char g_react_prefix[MAX_PATH_SIZE] = "/react"; /* URL prefix owned by the React relay */
 char g_csp[256]; /* config CSP policy; "" = built-in default (http_resp.c) */
+char g_allowed_hosts[2048]; /* Host allowlist (CSV); "" = accept any Host */
 
 /* Does `path` fall under the React relay prefix (g_react_prefix)? Matches the
  * prefix exactly, or the prefix followed by '/' or '?' (a query keeps the
@@ -465,6 +466,15 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     g_cgi_body_tmp_threshold = env_int("CGI_BODY_TMP_THRESHOLD", g_cgi_body_tmp_threshold);
     g_rate_limit_rps = c.rate_limit_rps;
     g_rate_limit_rps = env_int("RATE_LIMIT_RPS", g_rate_limit_rps);
+    /* Host allowlist: config field wins, else the ALLOWED_HOSTS env (the
+     * server binary's knob; the lume bridge can pass server{ allowed_hosts
+     * = ... } once wired). Empty = accept any Host (historical default). A
+     * malformed entry is ignored at match time, never a startup error. */
+    {
+        const char *ah = c.allowed_hosts;
+        if (!ah || !ah[0]) ah = getenv("ALLOWED_HOSTS");
+        if (ah) set_str(g_allowed_hosts, sizeof(g_allowed_hosts), ah);
+    }
     /* Trusted reverse-proxy subnets for X-Forwarded-For-aware rate limiting.
      * Must be set before the worker pool forks (rate_limit_init + workers
      * inherit the parsed table). Unset = trust nobody. */

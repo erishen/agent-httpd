@@ -47,6 +47,15 @@ extern int g_vite_upstream_port;            /* -v: dev Vite port to proxy /@, /r
 extern char g_react_sock[MAX_PATH_SIZE];    /* -R: resident React backend */
 extern char g_react_prefix[MAX_PATH_SIZE]; /* URL prefix the React relay owns ["/react"] */
 extern char g_csp[256]; /* config CSP policy; "" = built-in default (http_resp.c) */
+/* Host allowlist (CSV; config field or ALLOWED_HOSTS env). "" = accept any
+ * Host (the historical default); non-empty = every request whose Host: header
+ * does not match an entry answers 421 Misdirected Request (http.c), which
+ * also closes Host-header poisoning. Set in agenthttpd_run before workers
+ * fork. */
+extern char g_allowed_hosts[2048];
+/* True when the Host: header value matches the allowlist. Callers
+ * short-circuit when g_allowed_hosts[0] == '\0'. Implemented in util.c. */
+int host_is_allowed(const char *host);
 
 /* ---- lifecycle + logging (http.c; driven by main.c) ---- */
 extern volatile sig_atomic_t g_server_running; /* SIGINT/SIGTERM flag */
