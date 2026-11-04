@@ -5,8 +5,9 @@
  *   - SQLite 后端总是编译(scheme: 空 / 普通路径),零第三方依赖;
  *   - PostgreSQL 后端由 WITH_PG=1 编译并链接 libpq(scheme: postgres:// 或
  *     postgresql://);未编译时对 postgres:// 的调用返回明确错误;
- *   - MySQL 后端为插槽: WITH_MYSQL=1 时编译 stub(当前返回"未实现"错误,
- *     不链接任何库),实现就绪后在同一结构内补齐。
+ *   - MySQL 后端由 WITH_MYSQL=1 编译并链接 libmysqlclient(scheme:
+ *     mysql://;prepared statement + 连接池,与 PG 后端同模式);
+ *     未编译时对 mysql:// 的调用返回明确错误。
  *
  * DSL 层(Lume 的 sql_query / sql_write)经 db_query_json / db_write_exec
  * 进入分派;`dsn` 为 NULL / 空 / 普通文件路径时走 SQLite 默认路径

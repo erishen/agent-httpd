@@ -415,9 +415,16 @@ feature.
 moot until the body buffer stops being a single stack buffer, so this is
 cross-filed with `lume-core/TODO.md` P13 and lume host `TODO.md` P13.
 
-- [ ] Nothing to do here until the streamed-body redesign is scheduled;
+- [x] Nothing to do here until the streamed-body redesign is scheduled;
       keep serving downloads (which work today) and reject uploads at the
       route level with a clear error instead of a bare 413.
+      **Done 2026-11-04 (assessment)**: the clear error already exists —
+      `http_parse.c` flags `body_too_large` and `http.c` answers 413 via
+      `set_error_response` (an HTML error page, not a bare status line),
+      with the connection force-closed so the unread body cannot desync
+      keep-alive. The remaining work (multipart / streamed bodies) is the
+      cross-filed P13 redesign; nothing further is safe or useful to ship
+      before that is scheduled.
 
 ### MySQL/PG backends are implemented but invisible to the header comment and CI
 
@@ -427,11 +434,22 @@ backend with a cap-8 connection pool. No CI job builds with
 `WITH_MYSQL=1` or `WITH_PG=1`, so the path a MySQL project depends on is
 uncompiled by default.
 
-- [ ] Fix the header comment (it is the first thing a project reads when
+- [x] Fix the header comment (it is the first thing a project reads when
       choosing a backend).
-- [ ] Add a `ubuntu-mysql` (or extend `ubuntu-fuzz`) CI leg that compiles
+      **Done 2026-11-04**: `src/agent/db_layer.h` now describes MySQL as a
+      real libmysqlclient backend (prepared statement + cap-8 pool, same
+      shape as the PG backend).
+- [x] Add a `ubuntu-mysql` (or extend `ubuntu-fuzz`) CI leg that compiles
       and smoke-runs both optional backends; a SQLite-only CI makes a
       broken `WITH_MYSQL` build invisible until a deployment hits it.
+      **Done 2026-11-04**: new `ubuntu-db` job (five jobs now, all
+      required) installs `mysql-server`/`libmysqlclient-dev` and
+      `postgresql`/`libpq-dev`, starts both servers, creates a smoke
+      database/user, then runs `make test-db-smoke WITH_PG=1 WITH_MYSQL=1`
+      — `tests/test_db_smoke.c` connects through db_layer with real
+      `mysql://` and `postgres://` DSNs and runs `SELECT 1`. The Makefile
+      target fails loudly if either DSN is missing (no silent SQLite
+      fallback).
 
 ## P3 — 2026-10-30 React SSR / nsbp-lume dependency puzzle (host-framework read-across)
 

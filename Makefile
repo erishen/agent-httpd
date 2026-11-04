@@ -264,6 +264,22 @@ test-unit: all
 	    src/agent/session.c src/core/minijson.c -o tests/t_sessprune
 	./tests/t_sessprune
 
+# DB-driver smoke (WITH_PG=1 / WITH_MYSQL=1): compile the optional remote
+# backends and run them against live servers. DSNs come from the
+# environment (MYSQL_SMOKE_DSN / PG_SMOKE_DSN) so the CI ubuntu-db leg can
+# start mysqld + postgres and hand real connections in; the target itself
+# needs no server (empty DSN fails loudly rather than silently falling back
+# to SQLite).
+test-db-smoke: all
+	@test -n "$(MYSQL_SMOKE_DSN)" || (echo "MYSQL_SMOKE_DSN is required" >&2; exit 1)
+	@test -n "$(PG_SMOKE_DSN)" || (echo "PG_SMOKE_DSN is required" >&2; exit 1)
+	@mkdir -p tests
+	$(CC) $(CFLAGS) tests/test_db_smoke.c \
+	    src/agent/db_layer.c src/agent/sqlite_tool.c src/core/minijson.c \
+	    -o tests/t_db_smoke $(LDFLAGS)
+	./tests/t_db_smoke "$(MYSQL_SMOKE_DSN)" "SELECT 1"
+	./tests/t_db_smoke "$(PG_SMOKE_DSN)" "SELECT 1"
+
 # Whole-suite run under ASan + LSan (P1 follow-up). The leak detector needs
 # Linux; record the baseline and file suppressions for intentional globals
 # rather than "fixing" them (see lume-core's LSAN suppressions file). The

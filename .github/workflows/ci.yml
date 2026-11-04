@@ -1,6 +1,6 @@
 # Build + test gate for agent-httpd.
 #
-# Four jobs, all required:
+# Five jobs, all required:
 #
 #   linux-build  — pays for the "works on my Mac" trap. Apple clang stays
 #                  silent on -Wstringop-truncation / -Wformat-truncation /
@@ -21,6 +21,12 @@
 #                  exists, so the job needs no toolchain beyond the runner's
 #                  python3 + node; every missing runtime is skipped by the
 #                  script's own `command -v` guards rather than failed.
+#
+#   ubuntu-db    — the optional remote backends (WITH_MYSQL=1 / WITH_PG=1)
+#                  compile AND reach a live server: fresh mysqld + postgres
+#                  on the runner, real connections through db_layer
+#                  (make test-db-smoke). Catches bit-rot in the MySQL
+#                  backend, which otherwise has no compile coverage at all.
 
 name: CI
 
@@ -99,3 +105,36 @@ jobs:
 
       - name: make test (scripts/smoke-test.sh full chain)
         run: make test
+
+  ubuntu-db:
+    name: Ubuntu / MySQL + PostgreSQL backends compile + live smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install MySQL + PostgreSQL dev packages and servers
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            mysql-server libmysqlclient-dev \
+            postgresql libpq-dev
+
+      - name: Start MySQL, create smoke database and user
+        run: |
+          sudo service mysql start
+          sudo mysql -e "CREATE DATABASE ahd_smoke; \
+            CREATE USER 'ahd'@'localhost' IDENTIFIED BY 'ahd'; \
+            GRANT ALL ON ahd_smoke.* TO 'ahd'@'localhost'; \
+            FLUSH PRIVILEGES;"
+
+      - name: Start PostgreSQL, create smoke database and user
+        run: |
+          sudo service postgresql start
+          sudo -u postgres psql -c "CREATE USER ahd PASSWORD 'ahd';"
+          sudo -u postgres psql -c "CREATE DATABASE ahd_smoke OWNER ahd;"
+
+      - name: make test-db-smoke (both backends against live servers)
+        env:
+          MYSQL_SMOKE_DSN: mysql://ahd:ahd@127.0.0.1/ahd_smoke
+          PG_SMOKE_DSN: postgres://ahd:ahd@127.0.0.1/ahd_smoke
+        run: make test-db-smoke WITH_PG=1 WITH_MYSQL=1
