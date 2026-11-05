@@ -123,7 +123,7 @@ static int pse_round_once(ChatOut *out, const char *sys, const char *user,
     memset(&rs, 0, sizeof rs);
     const char *finish = NULL;
     int up_err = 0;
-    int rc = agent_round(out, &msgs, "", "none", capture, &rs, &finish, &up_err);
+    int rc = agent_round(out, &msgs, "", "none", capture, &rs, &finish, &up_err, NULL);
     free(msgs.p);
     round_free(&rs);
     if (rc != 0) agent_emit_upstream_error(out, up_err);

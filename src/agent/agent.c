@@ -381,6 +381,28 @@ static void line_buf_append(sbuf *line, const char *cur, size_t n, int *ovf) {
     sb_mem(line, cur, n);
 }
 
+/* Optional per-request model allow-list. When LLM_ALLOWED_MODELS is set
+ * (comma/space separated), a requested override is only honored if it is
+ * listed verbatim; an empty/unset list disables the check (the upstream
+ * gateway still validates the name). Keeps the shared gateway key from
+ * being aimed at arbitrary models through the chat UI. */
+static int model_allowed(const char *m) {
+    if (!m || !*m) return 0;
+    const char *allow = getenv("LLM_ALLOWED_MODELS");
+    if (!allow || !*allow) return 1; /* allow-list disabled */
+    size_t n = strlen(m);
+    if (n == 0) return 0;
+    const char *p = allow;
+    while (*p) {
+        while (*p == ' ' || *p == ',') p++;
+        const char *start = p;
+        while (*p && *p != ',' && *p != ' ') p++;
+        size_t len = (size_t)(p - start);
+        if (len == n && strncmp(start, m, n) == 0) return 1;
+    }
+    return 0;
+}
+
 /* Fork one curl round against the upstream. Streams content deltas as
  * "delta" events, accumulates tool_call shards into rs, captures
  * finish_reason, and (when `capture` is non-NULL) mirrors every streamed
@@ -389,10 +411,17 @@ static void line_buf_append(sbuf *line, const char *cur, size_t n, int *ovf) {
  * on success, -1 on a fatal error (error event already emitted). */
 int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
                 const char *tool_choice, sbuf *capture, RoundState *rs,
-                const char **finish_reason, int *up_err) {
+                const char **finish_reason, int *up_err, const char *model_override) {
     const char *api_url = getenv("LLM_API_URL");
     const char *api_key = getenv("LLM_API_KEY");
-    const char *model = getenv("LLM_MODEL");
+    const char *env_model = getenv("LLM_MODEL");
+    /* Per-request model override: honored only when non-empty and (if an
+     * allow-list is configured) present in LLM_ALLOWED_MODELS. This stops the
+     * shared gateway key from being aimed at arbitrary models via the chat UI
+     * while still letting the UI pick among the deployment's sanctioned models. */
+    const char *model = (env_model && *env_model) ? env_model : "";
+    if (model_override && *model_override && model_allowed(model_override))
+        model = model_override;
     *finish_reason = NULL;
     if (up_err) *up_err = UP_ERR_NONE;
     int content_started = 0;
@@ -778,7 +807,8 @@ static void agent_run_inner(ChatOut *out, const ChatRequest *req,
             finish = NULL;
             rc = agent_round(out, &msgs,
                              tools_json,
-                             NULL, capture, &rs, &finish, &up_err);
+                             NULL, capture, &rs, &finish, &up_err,
+                             req->model[0] ? req->model : NULL);
             /* A gateway can answer HTTP 200 with a clean EOF and zero
              * payload bytes (observed on agnes: empty SSE body, no error
              * object). The round then "succeeds" while producing nothing —

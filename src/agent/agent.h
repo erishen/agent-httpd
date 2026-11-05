@@ -64,6 +64,7 @@
 #define AGENT_SESSION_ID_MAX 64
 #define AGENT_MAX_TOOL_FILTER 32  /* per-request tool allow-list cap */
 #define AGENT_TOOL_NAME_MAX 64
+#define AGENT_MODEL_MAX 64        /* per-request model override cap */
 
 typedef struct {
     char message[AGENT_MAX_MESSAGE + 1];
@@ -74,6 +75,7 @@ typedef struct {
     int n_rounds;                                 /* 0 = server default rounds */
     int n_tools;                                  /* 0 = expose all registered tools */
     char tools[AGENT_MAX_TOOL_FILTER][AGENT_TOOL_NAME_MAX + 1]; /* optional allow-list */
+    char model[AGENT_MODEL_MAX + 1];               /* optional per-request model override */
 } ChatRequest;
 
 /* One tool_call accumulated from the streaming shards (raw argument TEXT is
@@ -127,12 +129,15 @@ void agent_run_ex(ChatOut *out, const ChatRequest *req,
  *                one of "stop"/"tool_calls"/"other"/NULL.
  *   up_err       (out) UP_ERR_* or a curl exit code, so the caller can
  *                distinguish transient upstream drops from hard failures.
+ *   model        optional per-request model override (NULL/"" = use LLM_MODEL
+ *                env). When set it is validated against LLM_ALLOWED_MODELS if
+ *                that env is present, otherwise honored as-is.
  * Returns 0 on a clean round, -1 on failure. For transient upstream errors
  * (timeout / connection dropout) NO error event is emitted — the caller
  * retries the round and only reports once tries are exhausted. */
 int agent_round(ChatOut *out, const sbuf *messages, const char *tools_json,
                 const char *tool_choice, sbuf *capture, RoundState *rs,
-                const char **finish_reason, int *up_err);
+                const char **finish_reason, int *up_err, const char *model);
 
 /* Emit the user-facing error event for an agent_round failure code. No-op
  * for UP_ERR_LOCAL (that class is emitted inside agent_round as it happens)

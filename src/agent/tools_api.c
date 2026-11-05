@@ -164,6 +164,12 @@ int tools_api_handle(const HttpRequest *request, HttpResponse *response) {
     /* arguments: pass the raw JSON value through untouched (mcp_call feeds it
      * straight into the MCP tools/call params). Absent / non-object → "{}". */
     const char *args = jfind_value(request->body, "arguments");
+    /* Also accept the `args` shorthand used by the host sidecar / older peer
+     * callers. Without this alias a perfectly valid call is silently executed
+     * with "{}" — e.g. article-discover's `add:false` dry-run turns into a
+     * real write, and skill-run loses its required `name`. Silent is the worst
+     * failure mode here, so accept both spellings. */
+    if (!args) args = jfind_value(request->body, "args");
     /* Absent arguments is legal (the MCP spec allows omitting them): treat it
      * as {} so a zero-arg tool like echo__pong still runs. Only a PRESENT but
      * malformed value is a 400. */

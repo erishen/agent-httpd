@@ -156,6 +156,10 @@ static int chat_parse_body(const char *body, ChatRequest *cr) {
                 p = jws(p);
                 if (*p == ',') p++;
             }
+        } else if (strcmp(key, "model") == 0) {
+            /* optional per-request model override (capped; validated against
+             * LLM_ALLOWED_MODELS at upstream call time in agent_round). */
+            if (!jread_string(&p, cr->model, sizeof cr->model)) return -1;
         } else if (jskip_value(&p) != 0) {
             return -1;
         }

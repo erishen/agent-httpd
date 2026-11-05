@@ -30,7 +30,14 @@
 #define MCP_BOOT_TIMEOUT 120         /* initialize + tools/list (seconds; rea 冷启动 40-90s) */
 #define MCP_CALL_TIMEOUT 900         /* tools/call (seconds, pse-review 最长约 11 分钟) */
 #define MCP_STRUC_MAX 8192           /* jq'd structuredContent cap */
-#define MCP_TEXT_MAX 512             /* per content[].text item cap */
+/* A tool result is the ONLY channel by which an MCP tool hands data back to
+ * the ReAct model. 512 bytes silently cut a 6-item project list down to
+ * "1. ... 2. ... (wor", which the model reads as a truncated scan and then
+ * spends its whole round budget re-running the tool (tripping upstream 429).
+ * Stay above the lume MCP bridge's 20000-char guard and below the 64KiB
+ * stdio frame, so a full structured result reaches the model in one call. */
+#define MCP_TEXT_MAX 32768           /* per content[].text item cap */
+#define MCP_ITEM_MAX (128 * 1024)    /* raw JSON of one content[] item */
 #define MCP_FINAL_MAX 65536          /* final assembled tool text cap */
 
 /* JSON-RPC initialize params (kept near the top so the resident-connection
@@ -645,47 +652,60 @@ static void mcp_format_result(const char *resp, sbuf *out) {
     int emitted = 0;
     const char *content = jfind_value(res, "content");
     if (content && *content == '[') {
-        const char *q = jws(content + 1);
-        int first = 1;
-        while (*q == '{' && !emitted) {
-            /* collect item text */
-            char item[8192];
-            int depth = 0, in_str = 0;
-            size_t n = 0;
-            for (const char *r = q; *r && n < sizeof item - 1; r++) {
-                if (in_str) {
-                    if (*r == '\\' && r[1]) { item[n++] = *r; item[n++] = *++r; continue; }
-                    if (*r == '"') in_str = 0;
-                } else if (*r == '"') in_str = 1;
-                else if (*r == '{') depth++;
-                else if (*r == '}' && --depth == 0) {
+        /* Both buffers live on the heap: an item holding a long tool result
+         * (plus JSON escaping) can be tens of KB, far beyond a sane stack
+         * frame when eight workers run concurrently. */
+        char *item = malloc(MCP_ITEM_MAX);
+        char *text = malloc(MCP_TEXT_MAX);
+        if (item && text) {
+            const char *q = jws(content + 1);
+            int first = 1;
+            while (*q == '{' && out->len < MCP_FINAL_MAX) {
+                int depth = 0, in_str = 0, complete = 0;
+                size_t n = 0;
+                for (const char *r = q; *r && n < (size_t)MCP_ITEM_MAX - 2; r++) {
+                    if (in_str) {
+                        if (*r == '\\' && r[1]) {
+                            item[n++] = *r; item[n++] = *++r; continue;
+                        }
+                        if (*r == '"') in_str = 0;
+                    } else if (*r == '"') in_str = 1;
+                    else if (*r == '{') depth++;
+                    else if (*r == '}' && --depth == 0) {
+                        item[n++] = *r;
+                        item[n] = '\0';
+                        q = r + 1;
+                        complete = 1;
+                        break;
+                    }
                     item[n++] = *r;
-                    item[n] = '\0';
-                    q = r + 1;
-                    goto have_item;
                 }
-                item[n++] = *r;
-            }
-            break; /* malformed */
-have_item:;
-            const char *tv = jfind_value(item, "text");
-            if (tv && *tv == '"') {
-                char text[MCP_TEXT_MAX];
-                const char *tp = tv;
-                if (jread_string(&tp, text, sizeof text)) {
-                    if (!first) sb_chr(out, '\n');
-                    sb_str(out, text);
-                    first = 0;
-                    emitted = 1;
+                if (!complete) break; /* malformed or over the item cap */
+                const char *tv = jfind_value(item, "text");
+                if (tv && *tv == '"') {
+                    const char *tp = tv;
+                    if (jread_string(&tp, text, MCP_TEXT_MAX)) {
+                        if (!first) sb_chr(out, '\n');
+                        sb_str(out, text);
+                        /* Never truncate silently: a marker the model can see
+                         * is far better than a list that just stops mid-word. */
+                        if (strlen(text) >= MCP_TEXT_MAX - 1)
+                            sb_str(out, "\n[tool output truncated at 32KB]");
+                        first = 0;
+                        emitted = 1;
+                    }
                 }
+                /* Walk every content[] item; stopping after the first one used
+                 * to drop multi-part results even when each part was tiny. */
+                q = jws(q);
+                if (*q == ',') q = jws(q + 1);
+                else break;
             }
-            /* isError flag on the item */
-            q = jws(q);
-            if (*q == ',') q = jws(q + 1);
-            else break;
         }
+        free(item);
+        free(text);
+        if (emitted) return;
     }
-    if (emitted) return;
 
     const char *sc = jfind_value(res, "structuredContent");
     if (sc && *sc == '{') {
@@ -703,10 +723,12 @@ have_item:;
     }
     const char *flat = jfind_value(res, "text");
     if (flat && *flat == '"') {
-        char text[MCP_TEXT_MAX * 4];
+        char text[MCP_TEXT_MAX];
         const char *fp = flat;
         if (jread_string(&fp, text, sizeof text)) {
             sb_str(out, text);
+            if (strlen(text) >= MCP_TEXT_MAX - 1)
+                sb_str(out, "\n[tool output truncated at 32KB]");
             return;
         }
     }
