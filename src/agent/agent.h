@@ -65,6 +65,7 @@
 #define AGENT_MAX_TOOL_FILTER 32  /* per-request tool allow-list cap */
 #define AGENT_TOOL_NAME_MAX 64
 #define AGENT_MODEL_MAX 64        /* per-request model override cap */
+#define AGENT_SYSTEM_MAX 65535    /* per-request system prompt cap (task soul) */
 
 typedef struct {
     char message[AGENT_MAX_MESSAGE + 1];
@@ -76,6 +77,12 @@ typedef struct {
     int n_tools;                                  /* 0 = expose all registered tools */
     char tools[AGENT_MAX_TOOL_FILTER][AGENT_TOOL_NAME_MAX + 1]; /* optional allow-list */
     char model[AGENT_MODEL_MAX + 1];               /* optional per-request model override */
+    char system[AGENT_SYSTEM_MAX + 1];             /* optional per-request system prompt
+                                                      (business task soul injected by the
+                                                      sidecar; appended as system_extra so it
+                                                      rides with the default agent prompt,
+                                                      mirroring resolve-studio's task
+                                                      systemPrompt injection) */
 } ChatRequest;
 
 /* One tool_call accumulated from the streaming shards (raw argument TEXT is

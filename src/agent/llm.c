@@ -160,6 +160,12 @@ static int chat_parse_body(const char *body, ChatRequest *cr) {
             /* optional per-request model override (capped; validated against
              * LLM_ALLOWED_MODELS at upstream call time in agent_round). */
             if (!jread_string(&p, cr->model, sizeof cr->model)) return -1;
+        } else if (strcmp(key, "system") == 0) {
+            /* optional per-request system prompt (business task soul). Appended
+             * as system_extra downstream so it rides with the default agent
+             * prompt; sized AGENT_SYSTEM_MAX to hold any SOUL.md without
+             * truncation (souls currently top out ~5.6KB). */
+            if (!jread_string(&p, cr->system, sizeof cr->system)) return -1;
         } else if (jskip_value(&p) != 0) {
             return -1;
         }
@@ -473,6 +479,15 @@ int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
                     sb_str(&extra, "\n\n");
                 }
                 session_render_extra(&sess, &extra);
+                /* per-request system prompt (business task soul injected by the
+                 * sidecar from SOULS_DIR). Appended as system_extra so it rides
+                 * with the default agent system prompt, matching resolve-studio's
+                 * task systemPrompt injection (agent.ts:394). Empty when the
+                 * request carried no "system" field. */
+                if (cr->system[0]) {
+                    sb_str(&extra, "\n\n---\n");
+                    sb_str(&extra, cr->system);
+                }
                 const char *extra_s = extra.p ? extra.p : "";
                 out.cap_on = cr->session_id[0] ? 1 : 0;
                 /* /react/api/pse always runs the PSE orchestrator; the plain
