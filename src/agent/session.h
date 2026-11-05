@@ -48,8 +48,10 @@ typedef struct {
     } facts[SESSION_FACTS_MAX];
 } Session;
 
-/* Generate a fresh session id (time + pid + RNG mixed, lowercase hex). */
-void session_id_new(char *out, size_t sz);
+/* Generate a fresh session id: 128 bits from /dev/urandom, lowercase hex.
+ * Returns 1 on success, 0 if OS entropy could not be read (out is empty) --
+ * fail closed, never fall back to time/pid/rand(). Callers must check. */
+int session_id_new(char *out, size_t sz);
 
 /* True for path-safe ids within SESSION_ID_MAX: allowed bytes are alnum,
  * '-', '_', '+' (UI mints "s-<random>", tests use ids like "s1"). Anything

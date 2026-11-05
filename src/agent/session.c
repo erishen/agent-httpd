@@ -7,10 +7,9 @@
 #include <string.h>
 #include <strings.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <ctype.h>
-#include <stdint.h> /* uintptr_t (session_id_new); glibc does not pull it in
-                     * transitively, macOS libc happens to */
 #include <sys/stat.h>
 #include <time.h>
 #include <dirent.h>
@@ -62,26 +61,40 @@ static void mk_data_dirs(void) {
     mkdir(SESS_DIR, 0700);
 }
 
-void session_id_new(char *out, size_t sz) {
+/* Mint a session id from 128 bits of OS entropy, as lowercase hex.
+ *
+ * Fail closed. This used to read 8 bytes of /dev/urandom into one word,
+ * XOR it with the address of a stack slot, derive BOTH halves of the hex id
+ * from that word (plus time(NULL)), and silently fall back to
+ * time(NULL) ^ getpid() ^ rand() whenever fopen/fread failed. A guessable
+ * id hands over someone else's .data/sessions/<id>.json, so on any entropy
+ * failure we now produce NO id and return 0; callers must check the result.
+ * This mirrors security/auth.c's random_token_hex(), which mints the bearer
+ * token with 16 bytes and refuses to substitute a weaker generator.
+ *
+ * Returns 1 on success, 0 on entropy failure (out is then empty). */
+int session_id_new(char *out, size_t sz) {
     static const char HEX[] = "0123456789abcdef";
-    unsigned long r;
-    FILE *u = fopen("/dev/urandom", "r");
-    if (u) {
-        if (fread(&r, sizeof r, 1, u) != 1) r = (unsigned)time(NULL);
-        fclose(u);
-    } else {
-        r = ((unsigned)time(NULL) << 16) ^ (unsigned)getpid() ^ (unsigned)rand();
+    enum { ENTROPY_BYTES = 16 };
+    if (!out || sz < (size_t)ENTROPY_BYTES * 2 + 1) return 0;
+    out[0] = '\0';
+    unsigned char b[ENTROPY_BYTES];
+    size_t off = 0;
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) return 0;
+    while (off < sizeof(b)) {
+        ssize_t n = read(fd, b + off, sizeof(b) - off);
+        if (n <= 0) { close(fd); return 0; }
+        off += (size_t)n;
     }
-    r ^= (unsigned long)(uintptr_t)&r;
-    char buf[32];
-    snprintf(buf, sizeof buf, "%08lx%08lx", r, (r >> 1) ^ (unsigned long)time(NULL));
+    close(fd);
     size_t j = 0;
-    for (size_t i = 0; i < strnlen(buf, sizeof buf) && j < sz - 1 && j < SESSION_ID_MAX; i++) {
-        if (buf[i] >= '0' && buf[i] <= '9') out[j++] = buf[i];
-        else if (buf[i] >= 'a' && buf[i] <= 'f') out[j++] = buf[i];
-        else out[j++] = HEX[((unsigned)(unsigned char)buf[i]) & 0xf];
+    for (size_t i = 0; i < sizeof(b); i++) {
+        out[j++] = HEX[b[i] >> 4];
+        out[j++] = HEX[b[i] & 0xf];
     }
     out[j] = '\0';
+    return 1;
 }
 
 int session_load(const char *id, Session *s) {

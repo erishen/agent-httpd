@@ -281,9 +281,9 @@ int auth_logout_realm_bump(const char *user);
  *   <token> <user> <expiry_epoch>      one per line, 0600
  *
  * Line-based on purpose: auth.c has no JSON dependency and the file is only
- * ever touched from C. The token is 64 bits of entropy in hex (32 chars),
- * minted with the same rand() source the server already uses elsewhere; the
- * value is a bearer -- possession of the cookie is sufficient, so it is
+ * ever touched from C. The token is 128 bits of OS entropy in hex (32 chars),
+ * minted read-from-/dev/urandom with a fail-closed path (see random_token_hex);
+ * the value is a bearer -- possession of the cookie is sufficient, so it is
  * HttpOnly (never visible to JS) and SameSite=Lax (never sent cross-origin).
  * The password is never stored: verification happens against the htpasswd
  * table at POST /login time and is then thrown away. */
