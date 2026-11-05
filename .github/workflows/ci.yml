@@ -39,6 +39,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: all five jobs build and test; none writes to the repo.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
