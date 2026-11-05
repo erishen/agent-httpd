@@ -108,20 +108,22 @@ fi
 
 status() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
 
-# Pay the first-exec cost of a freshly written CGI fixture once, discarding
-# the result, before anything asserts on it.
+# Pay the first-exec cost of a CGI once, discarding the result, before
+# anything asserts on it.
 #
 # Every zz-*-test.cgi below is created by this script and requested for the
-# first time by the very assertion that is supposed to measure it. On macOS
-# that first exec of a brand-new file is far more expensive than every later
-# one, and under host load it has a long tail: measured directly, a trivial
-# bash script ran p50 5ms but max 1570ms, and through the handler the same
-# startup tail reached >3s. With CGI_TIMEOUT_SECONDS=3 (line 12, fixed by the
-# slow-CGI case) that first request got killed and the handler correctly
-# answered 504 with a 169-byte error page, which byte-count assertions then
-# misread as a streaming truncation. The spool/stream path was never at fault.
+# first time by the very assertion that is supposed to measure it; the
+# committed 320KB node bundle (cgi-bin/react-ssr.cgi) has the same tail with
+# a heavier boot. On a cold runner that first exec is far more expensive
+# than every later one, and under host load it has a long tail: measured
+# directly, a trivial bash script ran p50 5ms but max 1570ms, and through
+# the handler the same startup tail reached >3s. With CGI_TIMEOUT_SECONDS=3
+# (line 12, fixed by the slow-CGI case) that first request got killed and
+# the handler correctly answered 504 with a 169-byte error page, which
+# content assertions then misread as missing markup. The spool/stream path
+# was never at fault.
 #
-# One throwaway request per fixture removes the first-exec lottery without
+# One throwaway request per CGI removes the first-exec lottery without
 # touching the timeout budget the slow-CGI case depends on.
 warm_cgi() { curl -s -o /dev/null --max-time 20 "$1" >/dev/null 2>&1 || true; }
 
@@ -265,7 +267,18 @@ check "404 status" "404" "$err"
 
 # React SSR CGI (GET + POST) - requires node (compiled single-file cgi)
 if command -v node >/dev/null 2>&1; then
-    curl -s -D /tmp/ssr-h.txt -o /tmp/ssr-b.txt "$BASE/cgi-bin/react-ssr.cgi?name=SSR&message=hi"
+    # Same first-exec cost warm_cgi() was written for, but heavier: this is
+    # a 320KB bundled node program that has to boot React's server renderer.
+    # Without a throwaway request the GET below is the first exec of the run;
+    # on a cold runner it crosses CGI_TIMEOUT_SECONDS=3, gets killed with a
+    # 504 error page, and all three content assertions read 0 - while the
+    # POST right after (now warm) passes. Warm it before asserting anything.
+    warm_cgi "$BASE/cgi-bin/react-ssr.cgi"
+    ssr_code=$(curl -s -D /tmp/ssr-h.txt -o /tmp/ssr-b.txt -w "%{http_code}" \
+        "$BASE/cgi-bin/react-ssr.cgi?name=SSR&message=hi")
+    # Assert the status first so a future cold-start timeout names itself
+    # instead of masquerading as three unrelated content mismatches.
+    check "React SSR GET status (200, not a cold-start 504)" "200" "$ssr_code"
     check "React SSR GET" "1" "$(grep -c 'Rendered on the server' /tmp/ssr-b.txt)"
     # The document must ask for a cache-busted bundle URL: with a stable URL
     # a browser that cached the previous bundle keeps serving it, and the new
