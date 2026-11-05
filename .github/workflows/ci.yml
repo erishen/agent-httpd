@@ -27,6 +27,9 @@
 #                  on the runner, real connections through db_layer
 #                  (make test-db-smoke). Catches bit-rot in the MySQL
 #                  backend, which otherwise has no compile coverage at all.
+#                  The runner image ships MySQL pre-seeded with root/root,
+#                  so the bootstrap probes both passwordless socket auth
+#                  and root/root instead of assuming either one.
 
 name: CI
 
@@ -121,11 +124,57 @@ jobs:
 
       - name: Start MySQL, create smoke database and user
         run: |
-          sudo service mysql start
-          sudo mysql -e "CREATE DATABASE ahd_smoke; \
-            CREATE USER 'ahd'@'localhost' IDENTIFIED BY 'ahd'; \
+          sudo systemctl start mysql.service
+
+          # GitHub's Ubuntu runner image already ships MySQL 8 with root/root
+          # (see actions/runner-images, images/ubuntu/Ubuntu*-Readme.md) and
+          # `apt-get install mysql-server` does not reinitialise that datadir.
+          # A genuinely fresh apt install instead gives root an auth_socket
+          # login with no password. The old `sudo mysql` assumed the latter
+          # and died with ERROR 1045 (28000) ... (using password: NO). Probe
+          # both forms; also treat "mysqld not accepting connections yet" as
+          # the same retryable state as "wrong auth".
+          mysql_root() {
+            if [ "$MYSQL_ROOT_AUTH" = "socket" ]; then
+              sudo mysql -u root "$@"
+            else
+              sudo env MYSQL_PWD=root mysql -u root "$@"
+            fi
+          }
+          MYSQL_ROOT_AUTH=""
+          for i in $(seq 1 30); do
+            if sudo mysql -u root -e 'SELECT 1' >/dev/null 2>&1; then
+              MYSQL_ROOT_AUTH=socket
+              break
+            fi
+            if sudo env MYSQL_PWD=root mysql -u root -e 'SELECT 1' >/dev/null 2>&1; then
+              MYSQL_ROOT_AUTH=password
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$MYSQL_ROOT_AUTH" ]; then
+            echo "::error::mysqld never accepted root auth (tried passwordless socket and root/root)" >&2
+            sudo systemctl status mysql.service --no-pager || true
+            exit 1
+          fi
+          echo "MySQL root auth: $MYSQL_ROOT_AUTH"
+
+          # MYSQL_SMOKE_DSN uses 127.0.0.1 (TCP), not the unix socket. With
+          # name resolution on the server sees 'localhost'; with
+          # skip_name_resolve it sees '127.0.0.1'. Grant both account forms
+          # so the next step cannot fail on a host mismatch.
+          mysql_root -e "CREATE DATABASE IF NOT EXISTS ahd_smoke; \
+            CREATE USER IF NOT EXISTS 'ahd'@'localhost' IDENTIFIED BY 'ahd'; \
+            CREATE USER IF NOT EXISTS 'ahd'@'%' IDENTIFIED BY 'ahd'; \
             GRANT ALL ON ahd_smoke.* TO 'ahd'@'localhost'; \
+            GRANT ALL ON ahd_smoke.* TO 'ahd'@'%'; \
             FLUSH PRIVILEGES;"
+
+          # Verify the exact path t_db_smoke will take, over TCP as user ahd,
+          # so a broken grant names itself here instead of inside make.
+          MYSQL_PWD=ahd mysql --protocol=TCP -h 127.0.0.1 -P 3306 \
+            -u ahd -D ahd_smoke -e 'SELECT 1 AS mysql_tcp_ok;'
 
       - name: Start PostgreSQL, create smoke database and user
         run: |
