@@ -118,7 +118,13 @@ static void parse_header_line(const char *line, HttpRequest *request) {
         set_str(request->cookie, sizeof(request->cookie), line + 7);
         trim_whitespace(request->cookie);
     } else if (strncasecmp(line, "X-Forwarded-For:", 16) == 0) {
-        set_str(request->x_forwarded_for, sizeof(request->x_forwarded_for), line + 17);
+        /* Every other header above takes `line + strlen(prefix)`: the value
+         * starts immediately after the colon, and trim_whitespace() removes
+         * the conventional space. This branch used `line + 17`, which also
+         * ate the first value byte on the compact form
+         * "X-Forwarded-For:1.2.3.4" — rate_limit_parse_xff() then keyed a
+         * different (or empty) client IP. Keep it aligned with the rest. */
+        set_str(request->x_forwarded_for, sizeof(request->x_forwarded_for), line + 16);
         trim_whitespace(request->x_forwarded_for);
     } else if (strncasecmp(line, "If-None-Match:", 14) == 0) {
         set_str(request->if_none_match, sizeof(request->if_none_match), line + 14);

@@ -43,8 +43,8 @@ deploy/.env.local
 # unit-test binaries (built by `make test-unit` / `make test-oom`)
 # wildcard: every tests/t_* is a compiled binary; the sources are
 # tests/test_*.c (prefix "test_", never matches "t_*"), so this covers
-# t_vite/t_fcgi/t_ka/t_auth/t_json/t_guard/t_resp/t_crlf/t_fuzzhttp/
-# t_sessprune/t_oom without having to list each one by hand.
+# t_vite/t_fcgi/t_ka/t_auth/t_json/t_guard/t_resp/t_crlf/t_xff/
+# t_fuzzhttp/t_sessprune/t_oom without having to list each one by hand.
 tests/t_*
 
 # embedded example binary (built by `make example`)

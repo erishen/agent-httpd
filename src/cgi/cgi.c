@@ -15,9 +15,73 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <dirent.h>
 
 #include "internal.h"
 #include "metrics.h"
+
+extern char **environ;
+
+/* The httpd process holds the client socket, its listening sockets, the
+ * FastCGI/Unix sockets, MCP/router pipes and every other descriptor it
+ * opened. fork() duplicates all of them into the CGI child. Closing just the
+ * four pipe ends here used to leave client_fd (and the listeners) open
+ * across exec: a script could write straight to the client socket, or keep
+ * a listener open after the parent tried to restart. A CGI needs nothing
+ * beyond stdin/stdout/stderr, so drop the rest. */
+static void cgi_close_inherited_fds(void) {
+#ifdef __linux__
+    /* Fast and exact: /proc/self/fd lists only descriptors that are open. */
+    DIR *d = opendir("/proc/self/fd");
+    if (d) {
+        int dfd = dirfd(d);
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            char *end = NULL;
+            long v = strtol(de->d_name, &end, 10);
+            if (end == de->d_name || *end != '\0' || v < 3 || v == dfd) continue;
+            close((int)v);
+        }
+        closedir(d);
+        return;
+    }
+#endif
+    /* Portable fallback (macOS/BSD, or a container without /proc): bounded
+     * loop over the descriptor space. 4096 covers the CI runners' default
+     * RLIMIT_NOFILE; Linux normally takes the exact /proc path above. */
+    long maxfd = sysconf(_SC_OPEN_MAX);
+    if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
+    for (int fd = 3; fd < (int)maxfd; fd++) close(fd);
+}
+
+/* CGIs are third-party scripts. They need the RFC 3875 metavariables and a
+ * few runtime basics to start an interpreter - and nothing else. The parent
+ * carries LLM_API_KEY, LLM_API_URL, ROUTER_API_URL, MCP_SERVERS,
+ * AUTH_SESSION_FILE, SQLITE_DB and friends; unsetting four names by hand
+ * left all of those inheritable. execve with a filtered environ is
+ * fail-closed: a secret added to the parent later stays invisible unless
+ * somebody deliberately adds its key here. HTTP_PROXY/HTTPS_PROXY are
+ * intentionally NOT on the list (they often embed credentials). */
+static const char *const cgi_env_allow[] = {
+    "REQUEST_METHOD", "QUERY_STRING", "CONTENT_TYPE", "CONTENT_LENGTH",
+    "SERVER_NAME", "SERVER_PORT", "SCRIPT_NAME", "REQUEST_URI",
+    "SERVER_PROTOCOL", "GATEWAY_INTERFACE", "SERVER_SOFTWARE",
+    "REMOTE_ADDR", "REMOTE_USER", "HTTP_HOST", "HTTP_USER_AGENT",
+    "HTTP_X_FORWARDED_FOR",
+    "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ",
+    NULL
+};
+
+static int cgi_env_allowed(const char *entry) {
+    const char *eq = strchr(entry, '=');
+    if (!eq) return 0;
+    size_t klen = (size_t)(eq - entry);
+    for (int i = 0; cgi_env_allow[i]; i++) {
+        const char *k = cgi_env_allow[i];
+        if (strlen(k) == klen && strncmp(entry, k, klen) == 0) return 1;
+    }
+    return 0;
+}
 
 int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_fd) {
     char script_path[MAX_PATH_SIZE];
@@ -85,6 +149,10 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
         dup2(in_pipe[0], STDIN_FILENO);
         close(in_pipe[0]);
 
+        /* stdin/stdout are the pipes now; every descriptor inherited from
+         * the server (client_fd, listeners, MCP/router pipes) must go. */
+        cgi_close_inherited_fds();
+
         setenv("REQUEST_METHOD", request->method, 1);
         setenv("QUERY_STRING", query_string ? query_string : "", 1);
         setenv("CONTENT_TYPE", request->content_type, 1);
@@ -121,14 +189,19 @@ int execute_cgi(const HttpRequest *request, HttpResponse *response, int client_f
             setenv("REMOTE_USER", remote_user, 1);
         }
 
-        /* Secrets must not leak into CGI children: execl inherits the
-         * parent environment, so scrub anything credential-like first. */
-        unsetenv("LLM_API_KEY");
-        unsetenv("LLM_API_URL");
-        unsetenv("LLM_MODEL");
-        unsetenv("MCP_FS_ROOT");
-
-        execl(script_path, script_path, NULL);
+        /* execl() would hand the child the parent's full environ. Build an
+         * explicit allowlist instead: the setenv() calls above put the CGI
+         * metavariables into environ, and this keeps only those plus the
+         * runtime basics - dropping credentials, proxy URLs, session/db
+         * paths and any future secret by default. */
+        char *child_env[64];
+        size_t n = 0;
+        for (char **e = environ; *e && n + 1 < sizeof(child_env) / sizeof(child_env[0]); e++) {
+            if (cgi_env_allowed(*e)) child_env[n++] = *e;
+        }
+        child_env[n] = NULL;
+        char *const child_argv[] = { script_path, NULL };
+        execve(script_path, child_argv, (char *const *)child_env);
         fprintf(stderr, "CGI execution failed: %s\n", strerror(errno));
         exit(1);
     } else {

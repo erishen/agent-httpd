@@ -248,6 +248,9 @@ test-unit: all
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_crlf.c \
 	    src/http/http_parse.c -o tests/t_crlf
 	./tests/t_crlf
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_xff.c \
+	    src/http/http_parse.c -o tests/t_xff
+	./tests/t_xff
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_allowed_hosts.c \
 	    src/core/util.c -o tests/t_allowed_hosts
 	./tests/t_allowed_hosts
