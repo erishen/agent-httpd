@@ -395,10 +395,23 @@ example-run: example
 node-example: example
 	node examples/node-host/host.js
 
+# --- Repository privacy gate (make privacycheck) --------------------------
+# Byte-level guard over every blob reachable from HEAD, binaries included:
+# build-machine paths, private workspace tokens, credential shapes and
+# sensitive tracked filenames. The sibling lume/lume-core repos only match
+# /Users|/home/<name>; a compiled CGI carrying a workspace token stayed green
+# through a history scrub because no pattern looked for it. The script also
+# self-tests its own patterns on every run, so a silently broken regex cannot
+# report a false green. Scope is HEAD only: --all is a manual audit tool and
+# is deliberately NOT wired into CI (old objects in a public history need a
+# history rewrite, not a gate that can never turn green).
+privacycheck:
+	@python3 scripts/check-repo-privacy.py
+
 clean:
 	rm -rf $(BUILD_DIR) bin examples/embedded
 
-.PHONY: all lib example example-run node-example build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-asan test-keepalive test-linux test-container test-upstream test-stream fuzz-http
+.PHONY: all lib example example-run node-example build-ssr typecheck build-cgis start run dev restart stop install uninstall test bench clean react-server react-server-stop test-unit test-asan test-keepalive test-linux test-container test-upstream test-stream fuzz-http privacycheck
 
 # Parser fuzzing (P12 follow-up): libFuzzer over http_parse.c + http_chunk.c.
 # Needs clang (mingw has no libFuzzer), so this runs in Linux CI; the same

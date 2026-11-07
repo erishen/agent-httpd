@@ -1,6 +1,16 @@
 # Build + test gate for agent-httpd.
 #
-# Five jobs, all required:
+# Six jobs, all required:
+#
+#   privacy      — byte-level scan of every HEAD blob (binaries included)
+#                  for build-machine paths, private workspace tokens,
+#                  credential shapes and sensitive tracked filenames.
+#                  Independent and seconds-fast. The shell guard in the
+#                  sibling repos only matches /Users|/home/<name>, which
+#                  is how a compiled CGI carrying a workspace token stayed
+#                  green through a history scrub. Scope is HEAD only:
+#                  cleaning already-published objects is a history rewrite,
+#                  not a CI gate.
 #
 #   linux-build  — pays for the "works on my Mac" trap. Apple clang stays
 #                  silent on -Wstringop-truncation / -Wformat-truncation /
@@ -48,6 +58,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  privacy:
+    name: Privacy (byte-level HEAD blob scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: make privacycheck
+        run: make privacycheck
+
   linux-build:
     name: Linux / GCC build (Dockerfile c-build stage)
     runs-on: ubuntu-latest
