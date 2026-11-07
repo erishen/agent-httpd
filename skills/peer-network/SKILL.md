@@ -5,7 +5,7 @@ description: 局域网内的其它 lume 应用（博客、看板、扫描器等�
 
 # peer-network：先发现，再调用
 
-局域网里可能同时跑着多个 lume 应用（`lume-blog`、`lume-lan`、`lume-scanner` …）。
+局域网里可能同时跑着多个 lume 应用（`lume-lan`、`lume-crm`、`lume-scanner` …）。
 它们各自的能力通过一个 MCP 桥挂到了你的工具表里，工具名形如
 `<应用名>__<工具名>`，例如：
 
