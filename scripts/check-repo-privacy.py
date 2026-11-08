@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Byte-level privacy guard for blobs tracked by git.
+"""Byte-level privacy guard for tracked blobs and local worktree files.
 
 Why a second guard beside check-tree-privacy.sh
 -----------------------------------------------
@@ -16,19 +16,24 @@ do reliably here:
     documents exactly that failure mode (a first cut scanned 0 blobs and
     still printed success).
 
-Scope is printed on every run. Default = blobs reachable from HEAD only.
+Scope is printed on every run. Default = blobs reachable from HEAD, plus
+staged index blobs, plus tracked files modified relative to HEAD and any
+non-ignored untracked file, read straight from disk. The worktree legs exist
+because a HEAD-only scan is green right up until `git add` + `git commit`:
+locally that is a false green, and CI only catches it after the fact.
 --all walks the whole object database; it is a manual audit tool and is
 deliberately NOT wired into CI, because objects rewritten out of a public
 history can stay readable on the host long after the local clone is clean.
-A green result therefore means "the current tree is clean", never "this
-repository has always been clean".
+A green result therefore means "the current tree and worktree are clean",
+never "this repository has always been clean".
 
 Usage:
-    scripts/check-repo-privacy.py          # HEAD blobs (CI / make privacycheck)
+    scripts/check-repo-privacy.py          # HEAD + index + worktree (CI / make privacycheck)
     scripts/check-repo-privacy.py --all    # whole object database (audit only)
 
 Exit: 0 clean, 1 leak found, 2 guard self-test failed, 3 git/tool error.
 """
+import os
 import re
 import subprocess
 import sys
@@ -74,6 +79,11 @@ SENSITIVE_NAME = re.compile(
 )
 ALLOWED_NAMES = {b".env.example"}
 
+# Refuse to silently skip a file we cannot scan: an unreadable or oversized
+# worktree file is a tool error, never a pass.
+MAX_WORKTREE_BYTES = 64 * 1024 * 1024
+GUARD_SOURCE = os.path.abspath(__file__)
+
 
 def git(*args):
     try:
@@ -107,6 +117,19 @@ def sensitive_name(path):
     return bool(SENSITIVE_NAME.search(path))
 
 
+def read_worktree(path, label):
+    """Bytes of a local file; never turn a read failure into a green result."""
+    try:
+        if os.path.getsize(path) > MAX_WORKTREE_BYTES:
+            sys.stderr.write("FAIL  worktree file too large to scan: %s\n" % label)
+            raise SystemExit(3)
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError as exc:
+        sys.stderr.write("FAIL  cannot read worktree file %s: %s\n" % (label, exc))
+        raise SystemExit(3)
+
+
 def self_test():
     """Prove every pattern still fires before declaring anything clean."""
     samples = {
@@ -125,23 +148,67 @@ def self_test():
         sys.stderr.write("FAIL  self-test: sensitive filename rule is wrong\n")
         raise SystemExit(2)
     # The guard must never flag its own source: it is a tracked blob too.
-    with open(__file__, "rb") as handle:
+    with open(GUARD_SOURCE, "rb") as handle:
         own = scan(handle.read())
     if own:
         sys.stderr.write("FAIL  self-test: guard's own source trips %s\n" % list(own))
         raise SystemExit(2)
+    # The worktree reader is exercised too, so a broken disk path cannot
+    # quietly turn the new worktree legs into a no-op.
+    if scan(read_worktree(os.fsencode(GUARD_SOURCE), "guard source")):
+        sys.stderr.write("FAIL  self-test: guard's own worktree copy trips rules\n")
+        raise SystemExit(2)
     return len(samples) + 1
 
 
+def nul_records(data):
+    """Split NUL-delimited git output, dropping the trailing empty record."""
+    return [rec for rec in data.split(b"\0") if rec]
+
+
 def collect(scope):
-    """Return [(blob oid, path)] for the requested scope."""
+    """Return [(blob oid or None, path)]; None means read the worktree file."""
     if scope == "HEAD":
         entries = []
-        for line in git("ls-tree", "-r", "HEAD").splitlines():
-            meta, _, path = line.partition(b"\t")
+        seen = set()
+        for rec in nul_records(git("ls-tree", "-r", "-z", "HEAD")):
+            meta, _, path = rec.partition(b"\t")
             parts = meta.split()
-            if len(parts) == 3 and parts[1] == b"blob":
-                entries.append((parts[2], path))
+            if len(parts) == 3 and parts[1] == b"blob" and path:
+                item = (parts[2], path)
+                if item not in seen:
+                    entries.append(item)
+                    seen.add(item)
+        # The index can hold a blob that HEAD never had (staged, not committed).
+        for rec in nul_records(git("ls-files", "-s", "-z")):
+            meta, _, path = rec.partition(b"\t")
+            parts = meta.split()
+            # 160000 is a gitlink (submodule commit), not a blob: its oid
+            # lives in another repository and cat-file cannot read it here.
+            if (len(parts) == 3 and parts[2] == b"0" and path
+                    and parts[0] != b"160000"):
+                item = (parts[1], path)
+                if item not in seen:
+                    entries.append(item)
+                    seen.add(item)
+        # Disk reality: tracked files modified relative to HEAD, and files not
+        # tracked yet but not ignored either. Both are invisible to HEAD.
+        paths = []
+        for path in nul_records(
+            git("diff", "--name-only", "-z", "--no-renames", "HEAD")
+        ):
+            if os.path.isfile(path):
+                paths.append(path)
+        for path in nul_records(
+            git("ls-files", "--others", "--exclude-standard", "-z")
+        ):
+            if os.path.isfile(path):
+                paths.append(path)
+        for path in paths:
+            item = (None, path)
+            if item not in seen:
+                entries.append(item)
+                seen.add(item)
         return entries
     names = {}
     for line in git("rev-list", "--objects", "--all").splitlines():
@@ -175,6 +242,11 @@ def main():
     else:
         scope = "HEAD"
 
+    # git path output is relative to the top level; make it true regardless of
+    # which directory invoked the guard. GUARD_SOURCE is absolute already.
+    root = git("rev-parse", "--show-toplevel").strip()
+    if root:
+        os.chdir(root)
     git("rev-parse", "--verify", "--quiet", "HEAD")
     rules = self_test()
     entries = collect(scope)
@@ -184,15 +256,20 @@ def main():
         label = path.decode("utf8", "replace")
         if sensitive_name(path):
             leaks += 1
-            sys.stderr.write("FAIL  sensitive filename tracked: %s\n" % label)
-        data = git("cat-file", "blob", oid.decode())
+            sys.stderr.write("FAIL  sensitive filename: %s\n" % label)
+        if oid is None:
+            data = read_worktree(path, label)
+            source = "worktree"
+        else:
+            data = git("cat-file", "blob", oid.decode())
+            source = "blob " + oid.decode()[:10]
         found = scan(data)
         if not found:
             continue
         for category, matches in found.items():
             leaks += 1
             sys.stderr.write(
-                "FAIL  %s in %s (blob %s):\n" % (category, label, oid.decode()[:10])
+                "FAIL  %s in %s (%s):\n" % (category, label, source)
             )
             for match in matches[:3]:
                 sys.stderr.write("        %s\n" % redact(category, match).decode("utf8", "replace"))
@@ -201,19 +278,24 @@ def main():
 
     if leaks:
         sys.stderr.write(
-            "FAIL  %d finding(s) across %d blob(s) (scope=%s)\n" % (leaks, len(entries), scope)
+            "FAIL  %d finding(s) across %d item(s) (scope=%s)\n" % (leaks, len(entries), scope)
         )
         raise SystemExit(1)
 
-    note = (
-        "history NOT scanned; --all is a manual audit only"
-        if scope == "HEAD" else "whole object database"
-    )
+    if scope == "HEAD":
+        note = "HEAD + index + non-ignored worktree; history NOT scanned; --all is a manual audit only"
+        worktree = sum(1 for oid, _ in entries if oid is None)
+    else:
+        note = "whole object database"
+        worktree = 0
     print(
-        "ok    %d blob(s) from %s: no build-machine path / workspace name / "
+        "ok    %d item(s) from %s: no build-machine path / workspace name / "
         "credential / sensitive filename" % (len(entries), scope)
     )
-    print("      scope=%s (%s); self-test=%d/4 rules live" % (scope, note, rules))
+    print(
+        "      scope=%s (%s); worktree=%d; self-test=%d/4 rules live"
+        % (scope, note, worktree, rules)
+    )
     return 0
 
 
