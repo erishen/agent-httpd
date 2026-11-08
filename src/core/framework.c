@@ -21,7 +21,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <sys/stat.h>
-#include <fcntl.h>   /* open / O_RDWR */
+#include <netdb.h>   /* getaddrinfo / freeaddrinfo: weak warmup fallback */
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -595,9 +595,11 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
      * 线程碰过 Objective-C 运行时, 子进程再碰就会 abort:
      *   "+[NSString initialize] may have been in progress in another thread
      *    when fork() was called ... Crashing instead."
-     * 而 OpenSSL 首次 SSL_CTX_new / set_default_verify_paths 会走到
-     * CFNetwork/Security, 正是这条链。于是"在 worker 里第一次发 HTTPS"
-     * 必崩, 且只在首次出现、纯 HTTP 不受影响 —— 极难定位。
+     * 而进程首次解析外部主机名会走到系统解析器/配置链, 正是这条链。
+     * 于是"在 worker 里第一次解析外部名字"必崩, 且只在首次出现、
+     * 纯 HTTP 控制路径不受影响 —— 极难定位。2026-11-07 A/B: 只预热
+     * localhost 仍崩(走 /etc/hosts), 只做一次外部名字解析即全绿,
+     * 与是否做 TLS 握手无关。
      *
      * 位置很关键: 必须放在下面 pthread_create(session_prune_thread) 之**前**。
      * 放在 fork 之前但线程之后是不够的 —— 那时 fork 安全性已经破坏了。
@@ -830,26 +832,22 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
  *    when fork() was called ... Crashing instead."
  * 表现为 agent 进程直接挂掉, 对端连接被拒。
  *
- * 这里的做法: fork 一个子进程跑一次 curl(与 agent-httpd 调 LLM 的方式一致),
- * 让 curl 自己去完成 TLS 初始化。父进程 wait 到它结束 —— 这一步发生在
- * pthread_create 之前(调用点在 agenthttpd_run 里), 所以 fork 还是安全的。 */
+ * 2026-11-07 一版曾 fork + exec `curl https://example.com --max-time 3`,
+ * 想让子进程替父进程完成 TLS 初始化。三个问题: ① 它本身就是一次启动期
+ * HTTPS 出站, 与 warmup「不产生 egress」的前提相反; ② 最坏阻塞 3 秒;
+ * ③ 初始化发生在 exec 之后的子进程里, 父进程自己从未解析过外部名字 ——
+ * 而 host 侧 A/B 证明根因恰恰是**父进程首次解析外部主机名**。
+ *
+ * 现在与 `lang/builtins_http.c` 的强定义用同一个修复: 在 master 进程里
+ * 做一次外部名字解析, 结果立即丢弃。不连接、不 fork、不产生 egress,
+ * 也没有 3 秒上限。解析失败(离线)同样算跑过这一轮 —— 预热的目标是
+ * 「别在 worker 里首次初始化」, 不是「必须连通」。 */
 __attribute__((weak)) int lume_http_warmup(void) {
-    pid_t pid = fork();
-    if (pid < 0) return 1;
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > 2) close(devnull);
-        }
-        /* 3 秒足够握手; 没有外网时也会很快失败 —— 预热的目标是"别在 worker
-         * 里首次初始化", 不是"必须连通"。 */
-        execlp("curl", "curl", "-sS", "--max-time", "3",
-               "-o", "/dev/null", "https://example.com", (char *)NULL);
-        _exit(127);
-    }
-    int status = 0;
-    (void)waitpid(pid, &status, 0);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    (void)getaddrinfo("example.com", "443", &hints, &res);
+    if (res) freeaddrinfo(res);
     return 0;
 }
