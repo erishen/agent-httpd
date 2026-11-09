@@ -265,9 +265,15 @@ exposure uncovered.
       connection. Hostnames compare case-insensitively, trailing FQDN dot
       and port-tolerant (a ported entry matches only that exact host:port),
       IPv6-literal aware. Covered by `tests/test_allowed_hosts.c` (22
-      shapes) inside `make test-unit`. The `SERVER_NAME` default is
-      deferred — the server has no such config today; empty remains
-      accept-any until the `request_is_same_origin` item lands.
+      shapes) inside `make test-unit`. The `SERVER_NAME` default was
+      deferred with the note "until the `request_is_same_origin` item
+      lands" — **that precondition is gone**: the item landed 2026-11-04
+      (next checkbox, `request_is_same_origin()` in `util.c`). An empty
+      `allowed_hosts` still accepts any Host by design, but the
+      same-origin gate now runs in the framework for every state-changing
+      request, so a `SERVER_NAME`-derived default is an optional config
+      nicety rather than a security blocker. Not scheduled; status
+      corrected 2026-11-09 so it stops reading as an open dependency.
 - [x] Add a framework-level `request_is_same_origin(req)` used by the
       method gate for state-changing verbs: compare `Sec-Fetch-Site`
       (`same-origin`/`none`) when present, else `Origin` host against the
@@ -407,11 +413,12 @@ feature.
       `?` binds, actor from req.user) wired into the `/dsl/data` route;
       contract documented in docs/FRAMEWORK.md key-constraint 4.
 
-### `MAX_REQUEST_SIZE` is a hard 64 KiB and blocks the upload use case
+### `MAX_REQUEST_SIZE` is a 64 KiB read buffer; uploads still need multipart
 
-`src/httpd.h:8` + the force-close 413 path. Any multipart support is
-moot until the body buffer stops being a single stack buffer, so this is
-cross-filed with `lume-core/TODO.md` P13 and lume host `TODO.md` P13.
+Original 2026-10-30 framing (kept as the reasoning record): `src/httpd.h:8`
++ the force-close 413 path, with any multipart support moot until the
+body buffer stops being a single stack buffer; cross-filed with
+`lume-core/TODO.md` P13 and lume host `TODO.md` P13.
 
 - [x] Nothing to do here until the streamed-body redesign is scheduled;
       keep serving downloads (which work today) and reject uploads at the
@@ -420,9 +427,18 @@ cross-filed with `lume-core/TODO.md` P13 and lume host `TODO.md` P13.
       `http_parse.c` flags `body_too_large` and `http.c` answers 413 via
       `set_error_response` (an HTML error page, not a bare status line),
       with the connection force-closed so the unread body cannot desync
-      keep-alive. The remaining work (multipart / streamed bodies) is the
-      cross-filed P13 redesign; nothing further is safe or useful to ship
-      before that is scheduled.
+      keep-alive.
+      **Update 2026-11-09:** that redesign landed on 2026-11-04
+      (`9d64d9e`) — Content-Length bodies above `MAX_REQUEST_SIZE` are
+      spooled to a `mkstemp` temp file up to `MAX_BODY_SPOOL_BYTES`
+      (default 8 MiB, `BODY_SPOOL_DIR`), `req->body` stays NULL and
+      `req->body_temp_path` names the file, the declared length is fully
+      consumed so keep-alive/pipelining stays exact, CGI/FastCGI consume
+      the spooled body, and the temp file is unlinked at request teardown.
+      Over the cap keeps the historical 413 + forced close; spool failures
+      map to 408/400/500. The transport blocker is gone — the remaining
+      upload work is the multipart parser (lume-core `TODO.md` P13,
+      item (a)), which must not be shipped on its own.
 
 ### MySQL/PG backends are implemented but invisible to the header comment and CI
 
