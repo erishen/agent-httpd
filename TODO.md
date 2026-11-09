@@ -464,3 +464,95 @@ uncompiled by default.
       `mysql://` and `postgres://` DSNs and runs `SELECT 1`. The Makefile
       target fails loudly if either DSN is missing (no silent SQLite
       fallback).
+
+## P3 — 2026-11-09 fastapi-web re-review follow-ups
+
+Companion to lume-core `TODO.md` P19 and lume host `TODO.md` P13
+addendum. The 10-30 P2 review covered CSRF / cookie `Secure` / login
+throttling / `req.user` / constant-time compare / audit log. These are
+the items surfaced by the **11-09** re-review, against the compliance
+hardening that landed in fastapi-web that day. None duplicates P2.
+
+### Handler-supplied headers are emitted verbatim, with no byte-range check
+
+`src/http/http_resp.c:165` writes `response->extra_headers` straight
+into the response block; the comment says the lume bridge "validates the
+lines", i.e. CR/LF injection. There is no check that header *values*
+are ASCII/obs-text. A Chinese-language notice will not crash here the
+way Starlette's latin-1 encode did (`C` just copies bytes), but it goes
+onto the wire as an invalid HTTP field value — and, critically, after
+the handler may already have committed a row. fastapi-web's 11-09 bug
+was exactly "data saved but 500"; the lume equivalent is "data saved but
+malformed response".
+
+- [ ] Decide and document the header-value policy: reject non-ASCII
+      values in the bridge (fail-closed, before any side effect), or
+      explicitly allow obs-text with a documented encoding. Add a
+      real-server regression that sends a UTF-8 header value and asserts
+      a clean rejection with no committed row. Do not silently strip.
+- [ ] Document the safe pattern for dependent projects: privacy notices
+      and any human-readable text go in the response **body**; headers
+      carry only ASCII machine-readable markers (fastapi-web settled on
+      `X-Data-Protection: consent-required; pii-encrypted`).
+
+### Error responses leak configuration detail in one place
+
+`src/http/http_route.c:430` returns
+`{"ok":false,"detail":"AUTH_REALM_FILE unset or unwritable"}` — an
+internal path/config fact in a client-visible body. All other error
+paths in this tree use `set_error_response` with a generic message,
+which is the same fail-closed posture fastapi-web adopted 11-09 for
+non-development environments.
+
+- [ ] Replace that body with a generic message and log the specific
+      reason server-side. Add a regression asserting the response body
+      contains neither an env var name nor a filesystem path.
+
+### Retention cleanup has a pattern but no generic hook
+
+fastapi-web's 11-09 cleaner physically deletes booking PII after a
+retention window (completed > 30 days, open > 365 days) from both an
+in-process daemon thread and a one-shot CLI. This tree already has the
+thread pattern — `session_prune_thread` (`src/core/framework.c:389`,
+created at `:627`) — but nothing generic for application data.
+
+- [ ] If a fastapi-web-style service is ever ported, decide whether
+      retention jobs get a generic timer hook modeled on the session
+      pruner, or stay as external cron + one-shot CLI (fastapi-web ships
+      both). Do not add an implicit background writer to the request
+      path. Cross-ref: lume-core `TODO.md` P19.
+
+### `Server: AgentHTTPD` is a fixed string
+
+`http_resp.c:190` hardcodes it. P2's security posture was "no version
+fingerprint", which this satisfies, so this is a policy question rather
+than a vulnerability — fastapi-web's 11-09 hardening suppressed the
+header entirely (`--no-server-header`).
+
+- [ ] Decide whether an env opt-out (`AGENTHTTPD_NO_SERVER_HEADER=1`) is
+      worth adding for parity, or record here that the fixed product
+      string is intentional and close the item. Do not spend a CI leg on
+      it.
+
+### PII-at-rest research adds an option (c) on this side of the boundary
+
+lume-core `docs/PII_AT_REST.md` (2026-11-09, cross-ref P19 / host P13
+addendum) evaluates the AEAD-vs-storage policy and finds that storage-layer
+encryption only covers the remote MySQL/PG deployments: the SQLite path has
+no sqlcipher / SEE / `SQLITE_HAS_CODEC` in either tree. It proposes a third
+option — **framework-layer field encryption** at the two uniform entry
+points `db_query_json()` (`src/agent/db_layer.c:710`) and
+`db_write_exec()` (`:749`), exposed to DSL handlers as an MCP tool rather
+than a language builtin — which preserves field granularity while avoiding
+the 11-point builtin surface and the host-owned `sync-lang` hand-merge.
+
+**Policy verdict 2026-11-09**: conditional (b), recorded in lume-core P19
+and host `SECURITY.md`. (c) is the preferred fallback if field-level PII
+protection is ever needed; this item stays deferred — no code until it is
+explicitly selected.
+
+- [ ] If that option is ever selected, decide here whether the hook lives
+      in `db_layer` (transparent column policy) or as an explicit tool,
+      and give it the same gate/parity discipline the P14 spawn decision
+      required for new server primitives. No code until lume-core P19's
+      policy verdict is recorded.
