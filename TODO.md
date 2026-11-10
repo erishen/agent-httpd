@@ -551,8 +551,26 @@ and host `SECURITY.md`. (c) is the preferred fallback if field-level PII
 protection is ever needed; this item stays deferred — no code until it is
 explicitly selected.
 
-- [ ] If that option is ever selected, decide here whether the hook lives
-      in `db_layer` (transparent column policy) or as an explicit tool,
-      and give it the same gate/parity discipline the P14 spawn decision
-      required for new server primitives. No code until lume-core P19's
-      policy verdict is recorded.
+**Selected 2026-11-10**: option (c), transparent column policy — not an
+explicit DSL tool. Rationale: a tool call site can be forgotten (or bypassed
+by a direct `sql_write`), while the two `db_layer` entry points sit under
+every DSL write and read; the policy is `table.column` pairs from
+`LUME_PII_COLUMNS`, so no SQL parsing is needed to *identify* a value beyond
+the INSERT column list that the hook already walks for parameter indices.
+
+Landed in the SQLite backend (`src/agent/sqlite_tool.c`), which is the
+deployment shape that had no storage-layer option at all:
+`pii_prepare_bind()` encrypts declared columns before bind and
+`json_cell_pii()` decrypts them on the way out; `src/agent/pii_crypt.c`
+holds ChaCha20-Poly1305 (RFC 8439), the `lume1.<key-id>.<b64>` format, AAD
+binding to `table:column`, legacy-plaintext passthrough and fail-closed
+missing-key handling.
+
+- [x] Hook placement decided (transparent column policy at `db_layer`).
+- [x] Gate/parity discipline: `tests/test_pii_crypt.c` is in `make
+      test-unit` and pins RFC 8439 §2.8.2 plus tamper/relocation/rotation
+      cases, so a future refactor cannot silently change the wire format.
+- [ ] MySQL/PostgreSQL backends: apply the same two hooks (`db_layer.c`
+      bind loop and row JSON builder) before claiming uniform coverage.
+- [ ] Key custody: `LUME_PII_SECRET_PREV` covers rotation, but backup and
+      retirement of retired keys stays an operator responsibility.

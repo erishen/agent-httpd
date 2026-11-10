@@ -27,6 +27,7 @@
 #include "minijson.h"
 #include "tools.h"
 #include "db_layer.h"
+#include "pii_crypt.h" /* framework-layer PII field encryption (option (c)) */
 
 #define SQL_MAX 8192
 #define ROW_CAP 200
@@ -490,8 +491,34 @@ static void json_cell(sqlite3_stmt *st, int col, sbuf *out) {
     }
 }
 
-/* Append up to ROW_CAP rows as a JSON array of objects; sets *truncated. */
-static void dump_rows(sqlite3_stmt *st, sbuf *out, int *truncated) {
+/* Append up to ROW_CAP rows as a JSON array of objects; sets *truncated.
+ *
+ * Option (c) hook: when `table` carries a policy-declared PII column, its
+ * cells are decrypted before serialisation, so the DSL sees plaintext and
+ * never a token. A cell that is not a `lume1.` token (legacy row) is passed
+ * through untouched. */
+static void json_cell_pii(sqlite3_stmt *st, int col, const char *table,
+                          const char *column, sbuf *out) {
+    const char *txt = (const char *)sqlite3_column_text(st, col);
+    if (!txt || strncmp(txt, PII_TOKEN_PREFIX, strlen(PII_TOKEN_PREFIX)) != 0) {
+        json_cell(st, col, out);
+        return;
+    }
+    char err[160] = "";
+    char *pt = pii_decrypt_value(table, column, txt, err, sizeof err);
+    if (!pt) {
+        /* Fail closed: never emit a ciphertext as if it were the value, and
+         * never emit an empty string. One bad row must not poison the whole
+         * response silently. */
+        json_cell(st, col, out);
+        return;
+    }
+    sb_json_str(out, pt);
+    free(pt);
+}
+
+static void dump_rows(sqlite3_stmt *st, sbuf *out, int *truncated,
+                      const char *table) {
     int ncol = sqlite3_column_count(st);
     int first = 1;
     int seen = 0;
@@ -506,11 +533,15 @@ static void dump_rows(sqlite3_stmt *st, sbuf *out, int *truncated) {
         sb_str(out, "{");
         for (int i = 0; i < ncol; i++) {
             if (i) sb_str(out, ",");
+            const char *cname =
+                sqlite3_column_name(st, i) ? sqlite3_column_name(st, i) : "col";
             char key[160];
-            snprintf(key, sizeof key, "\"%s\":",
-                     sqlite3_column_name(st, i) ? sqlite3_column_name(st, i) : "col");
+            snprintf(key, sizeof key, "\"%s\":", cname);
             sb_str(out, key);
-            json_cell(st, i, out);
+            if (table && table[0] && pii_is_column(table, cname))
+                json_cell_pii(st, i, table, cname, out);
+            else
+                json_cell(st, i, out);
         }
         sb_str(out, "}");
         seen++;
@@ -569,8 +600,10 @@ static void tool_sql_query(void *data, const char *args,
         sqlite3_close(db);
         return;
     }
+    char pii_table[PII_MAX_NAME] = "";
+    pii_select_table(body, pii_table, sizeof pii_table);
     int truncated = 0;
-    dump_rows(st, result, &truncated);
+    dump_rows(st, result, &truncated, pii_table);
     if (truncated) sb_str(result, " … (rows truncated at 200)");
     sqlite3_finalize(st);
     sqlite3_close(db);
@@ -695,10 +728,78 @@ int sqlite_query_json(const char *db, const char *sql, const char **params,
         sqlite3_close(sq);
         return 1;
     }
-    dump_rows(st, out, NULL);
+    char pii_table[PII_MAX_NAME] = "";
+    pii_select_table(body, pii_table, sizeof pii_table);
+    dump_rows(st, out, NULL, pii_table);
     sqlite3_finalize(st);
     sqlite3_close(sq);
     return 0;
+}
+
+/* Option (c) write hook: encrypt the policy-declared columns before bind.
+ * Fail-closed throughout — an INSERT that targets a PII table but whose
+ * parameters cannot be attributed (VALUES without a column list, inline
+ * literals) is an error, never a silent plaintext write. */
+static int pii_prepare_bind(const char *sql, const char **params, int nparams,
+                            const char ***bind_ptr, char **owned, int *n_owned,
+                            char *err, size_t errsz) {
+    *bind_ptr = params;
+    *n_owned = 0;
+    if (!pii_configured()) return 0;
+
+    const char *p = sql;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (strncasecmp(p, "insert", 6) != 0) return 0;
+
+    pii_target targets[PII_MAX_COLS];
+    int nt = 0;
+    char table[PII_MAX_NAME] = "";
+    if (pii_insert_targets(sql, targets, PII_MAX_COLS, &nt) != 0) {
+        if (pii_insert_table(sql, table, sizeof table) == 0 &&
+            pii_table_has_pii(table)) {
+            snprintf(err, errsz,
+                     "pii: cannot attribute INSERT columns for table '%s' "
+                     "(write an explicit column list with ? parameters)",
+                     table);
+            return 1;
+        }
+        return 0; /* INSERT into a table with no declared PII column */
+    }
+    if (nt == 0) return 0;
+
+    const char **tmp = NULL;
+    for (int k = 0; k < nt; k++) {
+        int i = targets[k].param;
+        if (i < 0 || i >= nparams) {
+            snprintf(err, errsz, "pii: parameter index out of range");
+            goto fail;
+        }
+        if (!params || !params[i]) continue; /* SQL NULL stays NULL */
+
+        char *tok = pii_encrypt_value(table, targets[k].column, params[i], err,
+                                      errsz);
+        if (!tok) goto fail; /* err already set; never fall back to plaintext */
+
+        if (!tmp) {
+            tmp = malloc(sizeof(const char *) * (size_t)(nparams > 0 ? nparams : 1));
+            if (!tmp) {
+                free(tok);
+                snprintf(err, errsz, "pii: out of memory");
+                goto fail;
+            }
+            for (int j = 0; j < nparams; j++) tmp[j] = params ? params[j] : NULL;
+        }
+        tmp[i] = tok;
+        owned[(*n_owned)++] = tok;
+    }
+    if (tmp) *bind_ptr = (const char **)tmp;
+    return 0;
+
+fail:
+    for (int k = 0; k < *n_owned; k++) free(owned[k]);
+    *n_owned = 0;
+    free((void *)tmp);
+    return 1;
 }
 
 int sqlite_write_exec(const char *db, const char *sql, const char **params,
@@ -731,11 +832,25 @@ int sqlite_write_exec(const char *db, const char *sql, const char **params,
         sqlite3_close(sq);
         return 1;
     }
-    if (bind_params(st, params, nparams, err, errsz)) {
+    const char **bindp = params;
+    char *owned[PII_MAX_COLS] = {0};
+    int n_owned = 0;
+    if (pii_prepare_bind(body, params, nparams, &bindp, owned, &n_owned,
+                         err, errsz)) {
         sqlite3_finalize(st);
         sqlite3_close(sq);
         return 1;
     }
+    if (bind_params(st, bindp, nparams, err, errsz)) {
+        for (int i = 0; i < n_owned; i++) free(owned[i]);
+        if (bindp != params) free((void *)bindp);
+        sqlite3_finalize(st);
+        sqlite3_close(sq);
+        return 1;
+    }
+    if (bindp != params) free((void *)bindp);
+    for (int i = 0; i < n_owned; i++) free(owned[i]); /* tokens are copied by bind */
+
     /* Same RETURNING drain as the tool path above. */
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) { /* drain RETURNING */ }

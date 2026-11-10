@@ -403,6 +403,20 @@ Notes:
   interpreters are built in; go/rust/java are **recompiled inside the
   container** by the `cgi-build` stage with Linux toolchains (host Mach-O
   artifacts are excluded by `.dockerignore`)
+- PII at rest (option (c), selected 2026-11-10): field-level
+  ChaCha20-Poly1305 at the two uniform DB entry points, so the DSL never
+  sees a key and SQLite gets the same protection as MySQL/PG. Configure with
+  `LUME_PII_COLUMNS` (comma-separated `table.column`), `LUME_PII_SECRET`
+  (32-byte key as 64 hex chars), `LUME_PII_KEY_ID` (default `1`), and
+  optionally `LUME_PII_SECRET_PREV` / `LUME_PII_KEY_ID_PREV` for rotation.
+  Token format `lume1.<key-id>.<base64url(nonce‖ciphertext‖tag)>`, AAD =
+  `table:column`, legacy plaintext passes through unchanged, missing key is
+  fail-closed, and an INSERT into a PII table that cannot be attributed
+  (no column list, inline literals) is refused rather than stored in
+  clear. Coverage today: the SQLite backend; MySQL/PG compile the same
+  policy but their row/param paths still need the same two hooks.
+  Tests: `tests/test_pii_crypt.c` (RFC 8439 §2.8.2 vector, tamper,
+  relocation, rotation, fail-closed).
 - Environment variables: `WORKERS` (worker count, 0 = fork-per-connection),
   `RATE_LIMIT` (per-IP req/s), `LOG_FILE` (default
   `/var/log/agent-httpd/access.log`); the C chat endpoint also reads

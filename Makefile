@@ -82,13 +82,15 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
        src/security/auth.c src/security/ratelimit.c src/security/loginlimit.c src/security/bcrypt.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
        src/agent/tools.c src/agent/skills.c src/agent/session.c \
-       src/agent/sqlite_tool.c src/agent/db_layer.c src/agent/tools_api.c
+       src/agent/sqlite_tool.c src/agent/db_layer.c src/agent/tools_api.c \
+       src/agent/pii_crypt.c
 HDRS = src/httpd.h src/agenthttpd.h src/internal.h \
        src/core/minijson.h src/core/metrics.h src/core/router.h \
        src/http/chatio.h \
        src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
        src/agent/tools.h src/agent/skills.h src/agent/session.h src/agent/tools_api.h \
-       src/agent/sqlite_tool.h src/agent/db_layer.h src/security/bcrypt.h
+       src/agent/sqlite_tool.h src/agent/db_layer.h src/agent/pii_crypt.h \
+       src/security/bcrypt.h
 OBJS = $(SRCS:src/%.c=$(BUILD_DIR)/%.o)
 INSTALL_DIR = /usr/local/bin
 
@@ -243,11 +245,15 @@ test-unit: all
 	    src/http/http_resp.c -o tests/t_resp
 	./tests/t_resp
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_sqlite_guard.c \
-	    src/agent/sqlite_tool.c src/core/minijson.c -o tests/t_guard -lsqlite3
+	    src/agent/sqlite_tool.c src/agent/pii_crypt.c src/core/minijson.c \
+	    -o tests/t_guard -lsqlite3
 	./tests/t_guard
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_crlf.c \
 	    src/http/http_parse.c -o tests/t_crlf
 	./tests/t_crlf
+	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_pii_crypt.c \
+	    src/agent/pii_crypt.c -o tests/t_pii
+	./tests/t_pii
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_xff.c \
 	    src/http/http_parse.c -o tests/t_xff
 	./tests/t_xff
