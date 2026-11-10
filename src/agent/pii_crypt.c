@@ -655,8 +655,19 @@ static int ci_prefix(const char *s, const char *word) {
            !(isalnum((unsigned char)s[n]) || s[n] == '_');
 }
 
+/* Parse `INSERT INTO <table> (<cols>) VALUES (<items>)`.
+ *
+ * An item is either a positional `?` (kind=1, remembering its parameter
+ * index) or a literal (`0`, `'x'`, `NULL`, `CURRENT_TIMESTAMP`, ...)
+ * (kind=0). Literal shapes are accepted but tracked, because a literal in a
+ * PII column means the plaintext would bypass encryption — the caller must
+ * refuse that, not quietly write it.
+ *
+ * Returns 0 on success, -1 when the statement is not a shape this parser can
+ * attribute (no column list, named/:param placeholders, INTO ... SELECT). */
 static int parse_insert(const char *sql, char *table, size_t table_sz,
-                        char cols[][PII_MAX_COLS], int max_cols, int *ncols) {
+                        char cols[][PII_MAX_COLS], int *is_param,
+                        int *param_at, int max_cols, int *ncols) {
     const char *p = skip_ws(sql);
     if (!ci_prefix(p, "insert")) return -1;
     p = skip_ws(p + 6);
@@ -677,8 +688,7 @@ static int parse_insert(const char *sql, char *table, size_t table_sz,
         const char *next = read_ident(p, cols[n], PII_MAX_COLS);
         if (!next) return -1;
         n++;
-        p = next;
-        p = skip_ws(p);
+        p = skip_ws(next);
         if (*p == ',') { p++; continue; }
         if (*p == ')') { p++; break; }
         return -1;
@@ -690,20 +700,45 @@ static int parse_insert(const char *sql, char *table, size_t table_sz,
     if (*p != '(') return -1;
     p++;
 
-    /* Only positional `?` parameters; anything else is refused. */
-    int nparams = 0;
+    int col = 0, nparams = 0;
     while (1) {
         p = skip_ws(p);
         if (*p == ')') { p++; break; }
-        if (*p != '?') return -1;
-        p++;
-        nparams++;
+        if (col >= n) return -1;
+
+        if (*p == '?') {
+            is_param[col] = 1;
+            param_at[col] = nparams++;
+            p++;
+        } else {
+            /* A literal item runs until a top-level ',' or ')'. Quoted
+             * strings and nested parentheses are skipped as units. */
+            is_param[col] = 0;
+            param_at[col] = -1;
+            const char *lit_start = p;
+            char q = 0;
+            int depth = 0;
+            while (*p) {
+                if (q) {
+                    if (*p == q) q = 0;
+                    p++;
+                    continue;
+                }
+                if (*p == '\'' || *p == '"') { q = *p++; continue; }
+                if (*p == '(') { depth++; p++; continue; }
+                if (*p == ')' && depth > 0) { depth--; p++; continue; }
+                if (depth == 0 && (*p == ',' || *p == ')')) break;
+                p++;
+            }
+            if (q || p == lit_start) return -1; /* unterminated / empty item */
+        }
+        col++;
         p = skip_ws(p);
         if (*p == ',') { p++; continue; }
         if (*p == ')') { p++; break; }
         return -1;
     }
-    if (nparams != n) return -1;
+    if (col != n) return -1;
 
     p = skip_ws(p);
     if (*p && *p != ';') return -1; /* trailing clause (ON CONFLICT etc.) */
@@ -712,22 +747,14 @@ static int parse_insert(const char *sql, char *table, size_t table_sz,
     return 0;
 }
 
+/* Parameter-index-only view of pii_insert_targets, kept because the pinned
+ * unit test asserts the INSERT -> parameter map directly. */
 int pii_insert_param_columns(const char *sql, int *idx, int max, int *n) {
+    if (n) *n = 0;
     pii_target targets[PII_MAX_COLS];
     int found = 0;
-    if (pii_insert_targets(sql, targets, PII_MAX_COLS, &found) != 0) {
-        if (n) *n = 0;
-        /* Columns may sit in a table without policy: report "supported,
-         * nothing to encrypt" rather than "unsupported". */
-        if (!pii_configured()) return -1;
-        char table[PII_MAX_COLS] = "";
-        if (pii_insert_table(sql, table, sizeof table) == 0 &&
-            !pii_table_has_pii(table)) {
-            if (n) *n = 0;
-            return 0;
-        }
-        return -1;
-    }
+    int rc = pii_insert_targets(sql, targets, PII_MAX_COLS, &found);
+    if (rc != 0) return rc; /* -1 unparseable, -2 literal in a PII column */
     for (int i = 0; i < found; i++) {
         if (!idx || i >= max) return -1;
         idx[i] = targets[i].param;
@@ -749,15 +776,20 @@ int pii_insert_targets(const char *sql, pii_target *out, int max, int *n) {
 
     char table[PII_MAX_COLS] = "";
     static char cols[PII_MAX_COLS][PII_MAX_COLS];
+    static int is_param[PII_MAX_COLS], param_at[PII_MAX_COLS];
     int ncols = 0;
-    if (parse_insert(sql, table, sizeof table, cols, PII_MAX_COLS, &ncols) != 0)
+    if (parse_insert(sql, table, sizeof table, cols, is_param, param_at,
+                     PII_MAX_COLS, &ncols) != 0)
         return -1;
 
     int found = 0;
     for (int i = 0; i < ncols; i++) {
         if (!pii_is_column(table, cols[i])) continue;
+        /* An inline literal in a PII column is plaintext that would bypass
+         * encryption; the caller must refuse it. -2 says exactly that. */
+        if (!is_param[i]) return -2;
         if (!out || found >= max) return -1;
-        out[found].param = i;
+        out[found].param = param_at[i];
         snprintf(out[found].column, PII_MAX_NAME, "%s", cols[i]);
         found++;
     }
@@ -765,14 +797,19 @@ int pii_insert_targets(const char *sql, pii_target *out, int max, int *n) {
     return 0;
 }
 
+/* Deliberately narrower than parse_insert: the target table is known from
+ * the statement head even when the value list cannot be attributed, and the
+ * write hook needs that name to decide whether to fail closed. */
 int pii_insert_table(const char *sql, char *table_out, size_t table_sz) {
     if (table_out && table_sz) table_out[0] = '\0';
     if (!sql) return -1;
+    const char *p = skip_ws(sql);
+    if (!ci_prefix(p, "insert")) return -1;
+    p = skip_ws(p + 6);
+    if (!ci_prefix(p, "into")) return -1;
+    p = skip_ws(p + 4);
     char table[PII_MAX_COLS] = "";
-    static char cols[PII_MAX_COLS][PII_MAX_COLS];
-    int ncols = 0;
-    if (parse_insert(sql, table, sizeof table, cols, PII_MAX_COLS, &ncols) != 0)
-        return -1;
+    if (!read_ident(p, table, sizeof table)) return -1;
     if (table_out && table_sz) snprintf(table_out, table_sz, "%s", table);
     return 0;
 }

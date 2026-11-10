@@ -230,6 +230,25 @@ static void test_insert_mapping(void) {
     CHECK(n2 == 2);
     CHECK(idx2[0] == 0 && idx2[1] == 1);
 
+    /* Mixed placeholders and literals — the shape this service actually
+     * writes (`status` is a literal 0) — must still map the right parameter
+     * indices. Regression: the first parser refused every such statement and
+     * the hook then fell through to a plaintext write. */
+    int idx4[8], n4 = 0;
+    CHECK(pii_insert_param_columns(
+              "INSERT INTO bookings (status, name, phone, created_at) "
+              "VALUES (0, ?, ?, ?)",
+              idx4, 8, &n4) == 0);
+    CHECK(n4 == 2);
+    CHECK(idx4[0] == 0 && idx4[1] == 1);
+
+    /* A literal in a PII column bypasses encryption, so it must be refused
+     * (distinct code -2, not a silent success). */
+    int idx5[8], n5 = 0;
+    CHECK(pii_insert_param_columns(
+              "INSERT INTO bookings (name, phone) VALUES (?, '13900000000')",
+              idx5, 8, &n5) == -2);
+
     /* Unsupported shapes must be refused rather than guessed at. */
     int idx3[8], n3 = 0;
     CHECK(pii_insert_param_columns("INSERT INTO bookings VALUES (?, ?)",

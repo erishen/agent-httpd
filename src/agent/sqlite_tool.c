@@ -754,9 +754,19 @@ static int pii_prepare_bind(const char *sql, const char **params, int nparams,
     pii_target targets[PII_MAX_COLS];
     int nt = 0;
     char table[PII_MAX_NAME] = "";
-    if (pii_insert_targets(sql, targets, PII_MAX_COLS, &nt) != 0) {
-        if (pii_insert_table(sql, table, sizeof table) == 0 &&
-            pii_table_has_pii(table)) {
+    /* Resolve the target table from the statement head first: the value-list
+     * parse below may refuse, and the fail-closed decision needs the name. */
+    if (pii_insert_table(sql, table, sizeof table) != 0) return 0;
+    int prc = pii_insert_targets(sql, targets, PII_MAX_COLS, &nt);
+    if (prc == -2) {
+        /* A literal in a PII column would reach the database in clear. */
+        snprintf(err, errsz,
+                 "pii: inline literal in a PII column of table '%s' "
+                 "(use a ? parameter)", table);
+        return 1;
+    }
+    if (prc != 0) {
+        if (pii_table_has_pii(table)) {
             snprintf(err, errsz,
                      "pii: cannot attribute INSERT columns for table '%s' "
                      "(write an explicit column list with ? parameters)",
