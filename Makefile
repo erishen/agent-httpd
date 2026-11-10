@@ -254,6 +254,7 @@ test-unit: all
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_pii_crypt.c \
 	    src/agent/pii_crypt.c -o tests/t_pii
 	./tests/t_pii
+	./tests/t_pii env
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_xff.c \
 	    src/http/http_parse.c -o tests/t_xff
 	./tests/t_xff

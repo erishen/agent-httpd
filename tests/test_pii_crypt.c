@@ -257,7 +257,28 @@ static void test_insert_mapping(void) {
                                    idx3, 8, &n3) != 0);
 }
 
-int main(void) {
+/* Runs in its own process: the point is that a read-only process, which
+ * only ever asks pii_is_column(), must still load the policy from the
+ * environment. Regression: a fresh server that served GET before any write
+ * returned the raw lume1.… tokens instead of decrypting them. */
+static void test_env_lazy_load(void) {
+    setenv("LUME_PII_COLUMNS", "bookings.phone", 1);
+    setenv("LUME_PII_SECRET",
+           "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", 1);
+    setenv("LUME_PII_KEY_ID", "7", 1);
+
+    CHECK(pii_is_column("bookings", "phone") == 1);
+    CHECK(pii_is_column("bookings", "name") == 0);
+    CHECK(pii_configured() == 1);
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "env") == 0) {
+        test_env_lazy_load();
+        printf("%s (%d failure%s)\n", failures ? "FAILED" : "OK-env",
+               failures, failures == 1 ? "" : "s");
+        return failures ? 1 : 0;
+    }
     test_rfc8439_vector();
     test_tamper();
     test_policy();

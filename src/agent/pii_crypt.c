@@ -425,6 +425,7 @@ static int key_hex_ok(const char *hex) {
 
 void pii_policy_reset(const char *columns_csv, const char *secret_hex,
                       const char *key_id) {
+    g_env_loaded = 1; /* explicit policy wins over LUME_PII_COLUMNS */
     g_nrules = 0;
     g_have_key = g_have_prev = 0;
     g_key_id[0] = g_prev_id[0] = '\0';
@@ -478,6 +479,11 @@ int pii_configured(void) {
 
 int pii_is_column(const char *table, const char *column) {
     if (!table || !column) return 0;
+    /* The read path asks this question column by column and may never touch
+     * pii_configured() first — a process that only reads would otherwise
+     * decrypt nothing. Any explicit pii_policy_reset() marks the policy as
+     * decided, so tests keep their own rules. */
+    pii_policy_from_env();
     for (int i = 0; i < g_nrules; i++)
         if (strcmp(g_rules[i].table, table) == 0 &&
             strcmp(g_rules[i].column, column) == 0) return 1;
