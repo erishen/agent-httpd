@@ -232,6 +232,28 @@ static void fast_serve(Conn *c, HttpRequest *req, HttpResponse *resp, size_t hdr
          * visible in the access log instead of looking like a clean 200. */
         body_sent = 0;
     }
+    /* MAX_RESPONSE_SIZE only bounds the header block plus the portion of the
+     * body that fits beside it; a dynamic body can be far larger (a 14.5MB
+     * asset download). Stream the uncopied tail so Content-Length is honest. */
+    if (off >= raw_len && !head_only && resp->body && !resp->stream_path &&
+        resp->body_length > body_sent) {
+        int b = body_sent;
+        while (b < resp->body_length) {
+            ssize_t w = send(c->fd, resp->body + b,
+                             (size_t)(resp->body_length - b), 0);
+            if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+                struct pollfd pfd;
+                pfd.fd = c->fd;
+                pfd.events = POLLOUT;
+                pfd.revents = 0;
+                if (poll(&pfd, 1, FAST_SEND_WAIT_MS) <= 0) break;
+                continue;
+            }
+            if (w <= 0) break;
+            b += (int)w;
+        }
+        body_sent = b;
+    }
 
     log_request(c->ip_str, req, resp->status_code, body_sent);
     METRICS_INC_AT(requests_total, 0); /* served on the fast path */

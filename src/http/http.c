@@ -906,6 +906,26 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
             off += (int)sw;
         }
     }
+    /* In-buffer body slots are bounded by MAX_RESPONSE_SIZE, so a dynamic
+     * response larger than the header block leaves a tail that was never
+     * copied. Stream the remainder directly: Content-Length already names
+     * the full body, and truncating here silently broke large downloads
+     * (Content-Length stayed 14.5MB while only 256KB arrived). */
+    if (!head_only && response.body && !response.stream_path &&
+        response.body_length > body_sent) {
+        int off2 = body_sent;
+        while (off2 < response.body_length) {
+            ssize_t w = send(client_fd, response.body + off2,
+                             (size_t)(response.body_length - off2), 0);
+            if (w <= 0) {
+                if (w < 0 && errno == EINTR) continue;
+                keep_alive = 0;
+                break;
+            }
+            off2 += (int)w;
+        }
+        body_sent = off2;
+    }
 
     /* stream out-of-buffer bodies (large static files, 206 byte ranges).
      * Zero-copy sendfile(2) on Linux/macOS; fread/send fallback elsewhere.
