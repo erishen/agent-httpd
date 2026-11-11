@@ -413,10 +413,15 @@ Notes:
   `table:column`, legacy plaintext passes through unchanged, missing key is
   fail-closed, and an INSERT into a PII table that cannot be attributed
   (no column list, inline literals) is refused rather than stored in
-  clear. Coverage today: the SQLite backend; MySQL/PG compile the same
-  policy but their row/param paths still need the same two hooks.
-  Tests: `tests/test_pii_crypt.c` (RFC 8439 §2.8.2 vector, tamper,
-  relocation, rotation, fail-closed).
+  clear. The encoder/decoder is backend-independent (`pii_bind_encode`
+  rewrites the parameter array, `pii_cell_json` decrypts result cells), so
+  all three writers — SQLite (`sqlite_tool.c`) and the remote
+  MySQL/PostgreSQL backends in `db_layer.c` — enforce the same policy.
+  Coverage: SQLite, MySQL, PostgreSQL. Tests: `tests/test_pii_crypt.c`
+  (RFC 8439 §2.8.2 vector, tamper, relocation, rotation, fail-closed) on
+  the host, plus the e2e suites in the consumer projects
+  (`lume-fastapi-web`: `make e2e-enc` for SQLite, `make db-e2e` for
+  MariaDB/PostgreSQL against real servers).
 - Environment variables: `WORKERS` (worker count, 0 = fork-per-connection),
   `RATE_LIMIT` (per-IP req/s), `LOG_FILE` (default
   `/var/log/agent-httpd/access.log`); the C chat endpoint also reads

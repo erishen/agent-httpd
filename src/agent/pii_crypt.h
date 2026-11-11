@@ -68,6 +68,18 @@ char *pii_encrypt_value(const char *table, const char *column, const char *plain
 char *pii_decrypt_value(const char *table, const char *column, const char *token,
                         char *err, size_t errsz);
 
+/* ---- bind-level hook (all backends) ----------------------------------- */
+
+/* Encrypts the PII-declared positions of an INSERT before the driver binds
+ * them. Backend-independent: it only rewrites the parameter array, so the
+ * SQLite / MySQL / PostgreSQL writers can share one implementation.
+ * On success `*bind_ptr` points at the array to bind (== `params` when
+ * nothing changed) and `owned`/`*n_owned` hold the tokens the caller must
+ * free. Returns 1 with `err` set on a fail-closed refusal. */
+int pii_bind_encode(const char *sql, const char **params, int nparams,
+                    const char ***bind_ptr, char **owned, int *n_owned,
+                    char *err, size_t errsz);
+
 /* ---- write-path helper ----------------------------------------------- */
 
 /* For `INSERT INTO t (a, b, c) VALUES (?, ?, ?)`: fills `idx` with the

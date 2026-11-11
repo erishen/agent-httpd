@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "db_layer.h"
+#include "pii_crypt.h"
 #include "sqlite_tool.h"
 
 #ifdef HAVE_LIBPQ
@@ -57,6 +58,8 @@ static void db_err_sanitized(char *err, size_t errsz, const char *label,
 static uint64_t fnv1a64(const char *s, size_t n);
 static void fnv1a64_hex(const char *s, size_t n, char out[17]);
 static void db_json_cell(const char *val, sbuf *out);
+static void pii_cell_json(const char *table, const char *column,
+                          const char *val, sbuf *out);
 #endif
 
 /* ===================== PostgreSQL 后端(WITH_PG=1) ===================== */
@@ -253,6 +256,8 @@ static int pg_query_json(void *conn, const char *sql, const char **params,
         PQclear(res);
         return 1;
     }
+    char pii_tbl[PII_MAX_NAME] = "";
+    if (pii_configured()) pii_select_table(body, pii_tbl, sizeof pii_tbl);
     int rows = PQntuples(res), cols = PQnfields(res);
     int row_cap = 200;
     if (rows > row_cap) rows = row_cap;
@@ -263,12 +268,13 @@ static int pg_query_json(void *conn, const char *sql, const char **params,
         for (int c = 0; c < cols; c++) {
             if (c) sb_str(out, ",");
             char key[192];
-            snprintf(key, sizeof key, "\"%s\":",
-                     PQfname(res, c) ? PQfname(res, c) : "col");
+            const char *cname = PQfname(res, c) ? PQfname(res, c) : "col";
+            snprintf(key, sizeof key, "\"%s\":", cname);
             sb_str(out, key);
-            db_json_cell(PQgetisnull(res, r, c) ? NULL
-                                                  : PQgetvalue(res, r, c),
-                         out);
+            const char *cv = PQgetisnull(res, r, c) ? NULL
+                                                     : PQgetvalue(res, r, c);
+            if (cv) pii_cell_json(pii_tbl, cname, cv, out);
+            else db_json_cell(NULL, out);
         }
         sb_str(out, "}");
     }
@@ -287,8 +293,17 @@ static int pg_write_exec(void *conn, const char *sql, const char **params,
         snprintf(err, errsz, "postgres: SQL too large after placeholder rewrite");
         return 1;
     }
+    const char **bindp = params;
+    char *owned[PII_MAX_COLS] = {0};
+    int n_owned = 0;
+    if (pii_bind_encode(body, params, nparams, &bindp, owned, &n_owned, err,
+                        errsz)) {
+        return 1; /* fail closed: never write plaintext into a PII column */
+    }
     PGresult *res = PQexecParams((PGconn *)conn, converted, nparams, NULL,
-                                 (const char *const *)params, NULL, NULL, 0);  /* 文本结果格式,类型按值外观推断 */
+                                 (const char *const *)bindp, NULL, NULL, 0);  /* 文本结果格式,类型按值外观推断 */
+    if (bindp != params) free((void *)bindp);
+    for (int i = 0; i < n_owned; i++) free(owned[i]);
     if (!res) {
         db_err_sanitized(err, errsz, "postgres: query failed",
                          PQerrorMessage((PGconn *)conn));
@@ -337,6 +352,29 @@ static void fnv1a64_hex(const char *s, size_t n, char out[17]) {
 /* ---- 文本值外观推断(远端后端共用; 默认构建不编译, 避免 unused 告警) ----
  * "t"/"f" → bool; 纯数字(含负号/小数点/指数) → 原样输出; NULL → null;
  * 其余 → JSON 字符串。PG 文本结果与 MySQL 按字符串取的列都走这里。 */
+/* Option (c) read hook shared by the remote backends: a policy-declared
+ * column whose value is a `lume1.` token is decrypted before serialisation,
+ * so the DSL sees plaintext. Legacy plaintext and undecryptable tokens are
+ * passed through untouched (fail closed = never invent a value, never print
+ * an empty string). SQLite has the same rule in sqlite_tool.c. */
+static void pii_cell_json(const char *table, const char *column,
+                          const char *val, sbuf *out) {
+    if (!table || !table[0] || !column || !column[0] ||
+        strncmp(val, PII_TOKEN_PREFIX, strlen(PII_TOKEN_PREFIX)) != 0 ||
+        !pii_is_column(table, column)) {
+        db_json_cell(val, out);
+        return;
+    }
+    char derr[160] = "";
+    char *pt = pii_decrypt_value(table, column, val, derr, sizeof derr);
+    if (!pt) {
+        db_json_cell(val, out);
+        return;
+    }
+    db_json_cell(pt, out);
+    free(pt);
+}
+
 static void db_json_cell(const char *val, sbuf *out) {
     if (!val) { sb_str(out, "null"); return; }
     if (strcmp(val, "t") == 0) { sb_str(out, "true"); return; }
@@ -587,6 +625,8 @@ static int mysql_query_json(void *conn, const char *sql, const char **params,
                          mysql_stmt_error(stmt));
         rc = 1; goto done;
     }
+    char pii_tbl[PII_MAX_NAME] = "";
+    if (pii_configured()) pii_select_table(body, pii_tbl, sizeof pii_tbl);
     meta = mysql_stmt_result_metadata(stmt);
     cols = meta ? mysql_num_fields(meta) : 0;
     total = mysql_stmt_num_rows(stmt);
@@ -617,7 +657,10 @@ static int mysql_query_json(void *conn, const char *sql, const char **params,
         ob[c].buffer = bufs[c];
         ob[c].buffer_length = (unsigned long)cap;
         ob[c].length = &lens[c];
-        ob[c].is_null = &nulls[c];
+        /* MySQL 8 客户端把 is_null 声明成 bool*，MariaDB 声明成 my_bool*(char*):
+         * 直接取地址会在 -Werror 下因指针类型不兼容而编译失败(这条后端路径
+         * 以前从没在 WITH_MYSQL=1 下编过)。走 void* 中转，两边都成立。 */
+        ob[c].is_null = (void *)&nulls[c];
     }
     int brc = cols ? mysql_stmt_bind_result(stmt, ob) : 0;
     sb_str(out, "[");
@@ -639,7 +682,7 @@ static int mysql_query_json(void *conn, const char *sql, const char **params,
                     unsigned long blen = lens[c];
                     if (blen >= caps[c]) blen = (unsigned long)caps[c] - 1;
                     bufs[c][blen] = '\0';
-                    db_json_cell(bufs[c], out);
+                    pii_cell_json(pii_tbl, f ? f->name : "col", bufs[c], out);
                 }
             }
             sb_str(out, "}");
@@ -660,6 +703,15 @@ static int mysql_write_exec(void *conn, const char *sql, const char **params,
     char body[SQL_MAX];
     const char *verr = db_validate_write(sql, body, sizeof body);
     if (verr) { snprintf(err, errsz, "%s", verr); return 1; }
+    /* Option (c) write hook: same shared encoder as SQLite/postgres, so a
+     * mysql:// DSN can never receive a plaintext PII column. */
+    const char **bindp = params;
+    char *owned[PII_MAX_COLS] = {0};
+    int n_owned = 0;
+    if (pii_bind_encode(body, params, nparams, &bindp, owned, &n_owned, err,
+                        errsz)) {
+        return 1;
+    }
     MYSQL *m = (MYSQL *)conn;
     MYSQL_STMT *stmt = mysql_stmt_init(m);
     if (!stmt) { snprintf(err, errsz, "mysql: mysql_stmt_init failed"); return 1; }
@@ -680,7 +732,7 @@ static int mysql_write_exec(void *conn, const char *sql, const char **params,
             snprintf(err, errsz, "mysql: out of memory binding params");
             rc = 1; goto done;
         }
-        mysql_fill_bind(pb, il, fl, params, nparams);
+        mysql_fill_bind(pb, il, fl, bindp, nparams);
         if (mysql_stmt_bind_param(stmt, pb) != 0) {
             db_err_sanitized(err, errsz, "mysql: bind params failed",
                              mysql_stmt_error(stmt));
@@ -694,6 +746,8 @@ static int mysql_write_exec(void *conn, const char *sql, const char **params,
     }
     *affected = (int)mysql_stmt_affected_rows(stmt);
 done:
+    if (bindp != params) free((void *)bindp);
+    for (int i = 0; i < n_owned; i++) free(owned[i]);
     free(pb); free(il); free(fl);
     mysql_stmt_close(stmt);
     return rc;

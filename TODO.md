@@ -566,11 +566,23 @@ holds ChaCha20-Poly1305 (RFC 8439), the `lume1.<key-id>.<b64>` format, AAD
 binding to `table:column`, legacy-plaintext passthrough and fail-closed
 missing-key handling.
 
+**Uniform coverage 2026-11-11**: the hook is now backend-independent —
+`pii_bind_encode()` (rewrites the parameter array, so every writer binds
+tokens) and `pii_cell_json()` (decrypts result cells) live in
+`src/agent/pii_crypt.c` / `db_layer.c`. `sqlite_tool.c`, `pg_write_exec`,
+`pg_query_json`, `mysql_write_exec` and `mysql_query_json` all route
+through them. Verifying the remote paths exposed two latent breakages that
+`WITH_MYSQL=1` had never compiled: the client-API `is_null` type differs
+between MySQL 8 (`bool*`) and MariaDB (`my_bool*`), fixed via a `void*`
+handoff. Acceptance: `lume-fastapi-web` `make db-e2e` → PASS=18 FAIL=0
+against real MariaDB 11 + PostgreSQL 16 (ciphertext at rest, plaintext on
+read, inline literal refused, wrong key leaks nothing).
+
 - [x] Hook placement decided (transparent column policy at `db_layer`).
 - [x] Gate/parity discipline: `tests/test_pii_crypt.c` is in `make
       test-unit` and pins RFC 8439 §2.8.2 plus tamper/relocation/rotation
       cases, so a future refactor cannot silently change the wire format.
-- [ ] MySQL/PostgreSQL backends: apply the same two hooks (`db_layer.c`
-      bind loop and row JSON builder) before claiming uniform coverage.
+- [x] MySQL/PostgreSQL backends: same two hooks (`db_layer.c` bind loop and
+      row JSON builder), verified end-to-end with `make db-e2e`.
 - [ ] Key custody: `LUME_PII_SECRET_PREV` covers rotation, but backup and
       retirement of retired keys stays an operator responsibility.

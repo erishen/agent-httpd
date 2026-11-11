@@ -755,6 +755,91 @@ static int parse_insert(const char *sql, char *table, size_t table_sz,
 
 /* Parameter-index-only view of pii_insert_targets, kept because the pinned
  * unit test asserts the INSERT -> parameter map directly. */
+
+/* ---- backend-agnostic bind hook ---------------------------------------
+ * Every backend binds parameters the same way: an array of C strings. The
+ * hook is therefore backend-independent too: rewrite the PII positions with
+ * tokens, leave everything else alone. Fail-closed exactly like the SQLite
+ * path — an INSERT into a PII table whose parameters cannot be attributed
+ * (no column list, inline literal in a PII column) is an error. */
+int pii_bind_encode(const char *sql, const char **params, int nparams,
+                    const char ***bind_ptr, char **owned, int *n_owned,
+                    char *err, size_t errsz) {
+    if (bind_ptr) *bind_ptr = params;
+    if (n_owned) *n_owned = 0;
+    if (err && errsz) err[0] = '\0';
+    if (!pii_configured()) return 0;
+
+    const char *p = sql ? sql : "";
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (strncasecmp(p, "insert", 6) != 0) return 0;
+
+    pii_target targets[PII_MAX_COLS];
+    int nt = 0;
+    char table[PII_MAX_NAME] = "";
+    /* Resolve the target table from the statement head first: the value-list
+     * parse below may refuse, and the fail-closed decision needs the name. */
+    if (pii_insert_table(sql, table, sizeof table) != 0) return 0;
+    int prc = pii_insert_targets(sql, targets, PII_MAX_COLS, &nt);
+    if (prc == -2) {
+        if (err) snprintf(err, errsz,
+                          "pii: inline literal in a PII column of table '%s' "
+                          "(use a ? parameter)", table);
+        return 1;
+    }
+    if (prc != 0) {
+        if (pii_table_has_pii(table)) {
+            if (err) snprintf(err, errsz,
+                              "pii: cannot attribute INSERT columns for table "
+                              "'%s' (write an explicit column list with ? "
+                              "parameters)", table);
+            return 1;
+        }
+        return 0; /* INSERT into a table with no declared PII column */
+    }
+    if (nt == 0) return 0;
+
+    const char **tmp = NULL;
+    int nown = 0;
+    for (int k = 0; k < nt; k++) {
+        int i = targets[k].param;
+        if (i < 0 || i >= nparams) {
+            if (err) snprintf(err, errsz, "pii: parameter index out of range");
+            goto fail;
+        }
+        if (!params || !params[i]) continue; /* SQL NULL stays NULL */
+
+        char terr[160] = "";
+        char *tok = pii_encrypt_value(table, targets[k].column, params[i], terr,
+                                      sizeof terr);
+        if (!tok) {
+            if (err) snprintf(err, errsz, "%s", terr);
+            goto fail; /* never fall back to plaintext */
+        }
+
+        if (!tmp) {
+            tmp = malloc(sizeof(const char *) * (size_t)(nparams > 0 ? nparams : 1));
+            if (!tmp) {
+                free(tok);
+                if (err) snprintf(err, errsz, "pii: out of memory");
+                goto fail;
+            }
+            for (int j = 0; j < nparams; j++) tmp[j] = params ? params[j] : NULL;
+        }
+        tmp[i] = tok;
+        owned[nown++] = tok;
+    }
+    if (tmp) *bind_ptr = (const char **)tmp;
+    if (n_owned) *n_owned = nown;
+    return 0;
+
+fail:
+    for (int k = 0; k < nown; k++) free(owned[k]);
+    if (n_owned) *n_owned = 0;
+    free((void *)tmp);
+    return 1;
+}
+
 int pii_insert_param_columns(const char *sql, int *idx, int max, int *n) {
     if (n) *n = 0;
     pii_target targets[PII_MAX_COLS];

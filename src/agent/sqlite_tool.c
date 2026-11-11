@@ -736,80 +736,14 @@ int sqlite_query_json(const char *db, const char *sql, const char **params,
     return 0;
 }
 
-/* Option (c) write hook: encrypt the policy-declared columns before bind.
- * Fail-closed throughout — an INSERT that targets a PII table but whose
- * parameters cannot be attributed (VALUES without a column list, inline
- * literals) is an error, never a silent plaintext write. */
+/* Option (c) write hook: the encryption itself moved to pii_bind_encode()
+ * (src/agent/pii_crypt.c) so every backend shares one implementation; this
+ * wrapper only adapts the call shape. Fail-closed semantics are unchanged. */
 static int pii_prepare_bind(const char *sql, const char **params, int nparams,
                             const char ***bind_ptr, char **owned, int *n_owned,
                             char *err, size_t errsz) {
-    *bind_ptr = params;
-    *n_owned = 0;
-    if (!pii_configured()) return 0;
-
-    const char *p = sql;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (strncasecmp(p, "insert", 6) != 0) return 0;
-
-    pii_target targets[PII_MAX_COLS];
-    int nt = 0;
-    char table[PII_MAX_NAME] = "";
-    /* Resolve the target table from the statement head first: the value-list
-     * parse below may refuse, and the fail-closed decision needs the name. */
-    if (pii_insert_table(sql, table, sizeof table) != 0) return 0;
-    int prc = pii_insert_targets(sql, targets, PII_MAX_COLS, &nt);
-    if (prc == -2) {
-        /* A literal in a PII column would reach the database in clear. */
-        snprintf(err, errsz,
-                 "pii: inline literal in a PII column of table '%s' "
-                 "(use a ? parameter)", table);
-        return 1;
-    }
-    if (prc != 0) {
-        if (pii_table_has_pii(table)) {
-            snprintf(err, errsz,
-                     "pii: cannot attribute INSERT columns for table '%s' "
-                     "(write an explicit column list with ? parameters)",
-                     table);
-            return 1;
-        }
-        return 0; /* INSERT into a table with no declared PII column */
-    }
-    if (nt == 0) return 0;
-
-    const char **tmp = NULL;
-    for (int k = 0; k < nt; k++) {
-        int i = targets[k].param;
-        if (i < 0 || i >= nparams) {
-            snprintf(err, errsz, "pii: parameter index out of range");
-            goto fail;
-        }
-        if (!params || !params[i]) continue; /* SQL NULL stays NULL */
-
-        char *tok = pii_encrypt_value(table, targets[k].column, params[i], err,
-                                      errsz);
-        if (!tok) goto fail; /* err already set; never fall back to plaintext */
-
-        if (!tmp) {
-            tmp = malloc(sizeof(const char *) * (size_t)(nparams > 0 ? nparams : 1));
-            if (!tmp) {
-                free(tok);
-                snprintf(err, errsz, "pii: out of memory");
-                goto fail;
-            }
-            for (int j = 0; j < nparams; j++) tmp[j] = params ? params[j] : NULL;
-        }
-        tmp[i] = tok;
-        owned[(*n_owned)++] = tok;
-    }
-    if (tmp) *bind_ptr = (const char **)tmp;
-    return 0;
-
-fail:
-    for (int k = 0; k < *n_owned; k++) free(owned[k]);
-    *n_owned = 0;
-    free((void *)tmp);
-    return 1;
+    return pii_bind_encode(sql, params, nparams, bind_ptr, owned, n_owned, err,
+                           errsz);
 }
 
 int sqlite_write_exec(const char *db, const char *sql, const char **params,
