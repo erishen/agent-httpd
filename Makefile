@@ -78,6 +78,7 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
        src/core/metrics.c src/core/minijson.c src/core/util.c \
        src/http/http.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
        src/http/http_route.c src/http/static.c src/http/chatio.c src/http/http_chunk.c \
+       src/http/stdio_serve.c \
        src/cgi/cgi.c src/cgi/fastcgi.c src/cgi/vite.c \
        src/security/auth.c src/security/ratelimit.c src/security/loginlimit.c src/security/bcrypt.c \
        src/agent/llm.c src/agent/agent.c src/agent/mcp.c src/agent/pse.c \
@@ -87,6 +88,7 @@ SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c s
 HDRS = src/httpd.h src/agenthttpd.h src/internal.h \
        src/core/minijson.h src/core/metrics.h src/core/router.h \
        src/http/chatio.h \
+       src/http/stdio_serve.h \
        src/agent/llm.h src/agent/agent.h src/agent/mcp.h src/agent/pse.h \
        src/agent/tools.h src/agent/skills.h src/agent/session.h src/agent/tools_api.h \
        src/agent/sqlite_tool.h src/agent/db_layer.h src/agent/pii_crypt.h \

@@ -37,6 +37,47 @@ volatile sig_atomic_t g_reopen_log = 0;
 volatile sig_atomic_t g_resync = 0;
 FILE *g_log_fp = NULL;
 
+/* Generic CORS layer for ordinary (non-preflight) responses.
+ *
+ * Why here: the lume DSL can only attach headers to the responses it builds,
+ * so 404 / 405 / auth errors / static files and every handler that does not
+ * call the app's own CORS helper would otherwise reach the browser without
+ * Access-Control-Allow-Origin — Starlette's CORSMiddleware adds it to ALL
+ * responses. AGENT_CORS_ORIGINS is a comma-separated exact-match allowlist;
+ * unset disables the layer (generic server default).
+ *
+ * Responses that already carry an Access-Control-Allow-Origin (app-managed
+ * model downloads and the DSL preflight answer) are left untouched so their
+ * method/header/max-age set stays authoritative. */
+int cors_origin_allowed(const char *origin) {
+    const char *list = getenv("AGENT_CORS_ORIGINS");
+    if (list == NULL || list[0] == '\0' || origin[0] == '\0') return 0;
+    size_t olen = strlen(origin);
+    const char *p = list;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        while (len > 0 && (p[0] == ' ' || p[0] == '\t')) { p++; len--; }
+        while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t' ||
+                           p[len - 1] == '\r' || p[len - 1] == '\n')) len--;
+        if (len == olen && strncmp(p, origin, len) == 0) return 1;
+        if (comma == NULL) break;
+        p = comma + 1;
+    }
+    return 0;
+}
+
+void apply_cors_headers(const HttpRequest *req, HttpResponse *resp) {
+    if (req->origin[0] == '\0' || !cors_origin_allowed(req->origin)) return;
+    if (strstr(resp->extra_headers, "Access-Control-Allow-Origin:") != NULL) return;
+    size_t used = strlen(resp->extra_headers);
+    if (used >= sizeof(resp->extra_headers) - 1) return;
+    snprintf(resp->extra_headers + used, sizeof(resp->extra_headers) - used,
+             "Access-Control-Allow-Origin: %s\r\n"
+             "Access-Control-Allow-Credentials: true\r\n"
+             "Vary: Origin\r\n", req->origin);
+}
+
 void signal_handler(int sig) {
     if (sig == SIGINT || sig == SIGTERM) {
         g_server_running = 0;
@@ -841,6 +882,10 @@ void handle_client(int client_fd, const struct sockaddr *client_addr,
             process_request(&request, &response, client_fd);
         }
     }
+
+    /* Starlette CORSMiddleware 对「所有」响应补 ACAO；DSL 侧做不到全局，
+     * 这里统一在写出前补（已自带 ACAO 的预检/模型响应保持原样）。 */
+    apply_cors_headers(&request, &response);
 
     /* 流式回调由 process_request 内部接管（见 http_route.c 的 framework
      * 分发处）—— 那里是所有框架路由的统一出口，无论 handle_client 走

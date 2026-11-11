@@ -87,6 +87,9 @@ int event_loop(int server_fd4, int server_fd6, int fcgi_fd);
  * request before the built-in CGI/static gate. Returns 1 when the request
  * was handled, 0 to fall through. */
 int framework_route_dispatch(HttpRequest *request, HttpResponse *response);
+/* 1 = some registered route matches this method/path (handler NOT run).
+ * Lets built-in endpoints (/health) yield to an explicit framework route. */
+int framework_route_matches(HttpRequest *request);
 
 /* ---- util.c ---- */
 int env_int(const char *name, int dflt);
@@ -157,3 +160,7 @@ int create_fastcgi_listener(const char *sock_path);
 void fastcgi_handle_connection(int fd);
 
 #endif /* INTERNAL_H */
+
+/* Starlette-style CORS layer for ordinary responses (AGENT_CORS_ORIGINS). */
+void apply_cors_headers(const HttpRequest *req, HttpResponse *resp);
+int cors_origin_allowed(const char *origin);

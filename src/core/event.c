@@ -184,6 +184,10 @@ static void recv_consume(int fd, int n) {
  * post-dispatch serialization (error-page fill, default content type,
  * keep-alive accounting). */
 static void fast_serve(Conn *c, HttpRequest *req, HttpResponse *resp, size_t hdr_len, int force_close) {
+    /* Same global CORS layer as handle_client: the event-loop fast path
+     * serves every GET/HEAD (static, /health, framework routes) without
+     * going through handle_client, so it needs the call too. */
+    apply_cors_headers(req, resp);
     if (resp->body == NULL && resp->stream_path == NULL &&
         resp->status_code != 0 && resp->status_code != 304) {
         set_error_response(resp, resp->status_code, resp->status_text);

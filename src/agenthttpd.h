@@ -71,6 +71,12 @@ typedef struct {
                                   421 Misdirected Request — this also closes
                                   Host-header poisoning for absolute URLs the
                                   app builds. */
+    int stdio_mode; /* 1 = speak the stdio transport on stdin/stdout instead of
+                       listening on a TCP port: the parent writes one JSON
+                       request per line to the child's stdin and reads SSE
+                       frames from its stdout. No port is bound at all, so
+                       there is nothing to collide with and no "Connection
+                       refused" to survive. See src/http/stdio_serve.h. [0] */
 } agenthttpd_config;
 
 /* ---- registration (call before agenthttpd_run; closed after) ---- */

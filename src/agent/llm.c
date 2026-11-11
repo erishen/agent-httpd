@@ -45,6 +45,7 @@
 #include "skills.h"
 #include "session.h"
 #include "sqlite_tool.h"
+#include "stdio_serve.h"
 
 #define CHAT_DEFAULT_TIMEOUT 60
 
@@ -403,11 +404,17 @@ int llm_handle_chat(const HttpRequest *request, HttpResponse *response,
     }
 
     ChatOut out = { client_fd, 1, 0, 0, {0} };
-    size_t head_len = strlen(CHAT_SSE_HEAD);
-    if (net_write_all(client_fd, CHAT_SSE_HEAD, head_len) == 0) {
-        out.bytes += (int)head_len;
-    } else {
-        out.ok = 0;
+    /* HTTP response head (status line + headers). The stdio transport has no
+     * HTTP envelope at all — the client reads SSE frames off a pipe — so the
+     * head is skipped there; writing it would inject a status line into the
+     * frame stream. */
+    if (!g_stdio_mode) {
+        size_t head_len = strlen(CHAT_SSE_HEAD);
+        if (net_write_all(client_fd, CHAT_SSE_HEAD, head_len) == 0) {
+            out.bytes += (int)head_len;
+        } else {
+            out.ok = 0;
+        }
     }
 
     ChatRequest *cr = malloc(sizeof *cr);

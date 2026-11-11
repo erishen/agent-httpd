@@ -368,7 +368,8 @@ int process_request(HttpRequest *request, HttpResponse *response, int client_fd)
      * Sits behind the rate-limit and auth gates in handle_client, so an
      * authed server requires credentials here too (documented). */
     if (strncmp(request->path, "/health", 7) == 0 &&
-        (request->path[7] == '\0' || request->path[7] == '?')) {
+        (request->path[7] == '\0' || request->path[7] == '?') &&
+        !framework_route_matches(request)) {
         response->status_code = 200;
         strcpy(response->status_text, "OK");
         strcpy(response->content_type, "text/plain");

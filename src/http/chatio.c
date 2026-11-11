@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/socket.h>
+#include <unistd.h>
 
 #include "chatio.h"
 #include "minijson.h"
@@ -24,7 +24,10 @@ const char CHAT_SSE_HEAD[] =
 int net_write_all(int fd, const char *buf, size_t n) {
     size_t off = 0;
     while (off < n) {
-        ssize_t w = send(fd, buf + off, n - off, 0);
+        /* write(), not send(): the stdio transport writes the same SSE frames
+         * to a pipe, and send() fails with ENOTSOCK on anything that is not a
+         * socket. For a socket, write() is what send(fd, ..., 0) does. */
+        ssize_t w = write(fd, buf + off, n - off);
         if (w < 0 && errno == EINTR) continue;
         if (w <= 0) return -1;
         off += (size_t)w;

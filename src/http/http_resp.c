@@ -117,8 +117,16 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
      * run (9.3.2). */
     int omit_entity_headers = (response->status_code == 304);
     if (!omit_entity_headers) {
-        p += snprintf(p, end - p + 1, "Content-Type: %s\r\n",
-                      response->content_type[0] ? response->content_type : "text/html");
+        /* Redirect responses with no body (Starlette 307/308) carry
+         * Content-Length: 0 but no Content-Type: there is no representation
+         * to describe. Only suppress CT when the body is actually empty. */
+        int omit_content_type = ((response->status_code == 307 ||
+                                  response->status_code == 308) &&
+                                 response->body_length == 0);
+        if (!omit_content_type) {
+            p += snprintf(p, end - p + 1, "Content-Type: %s\r\n",
+                          response->content_type[0] ? response->content_type : "text/html");
+        }
         p += snprintf(p, end - p + 1, "Content-Length: %d\r\n", response->body_length);
     }
     if (response->content_encoding[0]) {
@@ -187,7 +195,16 @@ int build_response(const HttpResponse *response, int head_only, int keep_alive, 
     if (response->last_modified[0]) {
         p += snprintf(p, end - p + 1, "Last-Modified: %s\r\n", response->last_modified);
     }
-    p += snprintf(p, end - p + 1, "Server: AgentHTTPD\r\n");
+    /* Server header is optional: `AGENT_SERVER_HEADER=""` suppresses it
+     * (FastAPI's uvicorn runs with server_header=False), a non-empty value
+     * renames it, and an unset variable keeps the historical AgentHTTPD. */
+    {
+        const char *server_header = getenv("AGENT_SERVER_HEADER");
+        if (!(server_header && server_header[0] == '\0')) {
+            p += snprintf(p, end - p + 1, "Server: %s\r\n",
+                          server_header && server_header[0] ? server_header : "AgentHTTPD");
+        }
+    }
     /* Security headers: no version fingerprint; refuse framing, MIME
      * sniffing and referrer leakage on every response. A handler that set
      * the same name in extra_headers takes over (the default line is

@@ -284,6 +284,10 @@ int host_is_allowed(const char *host) {
  * POST/PUT/PATCH/DELETE before dispatch, so a forgotten per-handler guard
  * cannot reopen the hole. */
 int request_is_same_origin(const HttpRequest *req) {
+    /* 配了 CORS 白名单时，白名单 Origin 等价于原项目 CORSMiddleware：
+     * 允许跨域带凭据的写请求（web/admin/firefly 前端直连 API 的场景）。
+     * 精确匹配，未配置或来源不在名单内仍走下面的同源判定。 */
+    if (req->origin[0] && cors_origin_allowed(req->origin)) return 1;
     if (req->sec_fetch_site[0]) {
         if (strcmp(req->sec_fetch_site, "same-origin") == 0 ||
             strcmp(req->sec_fetch_site, "none") == 0)

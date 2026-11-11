@@ -46,6 +46,9 @@ static void print_usage(const char *program) {
     printf("                  (HMR WebSocket upgrades are tunnelled; serves raw\n");
     printf("                  dev sources - never expose this instance publicly)\n");
     printf("  -h              Show this help message\n");
+    printf("  --stdio         Speak the stdio transport instead of listening:\n");
+    printf("                  one JSON request per line on stdin, SSE frames on\n");
+    printf("                  stdout. No port is bound (see src/http/stdio_serve.h)\n");
     printf("\nEmbedding: see src/agenthttpd.h and examples/embedded.c — the same\n");
     printf("server is available as a library (agenthttpd_run + route/tool hooks).\n");
 }
@@ -57,6 +60,22 @@ int main(int argc, char *argv[]) {
     cfg.workers = DEFAULT_WORKERS;
     const char *log_path_arg = NULL; /* -L override, NULL = default */
     int opt;
+
+    /* --stdio: speak the stdio transport (stdin/stdout) instead of listening
+     * on a TCP port. getopt here has no long-option table, so the flag is
+     * pulled out of argv before the option loop rather than parsed by it. */
+    {
+        int w = 1;
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--stdio") == 0) {
+                cfg.stdio_mode = 1;
+                continue;
+            }
+            argv[w++] = argv[i];
+        }
+        argv[w] = NULL;
+        argc = w;
+    }
 
     while ((opt = getopt(argc, argv, "p:F:R:T:w:a:r:l:L:hnv:P:")) != -1) {
         switch (opt) {

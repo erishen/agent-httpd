@@ -34,6 +34,7 @@
 #include "metrics.h"
 #include "minijson.h"
 #include "router.h"
+#include "stdio_serve.h"
 
 /* lume 的 TLS 预热钩子(可选)。弱定义在文件末尾, 与 lume 一起链接时由
  * lang/builtins_http.c 的强定义覆盖。这里前置声明, 否则 -Wimplicit-
@@ -210,6 +211,29 @@ static int route_path_matches(const char *pattern, const char *path,
         pp = pe + 1;
         cp = ce + 1;
     }
+}
+
+/* Match-only probe, same priority order as dispatch. Used by built-in
+ * endpoints that must yield to an explicit framework route (/health).
+ * Captures run against a scratch request so dynamic patterns stay
+ * matchable; the caller's path_param arrays are untouched. */
+int framework_route_matches(HttpRequest *request) {
+    HttpRequest scratch;
+    memset(&scratch, 0, sizeof scratch);
+    for (int pass = 0; pass < 3; pass++) {
+        for (int i = 0; i < g_route_count; i++) {
+            const FrameworkRoute *r = &g_routes[i];
+            if (strcmp(r->method, "*") != 0 &&
+                strcmp(r->method, request->method) != 0 &&
+                !(strcmp(request->method, "HEAD") == 0 &&
+                  strcmp(r->method, "GET") == 0)) {
+                continue;
+            }
+            if (route_kind(r->path) != pass) continue;
+            if (route_path_matches(r->path, request->path, &scratch)) return 1;
+        }
+    }
+    return 0;
 }
 
 /* Returns 1 when a registered route handled the request (response filled),
@@ -435,6 +459,12 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
     if (!c.access_log) c.access_log = LOG_FILE;
     if (!c.auth_realm) c.auth_realm = DEFAULT_AUTH_REALM;
 
+    /* stdio transport: claim stdout for the protocol FIRST, before any
+     * startup diagnostic below is printed. Everything else (the warmup
+     * note, the agent's token-pipe line) then goes to stderr and the frame
+     * stream stays clean. */
+    if (c.stdio_mode) stdio_claim_stdout();
+
     g_server_port = c.port;
     g_no_directory_listing = c.no_directory_listing ? 1 : 0;
     g_spa_fallback = c.spa ? 1 : 0;
@@ -640,6 +670,17 @@ int agenthttpd_run(const agenthttpd_config *cfg) {
 
     /* Registration closes here: routes and tools are pre-fork snapshots. */
     g_framework_started = 1;
+
+    /* stdio transport: no listener at all. The parent process drives the
+     * host over stdin/stdout, so there is no port to pick, no port to
+     * collide with, and no "Connection refused" to survive. Everything above
+     * (route/tool registration, the agent loop, the tool registry) is the
+     * same code path the HTTP listener uses — only the carrier differs. */
+    if (c.stdio_mode) {
+        int rc = agenthttpd_stdio_serve();
+        if (g_log_fp) fclose(g_log_fp);
+        return rc;
+    }
 
     int server_fd = create_server_socket(c.bind_host, c.port);
     if (server_fd < 0) {
