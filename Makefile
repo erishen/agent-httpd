@@ -76,7 +76,7 @@ BUILD_DIR = build
 # -I src flag (in CFLAGS) lets every #include "x.h" resolve from any subdir.
 SRCS = src/core/main.c src/core/framework.c src/core/event.c src/core/worker.c src/core/router.c \
        src/core/metrics.c src/core/minijson.c src/core/util.c \
-       src/http/http.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
+       src/http/http.c src/http/cors.c src/http/http_parse.c src/http/http_resp.c src/http/http_log.c \
        src/http/http_route.c src/http/static.c src/http/chatio.c src/http/http_chunk.c \
        src/http/stdio_serve.c \
        src/cgi/cgi.c src/cgi/fastcgi.c src/cgi/vite.c \
@@ -261,10 +261,10 @@ test-unit: all
 	    src/http/http_parse.c -o tests/t_xff
 	./tests/t_xff
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_allowed_hosts.c \
-	    src/core/util.c -o tests/t_allowed_hosts
+	    src/core/util.c src/http/cors.c -o tests/t_allowed_hosts
 	./tests/t_allowed_hosts
 	$(CC) $(CFLAGS) $(SAN_FLAGS) tests/test_same_origin.c \
-	    src/core/util.c -o tests/t_same_origin
+	    src/core/util.c src/http/cors.c -o tests/t_same_origin
 	./tests/t_same_origin
 	$(CC) $(CFLAGS) $(SAN_FLAGS) -pthread tests/test_loginlimit.c \
 	    -o tests/t_loginlimit

@@ -43,30 +43,12 @@ FILE *g_log_fp = NULL;
  * so 404 / 405 / auth errors / static files and every handler that does not
  * call the app's own CORS helper would otherwise reach the browser without
  * Access-Control-Allow-Origin — Starlette's CORSMiddleware adds it to ALL
- * responses. AGENT_CORS_ORIGINS is a comma-separated exact-match allowlist;
- * unset disables the layer (generic server default).
+ * responses. The allowlist predicate itself lives in src/http/cors.c so that
+ * single-TU unit tests can link it.
  *
  * Responses that already carry an Access-Control-Allow-Origin (app-managed
  * model downloads and the DSL preflight answer) are left untouched so their
  * method/header/max-age set stays authoritative. */
-int cors_origin_allowed(const char *origin) {
-    const char *list = getenv("AGENT_CORS_ORIGINS");
-    if (list == NULL || list[0] == '\0' || origin[0] == '\0') return 0;
-    size_t olen = strlen(origin);
-    const char *p = list;
-    while (*p) {
-        const char *comma = strchr(p, ',');
-        size_t len = comma ? (size_t)(comma - p) : strlen(p);
-        while (len > 0 && (p[0] == ' ' || p[0] == '\t')) { p++; len--; }
-        while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t' ||
-                           p[len - 1] == '\r' || p[len - 1] == '\n')) len--;
-        if (len == olen && strncmp(p, origin, len) == 0) return 1;
-        if (comma == NULL) break;
-        p = comma + 1;
-    }
-    return 0;
-}
-
 void apply_cors_headers(const HttpRequest *req, HttpResponse *resp) {
     if (req->origin[0] == '\0' || !cors_origin_allowed(req->origin)) return;
     if (strstr(resp->extra_headers, "Access-Control-Allow-Origin:") != NULL) return;
