@@ -76,3 +76,13 @@ deploy/cicdkit-project.json
 asm-demo/*
 !asm-demo/*.c
 !asm-demo/Makefile
+
+# personal-workflow router skills (blog article writing / community comments).
+# Machine-local drafts tied to the author's own writing workflow, not part of
+# this public server's demo catalog. They live as untracked files under
+# skills/router/ in every lume project and are never meant to be committed
+# here; ignore them repo-wide so a plain `git add -A` cannot pull them into
+# the public history. The shipped router skills (code-review, rust-review,
+# hot-news-post, post-comment, weekly-investment) stay tracked and unaffected.
+skills/router/article-write/
+skills/router/tech-comment-draft/
