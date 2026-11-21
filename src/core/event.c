@@ -280,7 +280,9 @@ static void send_pool_busy(int fd) {
         "Connection: close\r\n"
         "\r\n"
         "worker pool saturated, retry\n";
-    (void)write(fd, resp, sizeof resp - 1);
+    /* gcc -Wunused-result: 赋值给变量才能消除告警，(void) 强转不行 */
+    ssize_t sent = write(fd, resp, sizeof resp - 1);
+    (void)sent;
 }
 
 /* Classify the just-peeked request as slow and park it on the queue. Any

@@ -213,7 +213,8 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
     if (connect(up, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         const char *err = "HTTP/1.1 502 Bad Gateway\r\n"
                           "Content-Length: 0\r\nConnection: close\r\n\r\n";
-        (void)send(client_fd, err, (int)strlen(err), 0);
+        ssize_t sent = send(client_fd, err, (int)strlen(err), 0);
+        (void)sent;
         close(up);
         close(client_fd);
         return;
@@ -226,7 +227,8 @@ static void proxy_to_vite(int client_fd, const char *raw, size_t hdr_len,
     if (line_has_embedded_crlf(raw, first_len)) {
         const char *err = "HTTP/1.1 400 Bad Request\r\n"
                           "Content-Length: 0\r\nConnection: close\r\n\r\n";
-        (void)send(client_fd, err, (int)strlen(err), 0);
+        ssize_t sent = send(client_fd, err, (int)strlen(err), 0);
+        (void)sent;
         close(up);
         close(client_fd);
         return;
