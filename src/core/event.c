@@ -1,10 +1,13 @@
 /* Master event loop for the fast path.
  *
- * Model: one non-blocking process accepts and serves everything that can
- * complete in-process — GET/HEAD static files, redirects, 304s, error
- * pages, /health — while requests that need the blocking pipeline (CGI,
- * the native chat SSE route, the /react FastCGI relay, anything with a
- * body) are handed to the prefork worker pool over SCM_RIGHTS.
+ * Model: one non-blocking process accepts and serves only what completes
+ * without blocking — static files from the docroot, redirects, 304s, error
+ * pages, the SPA fallback, /health. Everything a handler can make slow goes
+ * to the prefork worker pool over SCM_RIGHTS: CGI, the native chat SSE
+ * route, the /react FastCGI relay, any request with a body, and *every
+ * registered dynamic route* — a route handler may reach an upstream API,
+ * the disk or a model, and running one inline would stall this loop for
+ * the whole process, static assets included.
  *
  * The request header is inspected with recv(MSG_PEEK): nothing is consumed
  * until the loop decides. A slow request therefore arrives at its worker
@@ -48,6 +51,12 @@
 /* How long a fast-path response may wait for socket room before the client is
  * considered stalled (the loop socket is non-blocking: EAGAIN means "later"). */
 #define FAST_SEND_WAIT_MS 5000
+/* How long a connection may sit on the slow queue waiting for a free worker.
+ * Without a bound, a burst that saturates the pool parks every later request
+ * behind jobs that can legitimately run for minutes (LLM calls, diagnose),
+ * and the client sees a hang instead of a retryable answer. Past this limit
+ * the request is answered 503 + Retry-After and the connection is closed. */
+#define SLOW_QUEUE_WAIT_SECONDS 5
 
 typedef struct {
     int fd;
@@ -131,6 +140,12 @@ static void conn_close(Conn *c) {
 static void drain_slow_queue(void) {
     while (g_slow_head != g_slow_tail) {
         Conn *c = g_slow_queue[g_slow_head];
+        if (!c->in_use || c->state != S_SLOW_PENDING) {
+            /* Swept by the deadline timer while queued: its slot may already
+             * be reused by a new connection, so never dispatch it. */
+            g_slow_head = (g_slow_head + 1) % EVENT_MAX_CONN;
+            continue;
+        }
         char tok = 0;
         if (!pool_claim_slot_nb(&tok)) break; /* pool busy: wait for token event */
         if (pool_dispatch_fd(c->fd) < 0) {
@@ -144,6 +159,21 @@ static void drain_slow_queue(void) {
     }
 }
 
+/* Answer a connection the pool could not serve in time. The socket is still
+ * untouched (nothing was consumed), so a canned response is safe to write and
+ * Retry-After keeps a polling client from hammering the queue. */
+static void send_pool_busy(int fd) {
+    static const char resp[] =
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        "Retry-After: 1\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: 29\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "worker pool saturated, retry\n";
+    (void)write(fd, resp, sizeof resp - 1);
+}
+
 /* Classify the just-peeked request as slow and park it on the queue. Any
  * response state built for the fast path is discarded (the worker rebuilds
  * it from the untouched socket buffer). */
@@ -151,6 +181,7 @@ static void go_slow(Conn *c) {
     METRICS_INC_AT(requests_total, 1); /* handed to the blocking pool */
     ev_deregister(c->fd);
     c->state = S_SLOW_PENDING;
+    c->deadline = time(NULL) + SLOW_QUEUE_WAIT_SECONDS;
     if ((g_slow_tail + 1) % EVENT_MAX_CONN == g_slow_head) {
         conn_close(c); /* queue full: drop rather than deadlock */
         return;
@@ -364,6 +395,18 @@ static void conn_readable(Conn *c) {
         go_slow(c);
         return;
     }
+    /* A registered dynamic route is only "fast" while its handler finishes
+     * instantly — and a handler can block for as long as the work takes:
+     * upstream HTTP, disk, model calls, SSH probes. Serving one inline
+     * stalls the entire fast-path loop, so a single slow API GET serialises
+     * every other request in the process, static assets included (measured:
+     * 8 concurrent body-less GETs at 0.2s each completed 0.21/0.41/…/1.66s
+     * while a 0.6ms stylesheet waited 1.4s). Routes therefore always take
+     * the blocking pipeline; only static files and SPA fallback stay inline. */
+    if (framework_route_matches(&req)) {
+        go_slow(c);
+        return;
+    }
 
     process_request(&req, &resp, c->fd);
     if (resp.stream_path) {
@@ -543,6 +586,11 @@ int event_loop(int server_fd4, int server_fd6, int fcgi_fd) {
         for (int i = 0; i < EVENT_MAX_CONN; i++) {
             if (g_conns[i].in_use && g_conns[i].deadline &&
                 now >= g_conns[i].deadline) {
+                if (g_conns[i].state == S_SLOW_PENDING) {
+                    /* Waited out the pool: say so instead of resetting the
+                     * connection. drain_slow_queue() skips the stale entry. */
+                    send_pool_busy(g_conns[i].fd);
+                }
                 conn_close(&g_conns[i]);
             }
         }

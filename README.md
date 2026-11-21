@@ -32,8 +32,13 @@ fast & slow paths / agent stack / security depth) see the
   served directly by a single-process event loop (kqueue/epoll, request headers
   peeked via `recv(MSG_PEEK)` for zero-copy dispatch); blocking work (CGI, chat
   SSE, upstream proxies) is handed to 8 prefork workers over `SCM_RIGHTS`
-  (`-w <n>` to resize, `0` = legacy fork-per-connection). ~6x per-conn
-  throughput in benchmarks (see "Performance design")
+  (`-w <n>` to resize, `0` = legacy fork-per-connection). Foreign routes
+  registered through `agenthttpd_route` go to the pool too, body or not: their
+  handlers can reach an upstream API, the disk or a model, and one inline
+  handler would stall every other request in the process. A connection that
+  waits more than 5s for a free worker gets `503` + `Retry-After: 1`
+  (`SLOW_QUEUE_WAIT_SECONDS`) instead of hanging behind a long job. ~6x
+  per-conn throughput in benchmarks (see "Performance design")
 - **MIME detection**: content type by file extension
 - **Large file streaming**: static files > 64KB stream instead of buffering
   (both HTTP and FastCGI)
