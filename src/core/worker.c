@@ -44,8 +44,32 @@ static void worker_term_handler(int sig) {
 static int token_r = -1;      /* semaphore pipe: parent reads (wait) */
 static int token_w = -1;      /* workers write (post) */
 static int dispatch_fd = -1;  /* parent->worker fd-passing socketpair */
+static int dispatch_peer = -1;/* parent's copy of the worker end, for late forks */
 static pid_t *worker_pids = NULL;
 static int nworkers_running = 0;
+
+/* --- elastic burst workers ------------------------------------------------
+ *
+ * A prefork slot is held for as long as a handler runs, and some handlers
+ * legitimately run for minutes (LLM calls, AI diagnose). With a fixed pool,
+ * eight such requests take every slot and the rest of the API layer 503s
+ * until they finish. The pool therefore grows on demand: when the master has
+ * a queued connection and no free token, it forks one extra worker up to
+ * `burst_max`. Extra workers retire after `burst_idle` seconds of no work,
+ * giving the capacity back to the token pipe.
+ *
+ * Invariant: token bytes == free workers. A spawning worker adds one token;
+ * a retiring worker takes one back (tokens are fungible capacity units, so
+ * consuming any single byte is exactly "remove one worker"). If the take
+ * fails the master has already claimed a token for a dispatch aimed at this
+ * worker, and it must serve that connection instead of retiring. */
+static pid_t *burst_pids = NULL;
+static int burst_max = 0;        /* extra workers allowed beyond the base pool */
+static int nburst_running = 0;
+static int burst_idle_seconds = 30;
+
+static void worker_loop(int dispatch_sock, int my_token_w, int my_token_r,
+                        int burst);
 
 /* Send one connection fd to a worker over the socketpair. */
 static int send_fd_to_worker(int sock, int fd) {
@@ -100,7 +124,8 @@ static int recv_fd_from_worker(int sock) {
  * keep-alive loop in handle_client stops accepting further requests)
  * and exits after releasing its slot. The parent drains with a deadline
  * and force-kills stragglers (pool_shutdown). */
-static void worker_loop(int dispatch_sock, int my_token_w) {
+static void worker_loop(int dispatch_sock, int my_token_w, int my_token_r,
+                        int burst) {
     /* sigaction WITHOUT SA_RESTART: plain signal() would auto-restart the
      * blocking recvmsg below and the worker could never observe shutdown. */
     struct sigaction wsa;
@@ -112,7 +137,44 @@ static void worker_loop(int dispatch_sock, int my_token_w) {
     sigaction(SIGINT, &wsa, NULL);
 
     for (;;) {
-        int fd = recv_fd_from_worker(dispatch_sock);
+        int fd;
+        if (!burst) {
+            fd = recv_fd_from_worker(dispatch_sock);
+        } else {
+            fd = -1;
+            for (;;) {
+                struct pollfd pf;
+                pf.fd = dispatch_sock;
+                pf.events = POLLIN;
+                pf.revents = 0;
+                int pr = poll(&pf, 1, burst_idle_seconds * 1000);
+                if (pr < 0 && errno == EINTR) {
+                    if (g_shutdown_requested) _exit(0);
+                    continue;
+                }
+                if (pr > 0) {
+                    fd = recv_fd_from_worker(dispatch_sock);
+                    break;
+                }
+                /* Idle past the timeout: try to hand the capacity back. */
+                char tok;
+                if (read(my_token_r, &tok, 1) == 1) {
+                    if (g_metrics) {
+                        __atomic_fetch_sub(&g_metrics->workers_total, 1ULL,
+                                           __ATOMIC_RELAXED);
+                    }
+                    _exit(0);
+                }
+                /* EAGAIN means the master already claimed our token and a
+                 * connection is on its way: serve it, then try again. */
+                pf.revents = 0;
+                if (poll(&pf, 1, 1000) > 0) {
+                    fd = recv_fd_from_worker(dispatch_sock);
+                    break;
+                }
+                if (g_shutdown_requested) _exit(0);
+            }
+        }
         if (fd < 0) {
             /* shutdown signal interrupted the blocking wait (EINTR), or the
              * parent closed the dispatch socket: drain-time exit */
@@ -188,14 +250,17 @@ int start_worker_pool(int n, int server_fd) {
             break;
         }
         if (pid == 0) {
-            close(dp[0]);   /* keep dp[1] + tp[1] */
-            close(tp[0]);
-            worker_loop(dp[1], tp[1]); /* never returns */
+            /* keep dp[1] (worker end) and both pipe ends: the read end lets a
+             * burst worker hand its capacity back when it retires. */
+            close(dp[0]);
+            worker_loop(dp[1], tp[1], tp[0], 0); /* never returns */
         }
         worker_pids[started++] = pid;
     }
-    close(dp[1]); /* parent keeps dp[0] (dispatch) + both token ends */
+    /* dp[1] stays open in the parent so late (burst) forks can hand it to a
+     * child that inherits the same worker end. */
     dispatch_fd = dp[0];
+    dispatch_peer = dp[1];
     token_r = tp[0];
     token_w = tp[1];
     nworkers_running = started;
@@ -203,22 +268,45 @@ int start_worker_pool(int n, int server_fd) {
      * never block inside pool_claim_slot, so make the read end O_NONBLOCK. */
     (void)fcntl(token_r, F_SETFL, O_NONBLOCK);
 
+    /* Elastic headroom: WORKERS_MAX caps the pool, default double the base.
+     * Extra workers are only forked when every slot is busy and connections
+     * are waiting, so a long AI/LLM job cannot starve the rest of the API. */
+    int max_total = started * 2;
+    const char *env_max = getenv("WORKERS_MAX");
+    if (env_max && *env_max) {
+        int v = atoi(env_max);
+        if (v > 0) max_total = v;
+    }
+    if (max_total > FDPASS_MAX_N) max_total = FDPASS_MAX_N;
+    burst_max = max_total > started ? max_total - started : 0;
+    const char *env_idle = getenv("POOL_BURST_IDLE_SECONDS");
+    if (env_idle && *env_idle) {
+        int v = atoi(env_idle);
+        if (v > 0) burst_idle_seconds = v;
+    }
+    if (burst_max > 0) {
+        burst_pids = calloc((size_t)burst_max, sizeof(pid_t));
+        if (!burst_pids) burst_max = 0; /* headroom optional: never fail startup */
+    }
+    if (g_metrics) g_metrics->workers_total = (unsigned long long)started;
+
     if (started == 0) {
         close(dispatch_fd);
+        close(dispatch_peer);
         close(token_r);
         close(token_w);
-        dispatch_fd = token_r = token_w = -1;
+        dispatch_fd = dispatch_peer = token_r = token_w = -1;
         free(worker_pids);
         worker_pids = NULL;
         return -1;
     }
 
-    printf("Prefork worker pool: %d workers\n", started);
+    printf("Prefork worker pool: %d workers (max %d under load)\n",
+           started, started + burst_max);
     return 0;
 }
 
-/* Block until a worker frees up (read 1 token); returns the token byte via
- * *tok_out, or 0 when the server is shutting down mid-wait. The token must
+/* Block until a worker frees up (read 1 token); returns the token byte via * *tok_out, or 0 when the server is shutting down mid-wait. The token must
  * be returned via pool_return_token() if dispatch then fails. */
 int pool_claim_slot(char *tok_out) {
     for (;;) {
@@ -265,6 +353,37 @@ int pool_token_fd(void) {
     return token_r;
 }
 
+/* Fork one extra worker because connections are waiting and no token is free.
+ * Called from the event loop right after a failed claim, so the caller may
+ * retry the claim immediately: the new token is written before this returns.
+ * Returns 1 when a worker was spawned. */
+int pool_maybe_grow(int queued) {
+    if (queued <= 0 || burst_max <= 0 || nburst_running >= burst_max) return 0;
+    if (!g_server_running) return 0;
+    if (dispatch_peer < 0 || token_w < 0 || token_r < 0) return 0;
+
+    pid_t pid = fork();
+    if (pid < 0) return 0;
+    if (pid == 0) {
+        /* Keep the worker end + pipe ends; drop the master's dispatch end so
+         * the child cannot accidentally accept dispatches itself. */
+        close(dispatch_fd);
+        worker_loop(dispatch_peer, token_w, token_r, 1); /* never returns */
+    }
+
+    char tok = 1;
+    if (write(token_w, &tok, 1) != 1) {
+        /* Without a token the extra worker would sit forever unclaimed. */
+        kill(pid, SIGTERM);
+        return 0;
+    }
+    burst_pids[nburst_running++] = pid;
+    if (g_metrics) {
+        __atomic_fetch_add(&g_metrics->workers_total, 1ULL, __ATOMIC_RELAXED);
+    }
+    return 1;
+}
+
 /* Non-blocking slot claim for the event loop: returns 1 with *tok_out set
  * when a worker is free, 0 when the pool is busy (or shutting down). Never
  * blocks; the loop wakes on token_fd readability to drain its queue. */
@@ -299,6 +418,9 @@ void pool_shutdown(void) {
         for (int i = 0; i < nworkers_running; i++) {
             kill(worker_pids[i], SIGTERM);
         }
+        for (int i = 0; i < nburst_running; i++) {
+            kill(burst_pids[i], SIGTERM);
+        }
         time_t deadline = time(NULL) + POOL_DRAIN_SECONDS;
         for (;;) {
             int alive = 0;
@@ -311,11 +433,19 @@ void pool_shutdown(void) {
         for (int i = 0; i < nworkers_running; i++) {
             kill(worker_pids[i], SIGKILL); /* no-op for exited workers */
         }
+        for (int i = 0; i < nburst_running; i++) {
+            kill(burst_pids[i], SIGKILL);
+        }
         free(worker_pids);
         worker_pids = NULL;
+        free(burst_pids);
+        burst_pids = NULL;
+        nburst_running = 0;
+        burst_max = 0;
         close(token_r);
         close(token_w);
         close(dispatch_fd);
-        token_r = token_w = dispatch_fd = -1;
+        close(dispatch_peer);
+        token_r = token_w = dispatch_fd = dispatch_peer = -1;
     }
 }

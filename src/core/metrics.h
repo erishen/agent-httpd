@@ -13,6 +13,8 @@ typedef struct {
     unsigned long long responses_total[5];
     /* Pool workers currently holding a connection (gauge). */
     unsigned long long workers_busy;
+    /* Pool size right now, base + elastic burst workers (gauge). */
+    unsigned long long workers_total;
     /* Connections parked on the slow queue right now (gauge, master only).
      * Together with the two counters below this is the "do we need more
      * workers?" signal: depth climbing = arrivals outrunning the pool. */

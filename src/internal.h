@@ -155,6 +155,11 @@ int create_server_socket6(const char *host, int port);
  * accept loop ends. No-op when the pool never started. */
 void pool_shutdown(void);
 
+/* Fork one extra worker when connections are queued and every slot is busy
+ * (elastic burst); returns 1 when a new slot was added, so the caller can
+ * retry its claim immediately. 0 = at the cap, disabled, or fork failed. */
+int pool_maybe_grow(int queued);
+
 /* ---- fastcgi.c (server side; forward_to_fcgi lives in httpd.h) ---- */
 int create_fastcgi_listener(const char *sock_path);
 void fastcgi_handle_connection(int fd);

@@ -183,7 +183,14 @@ static void drain_slow_queue(void) {
             continue;
         }
         char tok = 0;
-        if (!pool_claim_slot_nb(&tok)) break; /* pool busy: wait for token event */
+        if (!pool_claim_slot_nb(&tok)) {
+            /* Pool saturated and this connection is waiting: add one more
+             * worker when the config allows it (long AI/LLM jobs must not
+             * starve the rest of the API). A fresh token lands before the
+             * fork returns, so retry the claim right away. */
+            if (pool_maybe_grow(g_slow_count)) continue;
+            break; /* at the cap: wait for a token event */
+        }
         record_slow_wait(c->queued_ms);
         if (pool_dispatch_fd(c->fd) < 0) {
             pool_return_token(tok);

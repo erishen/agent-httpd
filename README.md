@@ -37,8 +37,12 @@ fast & slow paths / agent stack / security depth) see the
   handlers can reach an upstream API, the disk or a model, and one inline
   handler would stall every other request in the process. A connection that
   waits more than 5s for a free worker gets `503` + `Retry-After: 1`
-  (`SLOW_QUEUE_WAIT_SECONDS`) instead of hanging behind a long job. ~6x
-  per-conn throughput in benchmarks (see "Performance design")
+  (`SLOW_QUEUE_WAIT_SECONDS`) instead of hanging behind a long job. The pool
+  is elastic: when connections are waiting and every slot is busy it forks
+  extra workers up to `WORKERS_MAX` (default 2x the base), and those retire
+  after `POOL_BURST_IDLE_SECONDS` (default 30) idle — so eight 3-minute AI
+  jobs cannot starve the rest of the API. ~6x per-conn throughput in
+  benchmarks (see "Performance design")
 - **MIME detection**: content type by file extension
 - **Large file streaming**: static files > 64KB stream instead of buffering
   (both HTTP and FastCGI)
@@ -428,6 +432,8 @@ Notes:
   (`lume-fastapi-web`: `make e2e-enc` for SQLite, `make db-e2e` for
   MariaDB/PostgreSQL against real servers).
 - Environment variables: `WORKERS` (worker count, 0 = fork-per-connection),
+  `WORKERS_MAX` (pool ceiling, default 2x `WORKERS`), `POOL_BURST_IDLE_SECONDS`
+  (idle lifetime of an extra worker, default 30),
   `RATE_LIMIT` (per-IP req/s), `LOG_FILE` (default
   `/var/log/agent-httpd/access.log`); the C chat endpoint also reads
   `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` (unset = the

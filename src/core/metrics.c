@@ -92,6 +92,11 @@ int metrics_render(char *buf, int bufsize) {
     EMIT("agenthttpd_workers_busy %llu\n\n",
          g_metrics->workers_busy);
 
+    EMIT("# HELP agenthttpd_workers_total Pool size, base + burst workers.\n");
+    EMIT("# TYPE agenthttpd_workers_total gauge\n");
+    EMIT("agenthttpd_workers_total %llu\n\n",
+         g_metrics->workers_total);
+
     EMIT("# HELP agenthttpd_slow_queue_depth Connections waiting for a worker.\n");
     EMIT("# TYPE agenthttpd_slow_queue_depth gauge\n");
     EMIT("agenthttpd_slow_queue_depth %llu\n\n",
