@@ -92,6 +92,21 @@ int metrics_render(char *buf, int bufsize) {
     EMIT("agenthttpd_workers_busy %llu\n\n",
          g_metrics->workers_busy);
 
+    EMIT("# HELP agenthttpd_slow_queue_depth Connections waiting for a worker.\n");
+    EMIT("# TYPE agenthttpd_slow_queue_depth gauge\n");
+    EMIT("agenthttpd_slow_queue_depth %llu\n\n",
+         g_metrics->slow_queue_depth);
+
+    EMIT("# HELP agenthttpd_slow_wait_ms_max Longest slow-queue wait seen (ms).\n");
+    EMIT("# TYPE agenthttpd_slow_wait_ms_max gauge\n");
+    EMIT("agenthttpd_slow_wait_ms_max %llu\n\n",
+         g_metrics->slow_wait_ms_max);
+
+    EMIT("# HELP agenthttpd_pool_rejected_total Requests answered 503 after the queue wait.\n");
+    EMIT("# TYPE agenthttpd_pool_rejected_total counter\n");
+    EMIT("agenthttpd_pool_rejected_total %llu\n\n",
+         g_metrics->pool_rejected_total);
+
     EMIT("# HELP agenthttpd_agent_slots_taken Agent concurrency slots in use.\n");
     EMIT("# TYPE agenthttpd_agent_slots_taken gauge\n");
     if (slots_max > 0) {

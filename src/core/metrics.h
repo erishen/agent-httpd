@@ -13,6 +13,15 @@ typedef struct {
     unsigned long long responses_total[5];
     /* Pool workers currently holding a connection (gauge). */
     unsigned long long workers_busy;
+    /* Connections parked on the slow queue right now (gauge, master only).
+     * Together with the two counters below this is the "do we need more
+     * workers?" signal: depth climbing = arrivals outrunning the pool. */
+    unsigned long long slow_queue_depth;
+    /* Connections that waited out SLOW_QUEUE_WAIT_SECONDS and got 503. */
+    unsigned long long pool_rejected_total;
+    /* Longest queue wait observed (ms); resets never happen, so read it as
+     * a high-water mark and compare across deploys. */
+    unsigned long long slow_wait_ms_max;
     /* Agent concurrency slot gauges; free mirrors the token pipe. */
     unsigned long long agent_slots_taken;
     unsigned long long agent_slots_free;

@@ -75,6 +75,7 @@ typedef struct {
     socklen_t peer_len;
     char ip_str[INET6_ADDRSTRLEN];
     time_t deadline;             /* header/idle timeout */
+    long long queued_ms;         /* monotonic stamp when parked on the slow queue */
     int served;                  /* requests served on this connection */
     int in_use;
 } Conn;
@@ -83,7 +84,40 @@ static Conn g_conns[EVENT_MAX_CONN];
 static Conn *g_slow_queue[EVENT_MAX_CONN];
 static int g_slow_head = 0;
 static int g_slow_tail = 0;
+static int g_slow_count = 0;     /* live entries in the ring (depth gauge source) */
 static int g_kq = -1;            /* kqueue() or epoll() fd */
+
+/* Monotonic milliseconds, for queue-wait accounting only (time() is far too
+ * coarse at these scales: a healthy wait is single-digit ms). */
+static long long mono_ms(void) {
+    struct timespec ts;
+#if defined(CLOCK_MONOTONIC)
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+#else
+    clock_gettime(CLOCK_REALTIME, &ts);
+#endif
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void publish_queue_depth(void) {
+    if (g_metrics) g_metrics->slow_queue_depth = (unsigned long long)g_slow_count;
+}
+
+/* Record a queue wait into the shared high-water mark. Only the master writes
+ * it, but workers read /metrics contents through the same table, so use CAS
+ * instead of a plain store. */
+static void record_slow_wait(long long queued_ms) {
+    if (!g_metrics || queued_ms <= 0) return;
+    long long wait = mono_ms() - queued_ms;
+    if (wait < 0) wait = 0;
+    unsigned long long cur = g_metrics->slow_wait_ms_max;
+    while ((unsigned long long)wait > cur &&
+           !__atomic_compare_exchange_n(&g_metrics->slow_wait_ms_max, &cur,
+                                        (unsigned long long)wait, 0,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        /* cur was refreshed by the failed CAS; retry while still larger */
+    }
+}
 
 #if defined(__linux__)
 static void ev_register(int fd) {
@@ -144,10 +178,13 @@ static void drain_slow_queue(void) {
             /* Swept by the deadline timer while queued: its slot may already
              * be reused by a new connection, so never dispatch it. */
             g_slow_head = (g_slow_head + 1) % EVENT_MAX_CONN;
+            if (g_slow_count > 0) g_slow_count--;
+            publish_queue_depth();
             continue;
         }
         char tok = 0;
         if (!pool_claim_slot_nb(&tok)) break; /* pool busy: wait for token event */
+        record_slow_wait(c->queued_ms);
         if (pool_dispatch_fd(c->fd) < 0) {
             pool_return_token(tok);
             close(c->fd);
@@ -156,6 +193,8 @@ static void drain_slow_queue(void) {
         }
         conn_release(c);
         g_slow_head = (g_slow_head + 1) % EVENT_MAX_CONN;
+        if (g_slow_count > 0) g_slow_count--;
+        publish_queue_depth();
     }
 }
 
@@ -188,6 +227,9 @@ static void go_slow(Conn *c) {
     }
     g_slow_queue[g_slow_tail] = c;
     g_slow_tail = (g_slow_tail + 1) % EVENT_MAX_CONN;
+    c->queued_ms = mono_ms();
+    g_slow_count++;
+    publish_queue_depth();
     drain_slow_queue();
 }
 
@@ -589,7 +631,9 @@ int event_loop(int server_fd4, int server_fd6, int fcgi_fd) {
                 if (g_conns[i].state == S_SLOW_PENDING) {
                     /* Waited out the pool: say so instead of resetting the
                      * connection. drain_slow_queue() skips the stale entry. */
+                    record_slow_wait(g_conns[i].queued_ms);
                     send_pool_busy(g_conns[i].fd);
+                    METRICS_INC(pool_rejected_total);
                 }
                 conn_close(&g_conns[i]);
             }

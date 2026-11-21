@@ -131,6 +131,12 @@ static void worker_loop(int dispatch_sock, int my_token_w) {
         char tok = 1;
         ssize_t w = write(my_token_w, &tok, 1);
         (void)w;
+        /* The master increments workers_busy when it claims a token; without
+         * the matching decrement here the gauge only ever climbs and stops
+         * meaning "in flight". Write the token first: a claim racing this can
+         * then see +1 briefly, but never a negative that would wrap. */
+        if (g_metrics) __atomic_fetch_sub(&g_metrics->workers_busy, 1ULL,
+                                          __ATOMIC_RELAXED);
 
         if (g_shutdown_requested) _exit(0); /* drained: no further dispatch */
     }
@@ -267,6 +273,11 @@ int pool_claim_slot_nb(char *tok_out) {
     ssize_t r = read(token_r, &tok, 1);
     if (r == 1) {
         *tok_out = tok;
+        /* Mirror pool_claim_slot(): every claim is one in-flight request, and
+         * the worker decrements when it hands the token back. The counter
+         * only stays honest if both claim paths bump it. */
+        if (g_metrics) __atomic_fetch_add(&g_metrics->workers_busy, 1ULL,
+                                          __ATOMIC_RELAXED);
         return 1;
     }
     return 0;
