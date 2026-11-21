@@ -44,8 +44,13 @@ fast & slow paths / agent stack / security depth) see the
   jobs cannot starve the rest of the API. ~6x per-conn throughput in
   benchmarks (see "Performance design")
 - **MIME detection**: content type by file extension
-- **Large file streaming**: static files > 64KB stream instead of buffering
-  (both HTTP and FastCGI)
+- **Large file streaming, still zero workers**: static files > 64KB stream
+  instead of buffering, and the master event loop sends them itself
+  (`sendfile(2)` resumed on writable events). A download therefore costs no
+  worker slot at all - 8 concurrent 5MB fetches stayed at 20ms p50 while both
+  pool slots were busy - and a stalled reader blocks nobody (its stream is
+  reaped after 300s without progress). FastCGI keeps streaming inside the
+  worker that owns the response.
 - **Large CGI responses**: CGI output buffer grows on demand; above a
   threshold (default 512KB) it spills to a temp file and streams — no more
   64KB truncation
@@ -1132,7 +1137,8 @@ The default run mode is a **master event loop + slow-path worker pool**
 - **Fast path, zero forks & zero waiting**: static files, health checks,
   redirects and error pages all complete inside the master's event loop;
   keep-alive connections occupy no worker; large static files zero-copy via
-  `sendfile(2)` inside a worker.
+  `sendfile(2)` in that loop as well, resumed on writable events, so a
+  multi-MB download never competes with the API for pool capacity.
 - **Slow-path isolation**: blocking work (CGI children, SSE streams,
   Vite/React upstream proxies) goes to the prefork pool — slow requests
   never stall the fast path.
