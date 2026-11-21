@@ -34,8 +34,10 @@
 
 #if defined(__linux__)
 #include <sys/epoll.h>
+#include <sys/sendfile.h> /* sendfile(2) for the loop-side file stream */
 #else
 #include <sys/event.h>
+/* sendfile() is declared by <sys/socket.h> on macOS. */
 #endif
 
 #include "internal.h"
@@ -57,6 +59,11 @@
  * and the client sees a hang instead of a retryable answer. Past this limit
  * the request is answered 503 + Retry-After and the connection is closed. */
 #define SLOW_QUEUE_WAIT_SECONDS 5
+/* How long a file stream may go without making progress on the socket. A
+ * stalled reader is not an error (EAGAIN just means "later"), but the fd has
+ * to come back eventually, so the deadline timer reaps a stream that has not
+ * moved a byte in this long. */
+#define STREAM_IDLE_TIMEOUT_SECONDS 300
 
 typedef struct {
     int fd;
@@ -65,6 +72,7 @@ typedef struct {
 
 typedef enum {
     S_READ_HEADER,   /* peek the request header, then classify */
+    S_WRITE_STREAM,  /* headers sent; pumping a file body as the socket drains */
     S_SLOW_PENDING,  /* classified slow; waiting for a free worker */
 } ConnState;
 
@@ -76,6 +84,21 @@ typedef struct {
     char ip_str[INET6_ADDRSTRLEN];
     time_t deadline;             /* header/idle timeout */
     long long queued_ms;         /* monotonic stamp when parked on the slow queue */
+    /* Loop-side file stream (S_WRITE_STREAM). A body larger than the in-buffer
+     * limit used to be handed to a worker, where one sendfile() held a whole
+     * pool slot for the duration of the transfer - a 400KB bundle cost a
+     * worker as long as a stalled client kept reading. Now the master sends
+     * it with sendfile(2) and simply waits for the next writable event, so a
+     * download never competes with the API for pool capacity. */
+    int sfd;          /* open file, -1 when not streaming */
+    off_t s_off;      /* next byte to read from the file */
+    size_t s_left;    /* bytes still to send */
+    size_t s_sent;    /* bytes actually on the wire (access-log accounting) */
+    int s_status;     /* status code for the log line */
+    int s_keep;       /* keep-alive already advertised in the headers */
+    int s_temp;       /* unlink s_path when the response is over */
+    char *s_path;     /* owned copy of the streamed path */
+    HttpRequest *s_req; /* owned copy, the log needs method/path/UA */
     int served;                  /* requests served on this connection */
     int in_use;
 } Conn;
@@ -127,6 +150,16 @@ static void ev_register(int fd) {
     e.data.fd = fd;
     (void)epoll_ctl(g_kq, EPOLL_CTL_ADD, fd, &e);
 }
+/* Switch the interest on a registered fd. Level-triggered: the socket keeps
+ * reporting writable for as long as there is room, which is exactly the
+ * semantics a resumed sendfile() loop wants. */
+static void ev_watch(int fd, int for_write) {
+    struct epoll_event e;
+    memset(&e, 0, sizeof(e));
+    e.events = for_write ? EPOLLOUT : EPOLLIN;
+    e.data.fd = fd;
+    (void)epoll_ctl(g_kq, EPOLL_CTL_MOD, fd, &e);
+}
 static void ev_deregister(int fd) {
     (void)epoll_ctl(g_kq, EPOLL_CTL_DEL, fd, NULL);
 }
@@ -134,6 +167,16 @@ static void ev_deregister(int fd) {
 static void ev_register(int fd) {
     struct kevent ke;
     EV_SET(&ke, (uintptr_t)fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    (void)kevent(g_kq, &ke, 1, NULL, 0, NULL);
+}
+/* kqueue has one filter per direction: add EVFILT_WRITE to stream a body,
+ * drop it again once the body is out and the connection is reading. The
+ * read filter stays armed throughout so a peer close still surfaces as
+ * EV_EOF instead of a stream nobody is listening to. */
+static void ev_watch(int fd, int for_write) {
+    struct kevent ke;
+    EV_SET(&ke, (uintptr_t)fd, EVFILT_WRITE,
+           for_write ? EV_ADD : EV_DELETE, 0, 0, NULL);
     (void)kevent(g_kq, &ke, 1, NULL, 0, NULL);
 }
 static void ev_deregister(int fd) {
@@ -163,9 +206,29 @@ static Conn *conn_by_fd(int fd) {
 static void conn_release(Conn *c) {
     c->in_use = 0;
     c->fd = -1;
+    c->sfd = -1;
+    c->s_path = NULL;
+    c->s_req = NULL;
+    c->s_left = 0;
+    c->s_sent = 0;
+    c->s_temp = 0;
 }
 
 static void conn_close(Conn *c) {
+    /* A stream interrupted mid-body (client gone, deadline sweep) still owns
+     * a file descriptor, a temp file and the saved request: release them here
+     * so every exit path - not just the happy one - leaves the slot clean. */
+    if (c->sfd >= 0) {
+        close(c->sfd);
+        c->sfd = -1;
+    }
+    if (c->s_path) {
+        if (c->s_temp) unlink(c->s_path);
+        free(c->s_path);
+        c->s_path = NULL;
+    }
+    free(c->s_req);
+    c->s_req = NULL;
     ev_deregister(c->fd);
     close(c->fd);
     conn_release(c);
@@ -342,6 +405,14 @@ static void fast_serve(Conn *c, HttpRequest *req, HttpResponse *resp, size_t hdr
     log_request(c->ip_str, req, resp->status_code, body_sent);
     METRICS_INC_AT(requests_total, 0); /* served on the fast path */
     free(resp->body);
+    if (resp->stream_path) {
+        /* HEAD on a large file: build_response already answered with the
+         * headers, and nothing reads the body - free the path instead of
+         * leaking the strdup() the static layer handed over. */
+        if (resp->stream_is_temp) unlink(resp->stream_path);
+        free(resp->stream_path);
+        resp->stream_path = NULL;
+    }
     free(req->body);
 
     c->served++;
@@ -352,6 +423,188 @@ static void fast_serve(Conn *c, HttpRequest *req, HttpResponse *resp, size_t hdr
     }
     c->state = S_READ_HEADER;
     c->deadline = time(NULL) + KEEPALIVE_TIMEOUT_SECONDS;
+}
+
+/* Bounded wait for socket room on a small buffer (headers). EAGAIN on the
+ * loop socket means "later", not "dead peer", so wait - but not forever:
+ * past FAST_SEND_WAIT_MS the client is considered stalled. */
+static int send_now(int fd, const char *buf, int len) {
+    int off = 0;
+    while (off < len) {
+        ssize_t sw = send(fd, buf + off, (size_t)(len - off), 0);
+        if (sw < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            if (poll(&pfd, 1, FAST_SEND_WAIT_MS) <= 0) return -1;
+            continue;
+        }
+        if (sw <= 0) return -1;
+        off += (int)sw;
+    }
+    return 0;
+}
+
+/* Retire a streamed response: log what actually went out, release the file /
+ * request copy, then either resume reading (keep-alive) or close. */
+static void stream_end(Conn *c, int completed) {
+    if (c->sfd >= 0) {
+        close(c->sfd);
+        c->sfd = -1;
+    }
+    if (c->s_path) {
+        if (c->s_temp) unlink(c->s_path);
+        free(c->s_path);
+        c->s_path = NULL;
+    }
+    if (c->s_req) {
+        /* Log the real byte count: a client that disappeared mid-transfer
+         * must show up as a short response, not as a clean 200. */
+        log_request(c->ip_str, c->s_req, c->s_status, (int)c->s_sent);
+        free(c->s_req);
+        c->s_req = NULL;
+    }
+    METRICS_INC_AT(requests_total, 0); /* served on the fast path */
+
+    c->served++;
+    if (!completed || !c->s_keep || c->served >= MAX_KEEPALIVE_REQUESTS ||
+        c->s_status >= 500 || g_shutdown_requested) {
+        conn_close(c);
+        return;
+    }
+    c->state = S_READ_HEADER;
+    c->deadline = time(NULL) + KEEPALIVE_TIMEOUT_SECONDS;
+    ev_watch(c->fd, 0);
+}
+
+/* Push as much of the file as the socket accepts right now. Returns only on
+ * EAGAIN (resume on the next writable event) or when the transfer ends. */
+static void conn_write_stream(Conn *c) {
+    while (c->s_left > 0) {
+#if defined(__APPLE__)
+        /* macOS argument order: sendfile(FILE fd, SOCKET fd, ...), and the
+         * byte count is in/out - it reports the partial amount on EAGAIN. */
+        off_t chunk_len = (off_t)c->s_left;
+        ssize_t w = sendfile(c->sfd, c->fd, c->s_off, &chunk_len, NULL, 0);
+        if (w < 0) {
+            if (chunk_len > 0) {
+                c->s_off += chunk_len;
+                c->s_left -= (size_t)chunk_len;
+                c->s_sent += (size_t)chunk_len;
+            }
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                c->deadline = time(NULL) + STREAM_IDLE_TIMEOUT_SECONDS;
+                return;
+            }
+            stream_end(c, 0);
+            return;
+        }
+        c->s_off += chunk_len;
+        c->s_left -= (size_t)chunk_len;
+        c->s_sent += (size_t)chunk_len;
+        if (chunk_len == 0) { /* file shorter than Content-Length promised */
+            stream_end(c, 0);
+            return;
+        }
+#else /* __linux__ */
+        ssize_t w = sendfile(c->fd, c->sfd, &c->s_off, c->s_left);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                c->deadline = time(NULL) + STREAM_IDLE_TIMEOUT_SECONDS;
+                return;
+            }
+            stream_end(c, 0);
+            return;
+        }
+        if (w == 0) { /* premature EOF from the file */
+            stream_end(c, 0);
+            return;
+        }
+        c->s_left -= (size_t)w;
+        c->s_sent += (size_t)w;
+#endif
+        c->deadline = time(NULL) + STREAM_IDLE_TIMEOUT_SECONDS;
+    }
+    stream_end(c, 1);
+}
+
+/* Take over a stream_path response in the loop: headers go out inline (a few
+ * hundred bytes), the body is pumped by conn_write_stream as the socket
+ * drains. Nothing blocks here, so a multi-MB asset neither occupies a worker
+ * nor delays any other request. */
+static void stream_begin(Conn *c, HttpRequest *req, HttpResponse *resp, size_t hdr_len) {
+#if defined(__APPLE__) || defined(__linux__)
+    int sfd = open(resp->stream_path, O_RDONLY);
+    if (sfd >= 0) {
+        /* Same serialization the fast path applies before build_response. */
+        apply_cors_headers(req, resp);
+        if (resp->content_type[0] == '\0') {
+            strcpy(resp->content_type, "text/html");
+        }
+        int keep_alive = want_keep_alive(req);
+        char raw[MAX_RESPONSE_SIZE];
+        int raw_len = 0;
+        (void)build_response(resp, 1 /* headers only */, keep_alive, raw, &raw_len);
+
+        recv_consume(c->fd, (int)hdr_len); /* drop the peeked header */
+        if (send_now(c->fd, raw, raw_len) < 0) {
+            close(sfd);
+            free(resp->body);
+            if (resp->stream_is_temp) unlink(resp->stream_path);
+            free(resp->stream_path);
+            conn_close(c);
+            return;
+        }
+
+        HttpRequest *copy = malloc(sizeof *copy);
+        if (copy) {
+            memcpy(copy, req, sizeof *copy);
+            copy->body = NULL;        /* owned by the caller's request */
+            copy->body_temp_path = NULL;
+        } else {
+            keep_alive = 0; /* no request copy means no log line: close after */
+        }
+        char *path = strdup(resp->stream_path);
+        if (!path) {
+            close(sfd);
+            free(copy);
+            free(resp->body);
+            if (resp->stream_is_temp) unlink(resp->stream_path);
+            free(resp->stream_path);
+            conn_close(c);
+            return;
+        }
+
+        c->sfd = sfd;
+        c->s_off = resp->stream_offset;
+        c->s_left = (size_t)resp->body_length;
+        c->s_sent = 0;
+        c->s_status = resp->status_code;
+        c->s_keep = keep_alive;
+        c->s_temp = resp->stream_is_temp;
+        c->s_path = path;
+        c->s_req = copy;
+
+        free(resp->body);
+        free(resp->stream_path); /* the copy above owns the name now */
+        resp->stream_path = NULL;
+        resp->body = NULL;
+
+        c->state = S_WRITE_STREAM;
+        c->deadline = time(NULL) + STREAM_IDLE_TIMEOUT_SECONDS;
+        ev_watch(c->fd, 1);
+        conn_write_stream(c); /* the socket usually has room right away */
+        return;
+    }
+    /* open() failed: let a worker handle it, it will report the real error. */
+#endif
+    free(resp->body);
+    if (resp->stream_is_temp) unlink(resp->stream_path);
+    free(resp->stream_path);
+    go_slow(c);
 }
 
 static void conn_readable(Conn *c) {
@@ -459,13 +712,14 @@ static void conn_readable(Conn *c) {
 
     process_request(&req, &resp, c->fd);
     if (resp.stream_path) {
-        /* Body too big for the in-buffer path: the worker streams it
-         * (sendfile). Nothing has been consumed, so hand the connection
-         * over and let handle_client redo the request. */
-        free(resp.body);
-        if (resp.stream_is_temp) unlink(resp.stream_path);
-        free(resp.stream_path);
-        go_slow(c);
+        /* Body too big for the in-buffer path. HEAD only needs the headers
+         * build_response already produced; a GET streams from this loop, so a
+         * large download no longer parks a worker for its whole duration. */
+        if (strcmp(req.method, "HEAD") == 0) {
+            fast_serve(c, &req, &resp, hdr_len, 0);
+            return;
+        }
+        stream_begin(c, &req, &resp, hdr_len);
         return;
     }
     fast_serve(c, &req, &resp, hdr_len, 0);
@@ -499,6 +753,10 @@ static void accept_http(int server_fd) {
         c->peer_len = cl;
         sockaddr_to_str((struct sockaddr *)&c->peer, c->ip_str, sizeof(c->ip_str));
         c->served = 0;
+        c->sfd = -1;
+        c->s_path = NULL;
+        c->s_req = NULL;
+        c->s_left = 0;
         c->deadline = time(NULL) + g_request_timeout_seconds;
         c->in_use = 1;
         ev_register(fd);
@@ -626,7 +884,12 @@ int event_loop(int server_fd4, int server_fd6, int fcgi_fd) {
                 accept_fcgi(server_fd4, server_fd6, fcgi_fd);
             } else {
                 Conn *c = conn_by_fd(fd);
-                if (c && c->state == S_READ_HEADER) conn_readable(c);
+                if (!c) continue;
+                if (c->state == S_WRITE_STREAM) {
+                    conn_write_stream(c);
+                } else if (c->state == S_READ_HEADER) {
+                    conn_readable(c);
+                }
             }
         }
 
